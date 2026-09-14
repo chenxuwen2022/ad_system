@@ -58,6 +58,11 @@ async def init_wellflow_runtime() -> None:
         conn_string = settings.database_url_async.replace(
             "postgresql+asyncpg://", "postgresql://"
         )
+        # PG 不可用时快速降级，避免启动卡在连接超时
+        if "?" in conn_string:
+            conn_string += "&connect_timeout=5"
+        else:
+            conn_string += "?connect_timeout=5"
         cm = AsyncPostgresSaver.from_conn_string(conn_string)
         saver = await cm.__aenter__()  # 进入连接池生命周期（应用运行期间保持）
         await saver.setup()

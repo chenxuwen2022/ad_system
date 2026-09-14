@@ -458,7 +458,7 @@ function initUploadZone(){
     };
 }
 async function uploadFiles(files, zone){
-    const good = files.filter(f=>/\.(jpg|jpeg|png|gif|webp|bmp|mp4|mov|avi|mkv|webm)$/i.test(f.name));
+    const good = files.filter(f=>/\\.(jpg|jpeg|png|gif|webp|bmp|mp4|mov|avi|mkv|webm)$/i.test(f.name));
     if(!good.length){ alert("仅支持图片、视频文件"); return; }
     const tip = zone ? zone.querySelector(".uc-tip") : null;
     let ok = 0;
