@@ -22,6 +22,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -37,7 +39,21 @@ from wellflow.app.sse import router as wf_sse_router
 from wellflow.app.config import settings as wf_settings
 from wellflow.app.main import init_wellflow_runtime
 
-app = FastAPI(title="AI 电商运营中台（广告投放 + 电商商拍）")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用启动：先初始化广告投放系统，再初始化商拍子系统（PG 不可用时自动降级）。"""
+    # 第一步：广告投放系统初始化
+    init_db()
+    print("[ok] 数据库表初始化完成")
+    _ = get_token_mgr()
+    print(f"广告投放系统启动，media目录: {MEDIA_STORAGE_PATH}")
+    # 第二步：商拍子系统初始化（checkpointer + graph，PG 不可用时自动降级）
+    await init_wellflow_runtime()
+    print("✅ 商拍子系统（WellFlow）就绪")
+    yield
+
+
+app = FastAPI(title="AI 电商运营中台（广告投放 + 电商商拍）", lifespan=lifespan)
 
 # CORS（商拍子系统前端跨域调用需要；对广告系统同源调用无影响）
 app.add_middleware(
@@ -72,18 +88,6 @@ def health():
         "langgraph_available": get_graph() is not None,
         "checkpointer_available": get_checkpointer() is not None,
     }
-
-
-@app.on_event("startup")
-async def startup_event():
-    # 第一步：广告投放系统初始化
-    init_db()
-    print("[ok] 数据库表初始化完成")
-    _ = get_token_mgr()
-    print(f"广告投放系统启动，media目录: {MEDIA_STORAGE_PATH}")
-    # 第二步：商拍子系统初始化（checkpointer + graph，PG 不可用时自动降级）
-    await init_wellflow_runtime()
-    print("✅ 商拍子系统（WellFlow）就绪")
 
 
 def show_advertisers():
