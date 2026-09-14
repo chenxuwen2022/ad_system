@@ -67,9 +67,12 @@ HTML_PAGE = """
             max-height: 260px; overflow: auto;
         }
         .kpi { display:grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:12px 0; }
-        .kpi .cell { background:#f6f9ff; border:1px solid #e3ecfb; border-radius:10px; padding:12px; }
-        .kpi .lab { font-size:12px; color:#7a8aa3; }
-        .kpi .val { font-size:20px; font-weight:700; color:#1f6feb; margin-top:2px; }
+        .kpi .cell { background:#f7f8fa; border:1px solid #eceff3; border-radius:12px; padding:12px 14px; }
+        .kpi .lab { font-size:12px; color:#8a94a6; margin-bottom:4px; }
+        .kpi .val { font-size:21px; font-weight:700; color:#2d5bff; margin-top:2px; }
+        .kpi.kpi-all { grid-template-columns: repeat(auto-fill,minmax(165px,1fr)); gap:8px; }
+        .kpi.kpi-all .cell { padding:10px 12px; }
+        .kpi.kpi-all .val { font-size:17px; word-break:break-all; }
         table.data { border-collapse: collapse; width:100%; font-size:13px; margin-top:8px; }
         table.data th, table.data td { border:1px solid #e6ebf2; padding:7px 10px; text-align:center; }
         table.data th { background:#f0f4fa; color:#44566f; font-weight:600; }
@@ -814,19 +817,23 @@ async function loadMaterialDetail(){
         }
         html += "</div>";
         html += `<div style="margin-top:12px"><b style="font-size:14px">${esc(s.name)}（${s.type}）</b></div>`;
-        html += "<div class='kpi'>";
-        html += kpi("消耗", s.消耗+" 元");
-        html += kpi("展示", s.展示);
-        html += kpi("点击", s.点击);
-        html += kpi("CTR", s.点击率+"%");
-        html += kpi("CVR", s.转化率+"%");
-        html += kpi("成交", s.成交单数+"单");
-        html += kpi("成交金额", s.成交金额+"元");
-        html += kpi("支付ROI", s.支付ROI);
-        html += kpi("投放天数", s.active_days+"天");
-        html += kpi("近7天趋势", s.trend);
-        html += "</div>";
-        html += `<div class='muted'>${s.first_day} ~ ${s.last_day}　|　峰值 ${s.peak_day}（${s.peak_cost}元）　|　近7天 ${s.recent7_cost}元 vs 前7天 ${s.prev7_cost}元</div>`;
+        if(s.material_status || s.audit_status || (s.products && s.products.length)){
+            html += `<div class='muted' style='margin-top:6px'>素材状态：${esc(s.material_status||"—")}　|　审核状态：${esc(s.audit_status||"—")}${s.material_types&&s.material_types.length?("　|　类型："+esc(s.material_types.join("/"))):""}${s.products&&s.products.length?("　|　关联商品 "+s.products.length+" 个"):""}</div>`;
+        }
+        if(s.metrics_all && s.metrics_all.length){
+            html += "<details open style='margin-top:14px'><summary class='muted'>全部报表指标（点击收起，共 "+s.metrics_all.length+" 项）</summary>";
+            html += "<div class='kpi kpi-all'>";
+            s.metrics_all.forEach(m=>{
+                html += `<div class='cell'><div class='lab'>${esc(m.cn)}</div><div class='val'>${esc(m.value)}</div></div>`;
+            });
+            html += "</div>";
+            // CVR、投放天数、近7天趋势：跟随全部报表指标展示
+            html += "<div class='kpi kpi-all' style='margin-top:8px'>";
+            html += kpi("CVR", s.转化率+"%");
+            html += kpi("投放天数", s.active_days+"天");
+            html += kpi("近7天趋势", s.trend);
+            html += "</div></details>";
+        }
         if(daily.length){
             const maxC = Math.max(...daily.map(d=>d.cost), 1);
             html += "<h4 style='margin-top:16px;font-size:14px'>逐日消耗曲线（近"+daily.length+"天）</h4>";
@@ -981,10 +988,12 @@ function buildExportHtml(res){
     const kv = (label, val) => `<tr><td class="k">${esc(label)}</td><td>${esc(val==null?"":val)}</td></tr>`;
     // 汇总指标（中文名 → 值）
     const summaryRows = [
-        ["素材名称", s.name], ["素材类型", s.type], ["消耗（元）", s.消耗],
+        ["素材名称", s.name], ["素材类型", s.type + (s.material_types && s.material_types.length ? "（" + s.material_types.join("/") + "）" : "")], ["消耗（元）", s.消耗],
         ["展示", s.展示], ["点击", s.点击], ["点击率 CTR", s.点击率 + "%"],
         ["转化率 CVR", s.转化率 + "%"], ["成交单数", s.成交单数], ["成交金额（元）", s.成交金额],
         ["支付 ROI", s.支付ROI], ["投放天数", s.active_days], ["投放区间", (s.first_day||"") + " ~ " + (s.last_day||"")],
+        ["素材状态", s.material_status], ["审核状态", s.audit_status],
+        ["关联商品数", (s.products && s.products.length) || "—"],
         ["峰值日", s.peak_day + (s.peak_cost!=null ? "（" + s.peak_cost + " 元）" : "")],
         ["近 7 天消耗（元）", s.recent7_cost], ["前 7 天消耗（元）", s.prev7_cost], ["近 7 天趋势", s.trend],
     ].filter(r => r[1] != null && r[1] !== "" && r[1] !== "undefined");
@@ -996,6 +1005,9 @@ function buildExportHtml(res){
     const planRows = plans.map(p => `<tr><td>${esc(p.plan_id)}</td><td>${esc(p.plan_name)}</td><td>${esc(p.status)}</td><td>${esc(p.product_id||"—")}</td></tr>`).join("");
     const productRows = products.map(p => `<tr><td>${esc(p.product_id)}</td></tr>`).join("");
     const dailyRows = daily.map(d => `<tr><td>${esc(d.date)}</td><td>${esc(d.cost)}</td><td>${esc(d.show)}</td><td>${esc(d.click)}</td><td>${esc(d.orders)}</td><td>${esc(d.gmv)}</td></tr>`).join("");
+    // 全部报表指标（25项，卡片网格样式）
+    const allMetricCards = (s.metrics_all || []).map(m =>
+        `<div class="mcard"><div class="mlab">${esc(m.cn)}</div><div class="mval">${esc(m.value)}</div></div>`).join("");
     return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1020,6 +1032,10 @@ tr:nth-child(even) td{background:#fcfcfd}
 .ai-line{margin:2px 0}
 .ai-line b,.ai-item b{color:#d25f00}
 .note{color:#86909c;font-size:12px}
+.mgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:8px}
+.mcard{background:#f7f8fa;border:1px solid #eceff3;border-radius:12px;padding:10px 12px}
+.mlab{font-size:12px;color:#8a94a6;margin-bottom:4px}
+.mval{font-size:17px;font-weight:700;color:#2d5bff;word-break:break-all}
 @media print{body{margin:0}}
 </style>
 </head>
@@ -1033,16 +1049,19 @@ tr:nth-child(even) td{background:#fcfcfd}
 <h2>二、汇总指标</h2>
 <table>${summaryRows.map(r=>kv(r[0],r[1])).join("")}</table>
 
-<h2>三、逐日明细（${daily.length} 天）</h2>
+<h2>三、全部报表指标（${(s.metrics_all||[]).length} 项）</h2>
+${allMetricCards ? `<div class="mgrid">${allMetricCards}</div>` : `<div class="note">无</div>`}
+
+<h2>四、逐日明细（${daily.length} 天）</h2>
 ${daily.length ? `<table><tr><th>日期</th><th>消耗</th><th>展示</th><th>点击</th><th>成交单</th><th>成交金额</th></tr>${dailyRows}</table>` : `<div class="note">无逐日数据</div>`}
 
-<h2>四、关联计划（${plans.length}）</h2>
+<h2>五、关联计划（${plans.length}）</h2>
 ${plans.length ? `<table><tr><th>计划ID</th><th>计划名称</th><th>状态</th><th>商品ID</th></tr>${planRows}</table>` : `<div class="note">该素材当前未关联在投计划（或账户暂无在投全域计划）</div>`}
 
-<h2>五、关联商品（${products.length}）</h2>
+<h2>六、关联商品（${products.length}）</h2>
 ${products.length ? `<table><tr><th>商品ID</th></tr>${productRows}</table>` : `<div class="note">无关联商品</div>`}
 
-<h2>六、AI 点评与修改建议</h2>
+<h2>七、AI 点评与修改建议</h2>
 <div class="ai">${renderAiText(ai)}</div>
 </body>
 </html>`;

@@ -1,4 +1,16 @@
+import asyncio
+import sys
+from pathlib import Path
+
+# Windows 下 psycopg 异步连接要求 SelectorEventLoop（uvicorn 默认 Proactor 不兼容）
+if sys.platform == "win32":
+    try:
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except Exception:
+        pass
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from routes.upload_routes import router as upload_router
 from routes.ad_routes import router as ad_router
@@ -6,23 +18,59 @@ from config import MEDIA_STORAGE_PATH
 from db import init_db
 from token_manager import get_token_mgr
 
-app = FastAPI(title="商城广告投放系统")
+# ── 子系统二：电商商拍（WellFlow）──
+from wellflow.app.api.tasks import router as wf_tasks_router
+from wellflow.app.sse import router as wf_sse_router
+from wellflow.app.config import settings as wf_settings
+from wellflow.app.main import init_wellflow_runtime
+
+app = FastAPI(title="AI 电商运营中台（广告投放 + 电商商拍）")
+
+# CORS（商拍子系统前端跨域调用需要；对广告系统同源调用无影响）
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# ── 子系统一：广告投放（原 ad_system 全部路由，路径不变）──
 app.include_router(upload_router)
 app.include_router(ad_router)
+
+# ── 子系统二：电商商拍（WellFlow，API 路径与独立运行时一致）──
+app.include_router(wf_tasks_router, prefix="/api")
+app.include_router(wf_sse_router)
+_wf_upload_dir = Path(wf_settings.upload_dir).resolve()
+_wf_upload_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=_wf_upload_dir), name="wellflow_uploads")
+
+
+@app.get("/health", tags=["系统"], summary="健康检查（含两个子系统状态）")
+def health():
+    from wellflow.app.main import get_checkpointer, get_graph
+    return {
+        "status": "ok",
+        "ad_system": "ok",
+        "wellflow": "ok",
+        "langgraph_available": get_graph() is not None,
+        "checkpointer_available": get_checkpointer() is not None,
+    }
 
 
 @app.on_event("startup")
 async def startup_event():
-    # 第一步：先创建数据库表
+    # 第一步：广告投放系统初始化
     init_db()
     print("[ok] 数据库表初始化完成")
-    # 第二步：再初始化 token 管理器
     _ = get_token_mgr()
     print(f"广告投放系统启动，media目录: {MEDIA_STORAGE_PATH}")
-    # 首次授权需要通过单独的管理命令或受保护的后台操作兑换 auth_code
-    # auth_code 一次性且短时有效，不能在每次启动时重复兑换
+    # 第二步：商拍子系统初始化（checkpointer + graph，PG 不可用时自动降级）
+    await init_wellflow_runtime()
+    print("✅ 商拍子系统（WellFlow）就绪")
 
 
 def show_advertisers():

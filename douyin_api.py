@@ -14,6 +14,98 @@ from token_manager import get_token_mgr
 from config import DOUYIN_CONFIG, BASE_DIR
 
 
+# 千川素材报表（qianchuan/report/uni_promotion/data/get）指标字段 → 中文名。
+# 未覆盖到的字段在前端直接显示原字段名，不影响展示。
+_METRIC_CN = {
+    "stat_cost_for_roi2": "消耗(ROI2口径)",
+    "product_show_count_for_roi2": "整体展示次数",
+    "product_click_count_for_roi2": "商品点击次数",
+    "product_cvr_rate_for_roi2": "点击率",
+    "product_convert_rate_for_roi2": "转化率",
+    "total_pay_order_count_for_roi2": "成交订单数",
+    "total_pay_order_gmv_for_roi2": "成交金额",
+    "total_prepay_and_pay_order_roi2": "支付ROI",
+    "stat_cost_for_roi1": "消耗(ROI1口径)",
+    "product_show_count_for_roi1": "整体展示次数(ROI1)",
+    "product_click_count_for_roi1": "商品点击次数(ROI1)",
+    "product_cvr_rate_for_roi1": "点击率(ROI1)",
+    "product_convert_rate_for_roi1": "转化率(ROI1)",
+    "total_pay_order_count_for_roi1": "成交订单数(ROI1)",
+    "total_pay_order_gmv_for_roi1": "成交金额(ROI1)",
+    "total_prepay_and_pay_order_roi1": "支付ROI(ROI1)",
+    "product_show_count": "整体展示次数",
+    "product_click_count": "商品点击次数",
+    "stat_cost": "消耗",
+    "pay_order_count": "成交订单数",
+    "pay_order_gmv": "成交金额",
+    "prepay_and_pay_order_roi": "支付ROI",
+    "show_cnt": "展示次数",
+    "click_cnt": "点击次数",
+    "convert_cnt": "转化数",
+    "convert_rate": "转化率",
+    "avg_click_cost": "点击均价",
+    "avg_show_cost": "千次展示均价",
+    "deep_convert_cnt": "深度转化数",
+    "deep_convert_rate": "深度转化率",
+    "first_order_count": "首单数",
+    "first_order_gmv": "首单金额",
+    "first_order_pay_roi": "首单支付ROI",
+    "dy_share_cnt": "转发数",
+    "dy_comment_cnt": "评论数",
+    "dy_like_cnt": "点赞数",
+    "dy_follow_cnt": "关注数",
+    "qianchuan_first_order_roi30": "店铺首单新客30天支付ROI",
+    "ad_live_order_settle_roi_7d": "直接结算ROI(7天)",
+    "ad_all_order_settle_roi_7d": "全部结算ROI(7天)",
+    "ad_all_order_settle_roi_14d": "全部结算ROI(14天)",
+    "create_order_roi": "直接下单ROI",
+    # —— 获取全域投放计划下素材接口（uni_promotion/ad/material/get）完整指标 ——
+    "total_cost_per_pay_order_for_roi2": "整体成交订单成本",
+    "total_pay_order_coupon_amount_for_roi2": "成交智能优惠券金额",
+    "total_unfinished_estimate_order_gmv_for_roi2": "未完结预售订单预估金额",
+    "total_ecom_platform_subsidy_amount_for_roi2": "电商平台补贴金额",
+    "total_pay_order_gmv_include_coupon_for_roi2": "整体成交金额(含优惠券)",
+    "total_cost_per_pay_order_settle_for_roi2_1h": "净成交订单成本",
+    "total_order_settle_count_for_roi2_1h": "净成交订单数",
+    "total_order_settle_amount_for_roi2_1h": "净成交金额",
+    "total_prepay_and_pay_settle_roi2_1h": "净成交ROI",
+    "total_order_real_settle_amount_for_roi2_1h": "用户实际支付净成交金额",
+    "no_refund_ecom_coupon_amount_for_roi2": "智能优惠券未退款金额",
+    "no_refund_ecom_platform_subsidy_amount_for_roi2": "电商平台补贴未退款金额",
+    "total_order_settle_count_rate_for_roi2_1h": "净成交订单结算率",
+    "total_order_settle_amount_rate_for_roi2_1h": "净成交金额结算率",
+    "total_refund_order_count_for_roi2_1h": "1小时内退款订单数",
+    "total_refund_order_gmv_for_roi2_1h_all": "1小时内退款金额",
+    "total_refund_order_gmv_for_roi2_1h_rate": "1小时内退款率",
+    "live_show_count_for_roi2_v2": "直播全域整体展示次数",
+    "live_watch_count_for_roi2_v2": "直播全域整体点击次数",
+    "live_cvr_rate_for_roi2_v2": "直播全域整体点击率",
+    "live_convert_rate_for_roi2_v2": "直播全域整体转化率",
+    "live_show_count_exclude_video_for_roi2": "直播全域展示次数(直播间)",
+    "live_watch_count_exclude_video_for_roi2": "直播全域点击次数(直播间)",
+    "live_cvr_rate_exclude_video_for_roi2": "直播全域点击率(直播间)",
+    "live_convert_rate_exclude_video_for_roi2": "直播全域转化率(直播间)",
+}
+
+# 获取全域投放计划下素材接口（uni_promotion/ad/material/get）的完整指标字段集。
+# 请求时按此列表取 fields，返回的 stats_info 全部按此展示。
+_MATERIAL_STATS_FIELDS = [
+    "product_show_count_for_roi2", "product_click_count_for_roi2",
+    "product_cvr_rate_for_roi2", "product_convert_rate_for_roi2",
+    "stat_cost_for_roi2", "total_prepay_and_pay_order_roi2",
+    "total_pay_order_gmv_for_roi2", "total_pay_order_count_for_roi2",
+    "total_cost_per_pay_order_for_roi2", "total_pay_order_coupon_amount_for_roi2",
+    "total_unfinished_estimate_order_gmv_for_roi2", "total_ecom_platform_subsidy_amount_for_roi2",
+    "total_pay_order_gmv_include_coupon_for_roi2",
+    "total_cost_per_pay_order_settle_for_roi2_1h", "total_order_settle_count_for_roi2_1h",
+    "total_order_settle_amount_for_roi2_1h", "total_prepay_and_pay_settle_roi2_1h",
+    "total_order_real_settle_amount_for_roi2_1h", "no_refund_ecom_coupon_amount_for_roi2",
+    "no_refund_ecom_platform_subsidy_amount_for_roi2", "total_order_settle_count_rate_for_roi2_1h",
+    "total_order_settle_amount_rate_for_roi2_1h", "total_refund_order_count_for_roi2_1h",
+    "total_refund_order_gmv_for_roi2_1h_all", "total_refund_order_gmv_for_roi2_1h_rate",
+]
+
+
 # ============================================================
 # TTL 内存缓存：素材报表/详情/预览的千川侧数据短期内不会变，
 # 加缓存避免每次打开页面都重新全量拉取（千川接口很慢）。
@@ -708,7 +800,7 @@ class DouYinAdService:
         metrics = metrics or ["stat_cost_for_roi2", "product_show_count_for_roi2",
                               "product_click_count_for_roi2", "product_cvr_rate_for_roi2",
                               "product_convert_rate_for_roi2", "total_pay_order_count_for_roi2",
-                              "total_pay_order_gmv_for_roi2", "total_prepay_and_pay_order_roi2"]
+                              "total_pay_order_gmv_for_roi2", "total_prepay_and_pay_order_roi2"]  # 列表快查用基础8项
         order_field = order_field or "stat_cost_for_roi2"
 
         def _params(page):
@@ -805,6 +897,13 @@ class DouYinAdService:
             else:
                 mid = "T" + str(v(dim, name_dim) or "")
             nm = str(v(dim, name_dim) or "")
+            # 报表接口返回的全部指标（含未单独解析的字段），按接口顺序保留
+            metrics_all = []
+            for _k, _node in (met or {}).items():
+                _val = _node.get("Value", _node.get("ValueStr", 0))
+                metrics_all.append({
+                    "cn": _METRIC_CN.get(_k, _k), "field": _k, "value": _val,
+                })
             return {
                 "type": tname, "id": mid,
                 "name": nm or ("素材" + mid),
@@ -814,6 +913,7 @@ class DouYinAdService:
                 "成交单数": orders, "成交金额": round(gmv, 2),
                 "支付ROI": round(roi, 2), "净成交ROI": round(roi, 2),
                 "退款率(%)": 0.0,
+                "metrics_all": metrics_all,
             }
 
         with ThreadPoolExecutor(max_workers=min(5, len(tasks))) as ex:
@@ -833,8 +933,6 @@ class DouYinAdService:
         result = [{"plan_name": "账户素材库", "status": "", "materials": mats}]
         _cache_set(cache_key, result, 300)
         return result
-
-
 
     def funnel_optimize(self, materials: list) -> list:
         """多维度漏斗诊断算法：曝光->点击->转化->成交/ROI，逐素材定位瓶颈、打分、给动作。
@@ -1107,6 +1205,41 @@ class DouYinAdService:
             "peak_day": peak["date"] if peak else "", "peak_cost": peak["cost"] if peak else 0,
             "recent7_cost": recent7_cost, "prev7_cost": prev7_cost, "trend": trend_dir,
         }
+
+        # 2.5 全量指标（25 项）：按素材过滤单独拉一次报表，覆盖列表的 8 项基础指标。
+        # 只查单素材 + 两个主题，秒回；未命中时保留列表的基础 8 项。
+        try:
+            full_met = {}
+            for topic_try in [topic] + (["OVERALL_ROI_PRODUCT_MATERIAL"] if topic != "OVERALL_ROI_PRODUCT_MATERIAL" else []):
+                nd = name_dim if topic_try.startswith("SITE") else "roi2_material_video_name"
+                p = {
+                    "advertiser_id": int(self.advertiser_id), "data_topic": topic_try,
+                    "dimensions": json.dumps(["material_id", nd]),
+                    "metrics": json.dumps(_MATERIAL_STATS_FIELDS),
+                    "filters": json.dumps([{"field": "material_id", "operator": 7,
+                                            "values": [str(material_id)]}]),
+                    "start_time": start_s, "end_time": end_s,
+                    "order_by": json.dumps([{"type": 2, "field": "stat_cost_for_roi2"}]),
+                    "page": 1, "page_size": 100,
+                }
+                rj = requests.get(
+                    f"{self.base_url}/open_api/v1.0/qianchuan/report/uni_promotion/data/get/",
+                    headers=self.headers, params=p, timeout=30).json()
+                if rj.get("code") == 0:
+                    for row_f in (rj.get("data", {}) or {}).get("rows", []) or []:
+                        met_f = row_f.get("metrics", {}) or {}
+                        for k, node in met_f.items():
+                            if k not in full_met:
+                                full_met[k] = node.get("Value", node.get("ValueStr", 0))
+                if full_met:
+                    break
+            if full_met:
+                summary["metrics_all"] = [
+                    {"cn": _METRIC_CN.get(k, k), "field": k, "value": v}
+                    for k, v in full_met.items()
+                ]
+        except Exception:
+            pass
 
         # 4. DeepSeek 单素材点评（缓存10分钟，避免重复调用花钱）
         ai_key = ("ai", str(self.advertiser_id), str(material_id))

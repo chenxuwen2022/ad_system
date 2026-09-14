@@ -26,3 +26,7 @@ AI店铺运营九大模块分析报告*.pdf
 AI店铺运营九大模块分析报告*.docx
 ~$*.docx
 _sample_export.html
+
+# ===== 商拍子系统（WellFlow）=====
+uploads/
+wellflow/.env

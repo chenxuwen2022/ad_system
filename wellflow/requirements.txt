@@ -1,12 +1,10 @@
 fastapi>=0.115
+python-multipart>=0.0.9
 uvicorn[standard]>=0.30
-jinja2
-requests
+sqlalchemy>=2.0
+alembic>=1.13
 pydantic>=2.7
 pydantic-settings>=2.3
-sqlalchemy>=2.0
-python-multipart>=0.0.9
-alembic>=1.13
 psycopg2-binary>=2.9
 psycopg[binary]>=3.2
 python-dotenv>=1.0
