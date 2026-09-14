@@ -3,12 +3,22 @@ import sys
 from pathlib import Path
 
 # Windows 下 psycopg 异步连接要求 SelectorEventLoop。
-# 注意：uvicorn 启动时会调用 setup_asyncio() 把 policy 重置为 DefaultEventLoopPolicy，
-# 因此这里同时替换 DefaultEventLoopPolicy 本身，保证 CLI / uvicorn.run 任意方式启动都生效。
+# 两层保障：
+# 1) 替换 asyncio 默认 policy（旧版 uvicorn 路径）；
+# 2) uvicorn 0.36+ 的 asyncio_loop_factory 在 Windows 上硬编码返回 ProactorEventLoop（无视 policy），
+#    必须同时替换 uvicorn 的 loop 工厂，CLI 与 uvicorn.run 才都能生效。
 if sys.platform == "win32":
     try:
         asyncio.DefaultEventLoopPolicy = asyncio.WindowsSelectorEventLoopPolicy
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        import uvicorn.loops.asyncio as _uv_la
+        import uvicorn.loops.auto as _uv_auto
+
+        def _selector_loop_factory(use_subprocess: bool = False):
+            return asyncio.SelectorEventLoop
+
+        _uv_la.asyncio_loop_factory = _selector_loop_factory
+        _uv_auto.asyncio_loop_factory = _selector_loop_factory
     except Exception:
         pass
 
