@@ -1,0 +1,28 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+.venv/
+
+# ===== IDE / 系统 =====
+.idea/
+.DS_Store
+Thumbs.db
+
+# ===== 运行时数据与敏感信息（禁止入库）=====
+token_store.db
+*.db
+.env
+*.log
+media_storage/
+upload_materials/
+
+# ===== 临时/测试脚本 =====
+_test*.py
+_probe*.py
+
+# ===== 业务文档产物（不入代码库）=====
+AI店铺托管方案_*.html
+AI店铺运营九大模块分析报告*.pdf
+AI店铺运营九大模块分析报告*.docx
+~$*.docx
+_sample_export.html
