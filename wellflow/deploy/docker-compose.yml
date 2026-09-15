@@ -22,8 +22,8 @@ services:
 
   app:
     build:
-      context: ..
-      dockerfile: deploy/Dockerfile
+      context: ../..
+      dockerfile: wellflow/deploy/Dockerfile
     restart: unless-stopped
     env_file:
       - ../../.env
@@ -39,9 +39,9 @@ services:
       # 服务器上没有本地 127.0.0.1:7890 代理，置空禁用（否则 Node1 调研工具会连不上）
       HTTP_PROXY_URL: ""
     volumes:
-      # 生成图/上传图落盘到宿主机 /data/wellflow/uploads，便于备份与迁移
-      # 容器内 upload_dir = /app/uploads（_PROJECT_ROOT / "uploads"），与 volume 映射一致
-      - /data/wellflow/uploads:/app/uploads
+      # 生成图/上传图落盘到宿主机 /data/wellflow/uploads
+      # 容器内 upload_dir = /app/wellflow/uploads（config._PROJECT_ROOT / "uploads"）
+      - /data/wellflow/uploads:/app/wellflow/uploads
     ports:
       - "8000:8000"
 
