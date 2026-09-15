@@ -184,22 +184,100 @@ class MannequinTagIn(BaseModel):
 
 
 class MannequinCreateRequest(BaseModel):
-    """创建模特（上传方式或 AI 生成方式共用一个 schema，由 origin 区分）。"""
+    """最终入库：上传方式或 AI 生成方式共用一个 schema，由 origin 区分。"""
 
     name: str
     en_name: str | None = None
     scope: Literal["official", "mine"] = "mine"
     origin: Literal["upload", "ai_generate"] = "upload"
-    cover_storage_uri: str | None = None
+    cover_storage_uri: str
     description: str | None = None
     tags: list[MannequinTagIn] = Field(default_factory=list)
 
-    # AI 生成专用
+    # AI 生成上下文（写 generate_log 用；路径 A 时这些全为 None）
     input_desc: str | None = None
     input_refs: list[str] = Field(default_factory=list)
     final_prompt: str | None = None
     generate_model: str | None = None
     num_output: int = 1
+    fine_tune_from: str | None = None   # 微调前那一轮的图 URI（如果走了微调）
+    fine_tune_prompt: str | None = None
+
+
+# ============================================================================
+# 模特创建流程 —— 交互端点（无状态）
+# ============================================================================
+
+class UploadedImage(BaseModel):
+    """上传返回的单张图片信息。"""
+    storage_uri: str  # 相对路径，如 uploads/mne_xxx/m0.jpg
+    url: str          # 前端直接可访问的 URL
+    filename: str
+
+
+class MannequinOptimizePromptRequest(BaseModel):
+    """路径B「优化提示词」按钮入参。"""
+    raw_prompt: str                                    # 用户输入的原始提示词
+    ref_uris: list[str] = Field(default_factory=list)  # 路径A上传的参考图（可选）
+    tags: list[MannequinTagIn] = Field(default_factory=list)  # 用户选的维度标签（可空）
+
+class MannequinOptimizePromptResponse(BaseModel):
+    final_prompt: str                                  # 优化后的最终提示词
+
+
+class GeneratedImage(BaseModel):
+    """首轮生图返回的单张。"""
+    index: int
+    base64: str
+    storage_uri: str | None = None       # 后端可选择先不落盘，让前端决定
+    url: str | None = None
+    revised_prompt: str | None = None
+
+
+class MannequinGenerateRequest(BaseModel):
+    """首轮生图 / 批量生成：n 张。"""
+    session_id: str                                    # upload 返回的 session_id，用于组织落盘目录
+    prompt: str                                        # 最终提示词（可能已优化）
+    ref_uris: list[str] = Field(default_factory=list)  # 路径A上传的参考图（可选）
+    tags: list[MannequinTagIn] = Field(default_factory=list)
+    generate_model: str                                # 前端模型名，后端会映射
+    num_output: int = Field(default=4, ge=1, le=6)
+    size: str = "1024x1536"
+
+class MannequinGenerateResponse(BaseModel):
+    images: list[GeneratedImage]
+    model: str            # 实际使用的后端模型名
+    final_prompt: str     # 最终发给模型的 prompt
+
+
+class MannequinFineTuneRequest(BaseModel):
+    """对选中的一张图做图生图微调（保持身份一致性）。"""
+    session_id: str                                    # upload 返回的 session_id，用于组织落盘目录
+    target_uri: str                                     # 选中的那张图的 URI
+    tune_prompt: str                                    # 微调描述，如"让头发更长一些"
+    original_prompt: str | None = None                  # 原始生图 prompt，用于维持身份
+    ref_uris: list[str] = Field(default_factory=list)   # 原路径A参考图（可选保留）
+    generate_model: str
+    size: str = "1024x1536"
+
+class MannequinFineTuneResponse(BaseModel):
+    base64: str
+    storage_uri: str | None = None
+    url: str | None = None
+    model: str
+    revised_prompt: str | None = None
+
+
+class MannequinAutoTagRequest(BaseModel):
+    """VLM 读图，根据 15 维度枚举自动给出标签建议。"""
+    image_uri: str                     # 最终入库的那张图（路径A原图 or 路径B微调/选中图）
+    extra_context: str | None = None   # 用户输入的提示词/描述，帮助 VLM 理解意图
+
+class MannequinAutoTagResponse(BaseModel):
+    tags: list[MannequinTagIn]        # VLM 建议的标签（前端可编辑）
+    description: str                  # VLM 生成的一句话描述
+    suggested_name: str | None = None  # 建议的模特名字（可选）
+    model: str
 
 
 class MannequinUpdateRequest(BaseModel):

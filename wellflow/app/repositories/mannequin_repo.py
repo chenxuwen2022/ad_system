@@ -63,11 +63,14 @@ class MannequinRepo:
         tags: list[dict[str, Any]] | None = None,
         generate_model: str | None = None,
         generate_prompt: str | None = None,
+        # ── 生成上下文（写 generate_log 用） ──
         input_desc: str | None = None,
         input_refs: list[str] | None = None,
         final_prompt: str | None = None,
         num_output: int = 1,
-        model_id_for_log: int | None = None,
+        # 微调上下文
+        fine_tune_from: str | None = None,
+        fine_tune_prompt: str | None = None,
     ) -> Mannequin:
         obj = Mannequin(
             mannequin_no=_gen_mannequin_no(self.db),
@@ -78,7 +81,7 @@ class MannequinRepo:
             cover_storage_uri=cover_storage_uri,
             description=description,
             generate_model=generate_model,
-            generate_prompt=generate_prompt,
+            generate_prompt=generate_prompt or final_prompt,
         )
         self.db.add(obj)
         self.db.flush()
@@ -87,10 +90,12 @@ class MannequinRepo:
         if tags:
             self._replace_tags(obj.id, tags)
 
-        # 写生成日志
+        # 写生成日志（路径 A 时 input_desc / final_prompt 全为 None，跳过）
         if origin == "ai_generate" or input_desc or final_prompt:
-            log = MannequinGenerateLog(
+            # 首轮
+            first_log = MannequinGenerateLog(
                 mannequin_id=obj.id,
+                round_type="first_round",
                 input_desc=input_desc,
                 input_refs=input_refs,
                 final_prompt=final_prompt,
@@ -99,7 +104,25 @@ class MannequinRepo:
                 output_uris=[cover_storage_uri] if cover_storage_uri else None,
                 status="success",
             )
-            self.db.add(log)
+            self.db.add(first_log)
+            self.db.flush()
+
+            # 如果走了微调 → 再追加一条
+            if fine_tune_from:
+                tune_log = MannequinGenerateLog(
+                    mannequin_id=obj.id,
+                    round_type="fine_tune",
+                    parent_log_id=first_log.id,
+                    target_image_uri=fine_tune_from,
+                    input_desc=fine_tune_prompt,
+                    input_refs=input_refs,
+                    final_prompt=final_prompt,  # 微调时用的最终 prompt
+                    generate_model=generate_model,
+                    num_output=1,
+                    output_uris=[cover_storage_uri] if cover_storage_uri else None,
+                    status="success",
+                )
+                self.db.add(tune_log)
 
         self.db.flush()
         return obj

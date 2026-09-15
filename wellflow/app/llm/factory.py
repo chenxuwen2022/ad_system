@@ -12,12 +12,15 @@ from wellflow.app.config import settings
 from wellflow.app.llm.base import BaseLLMClient
 
 
-ModelRole = Literal["vlm", "image"]
+ModelRole = Literal["vlm", "image", "text"]
 
 
 def _resolve_model(role: ModelRole) -> str:
-    """根据 role 拿到实际模型名，值来自 config.py Settings.llm_model_xxx（含默认值）。"""
-    return getattr(settings, f"llm_model_{role}")
+    """根据 role 拿到默认模型名，从 config.py Settings.llm_model_xxx 读取。
+
+    优先级：settings.llm_model_{role} → fallback 到 qwen-turbo（极端兜底）。
+    """
+    return getattr(settings, f"llm_model_{role}", "qwen-turbo")
 
 
 def _strip_provider(model: str) -> str:
