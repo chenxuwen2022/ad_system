@@ -111,12 +111,18 @@ async function loadAsset(id){
 
 function setImg(src, hasImg){
   $('imgBox').classList.add('has-img');
-  $('imgBox').innerHTML = `<img src="${src}" alt="素材图片"><span class="change">更换图片</span>`;
+  $('imgBox').innerHTML = `<img src="${src}" alt="素材图片" onerror="imgFail()"><span class="change">更换图片</span>`;
+  $('imgBox').onclick = ()=>$('fileInput').click();
+}
+function imgFail(){
+  // 图片加载失败（文件被删/路径失效）→ 显示失效占位，可重新上传
+  $('imgBox').classList.remove('has-img');
+  $('imgBox').innerHTML = `<div class="up"><div class="ic">🖼</div><div class="t">素材图片加载失败</div><div class="s">原图文件已失效，点击重新上传</div></div>`;
   $('imgBox').onclick = ()=>$('fileInput').click();
 }
 function showEmpty(){
   $('imgBox').classList.remove('has-img');
-  $('imgBox').innerHTML = `<div class="up" id="upHint"><div class="ic">🖼</div><div class="t">上传图片</div><div class="s">支持 jpg / png / webp</div></div>`;
+  $('imgBox').innerHTML = `<div class="up" id="upHint"><div class="ic">🖼</div><div class="t">暂无素材图片</div><div class="s">点击上传图片（支持 jpg / png / webp）</div></div>`;
   $('imgBox').onclick = ()=>$('fileInput').click();
 }
 $('fileInput').addEventListener('change', ()=>{
