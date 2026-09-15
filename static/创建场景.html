@@ -152,29 +152,58 @@ function setPreview(src){
 
 /* 步骤1：上传/链接 */
 $('uploadBox').addEventListener('click', ()=>$('fileInput').click());
-$('fileInput').addEventListener('change', ()=>{
+$('fileInput').addEventListener('change', async ()=>{
   const f = $('fileInput').files[0];
   if(!f) return;
-  pendingFile = f; pendingUrl = '';
-  setPreview(URL.createObjectURL(f));
+  $('nextBtn').textContent = '处理中…';
+  $('nextBtn').disabled = true;
+  try{
+    const dataUrl = await compressImage(f);
+    sessionStorage.setItem('scene_img', dataUrl);
+    sessionStorage.setItem('scene_img_type', 'data');
+    location.href = '创建场景-确认入库.html';
+  }catch(e){
+    toast('图片处理失败: '+e.message, 'err');
+    $('nextBtn').textContent = '下一步 →';
+    $('nextBtn').disabled = false;
+  }
 });
+/* 压缩图片（最长边1200，jpeg0.8），避免 sessionStorage 超限 */
+function compressImage(file, maxSize){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale);
+        c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.8));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
 $('readBtn').addEventListener('click', async ()=>{
   const url = $('linkInput').value.trim();
   if(!url){ $('linkInput').focus(); return; }
-  $('readBtn').disabled = true;
-  $('readBtn').innerHTML = '<span class="spinner"></span> 读取中';
-  await new Promise(r=>setTimeout(r, 700));
-  pendingUrl = url; pendingFile = null;
-  setPreview(url);
-  $('readBtn').disabled = false;
-  $('readBtn').textContent = '读取图片';
+  sessionStorage.setItem('scene_img', url);
+  sessionStorage.setItem('scene_img_type', 'url');
+  location.href = '创建场景-确认入库.html';
 });
 
 /* 下一步/上一步 */
 $('nextBtn').onclick = ()=>{
-  const src = pendingFile ? URL.createObjectURL(pendingFile) : pendingUrl;
-  setPreview(src);
-  setStep(2);
+  if(!sessionStorage.getItem('scene_img')){
+    sessionStorage.setItem('scene_img', '');
+    sessionStorage.setItem('scene_img_type', '');
+  }
+  location.href = '创建场景-确认入库.html';
 };
 $('backBtn').onclick = ()=>setStep(1);
 
