@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from routes.upload_routes import router as upload_router
 from routes.ad_routes import router as ad_router
+from routes.asset_routes import router as asset_router
 from config import MEDIA_STORAGE_PATH
 from db import init_db
 from token_manager import get_token_mgr
@@ -69,6 +70,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ── 子系统一：广告投放（原 ad_system 全部路由，路径不变）──
 app.include_router(upload_router)
 app.include_router(ad_router)
+app.include_router(asset_router)
 
 # ── 子系统二：电商商拍（WellFlow，API 路径与独立运行时一致）──
 app.include_router(wf_tasks_router, prefix="/api")
