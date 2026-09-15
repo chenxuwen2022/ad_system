@@ -155,33 +155,31 @@ $('uploadBox').addEventListener('click', ()=>$('fileInput').click());
 $('fileInput').addEventListener('change', async ()=>{
   const f = $('fileInput').files[0];
   if(!f) return;
-  $('nextBtn').textContent = 'AI 处理中…（约30秒）';
+  $('nextBtn').textContent = '处理中…';
   $('nextBtn').disabled = true;
   try{
-    // 优先交给 AI 处理：生成场景图 + 保留原图
-    const res = await aiExtract(f);
-    sessionStorage.setItem('scene_img', res.scene_url);
-    sessionStorage.setItem('scene_img_orig', res.orig_url);
-    sessionStorage.setItem('scene_img_type', 'url');
+    // 本地压缩原图，用于确认页立即显示
+    const dataUrl = await compressImage(f);
+    sessionStorage.setItem('scene_img', dataUrl);           // 当前显示图（先为原图）
+    sessionStorage.setItem('scene_img_orig', dataUrl);      // 原图引用（本地）
+    sessionStorage.setItem('scene_img_type', 'data');
+    sessionStorage.removeItem('scene_task_id');
     sessionStorage.removeItem('scene_ai_failed');
+    // 提交 AI 后台处理（接口秒回，不阻塞跳转）
+    try{
+      const res = await aiExtract(f);
+      sessionStorage.setItem('scene_task_id', res.task_id);
+    }catch(e){
+      sessionStorage.setItem('scene_ai_failed', '1');
+    }
     location.href = '创建场景-确认入库.html';
   }catch(e){
-    // AI 不可用时降级：本地压缩原图
-    try{
-      const dataUrl = await compressImage(f);
-      sessionStorage.setItem('scene_img', dataUrl);
-      sessionStorage.removeItem('scene_img_orig');
-      sessionStorage.setItem('scene_img_type', 'data');
-      sessionStorage.setItem('scene_ai_failed', '1');
-      location.href = '创建场景-确认入库.html';
-    }catch(e2){
-      toast('图片处理失败: '+e2.message, 'err');
-      $('nextBtn').textContent = '下一步 →';
-      $('nextBtn').disabled = false;
-    }
+    toast('图片处理失败: '+e.message, 'err');
+    $('nextBtn').textContent = '下一步 →';
+    $('nextBtn').disabled = false;
   }
 });
-/* 调后端 AI 提取场景图 */
+/* 提交 AI 后台提取任务（立即返回 task_id） */
 async function aiExtract(file){
   const fd = new FormData();
   fd.append('image', file);
