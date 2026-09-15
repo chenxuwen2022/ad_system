@@ -291,7 +291,7 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
   const box = $('previewBox');
   const orig = sessionStorage.getItem('scene_img_orig');
   const aiFailed = sessionStorage.getItem('scene_ai_failed');
-  window.__scene = { img, type, orig };
+  window.__scene = { img, type, orig, scene_url:'' };
   if(aiFailed){
     const w = $('aiWarn');
     if(w) w.innerHTML = '<span class="tag2" style="color:#ff9d45;border-color:#ff9d45">AI 不可用</span>当前显示上传原图，AI 服务恢复后可重新整理生成场景图。';
@@ -310,8 +310,47 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
     const si = $('sceneImg');
     if(!si || !s.img) return;
     if(tab.textContent.trim()==='原图' && s.orig) si.src = s.orig;
-    else si.src = s.img;
+    else si.src = s.scene_url || s.img;
   });
+})();
+
+/* AI 后台处理轮询：完成后自动显示场景图 */
+(async function pollAI(){
+  const tid = sessionStorage.getItem('scene_task_id');
+  if(!tid) return;
+  const w = $('aiWarn');
+  if(w) w.innerHTML = '<span class="tag2" style="color:#7ea0ff">AI 处理中</span>场景图正在后台生成，完成后自动显示，可继续填写资料…';
+  for(let i=0;i<80;i++){
+    await new Promise(r=>setTimeout(r, 3000));
+    try{
+      const r = await fetch('/api/scene/ai-status?task_id='+encodeURIComponent(tid));
+      const j = await r.json();
+      if(j.code!==0) continue;
+      const d = j.data;
+      if(d.status==='done' && d.scene_url){
+        sessionStorage.removeItem('scene_task_id');
+        window.__scene.scene_url = d.scene_url;
+        sessionStorage.setItem('scene_img', d.scene_url);
+        sessionStorage.setItem('scene_img_type', 'url');
+        sessionStorage.removeItem('scene_ai_failed');
+        const si = $('sceneImg');
+        if(si){
+          si.src = d.scene_url;
+          document.querySelectorAll('.preview-tabs span').forEach(x=>x.classList.remove('on'));
+          const tabs = document.querySelectorAll('.preview-tabs span');
+          if(tabs[0]) tabs[0].classList.add('on');
+        }
+        if(w) w.innerHTML = '<span class="tag2">AI 处理</span>场景图已生成 ✓ 原图完整保留，可切换查看。';
+        return;
+      }
+      if(d.status==='failed'){
+        sessionStorage.removeItem('scene_task_id');
+        sessionStorage.setItem('scene_ai_failed','1');
+        if(w) w.innerHTML = '<span class="tag2" style="color:#ff9d45;border-color:#ff9d45">AI 不可用</span>场景图生成失败，当前显示原图：'+(d.error||'请检查AI服务');
+        return;
+      }
+    }catch(e){ /* 轮询失败继续重试 */ }
+  }
 })();
 
 /* 联动父页面 */
