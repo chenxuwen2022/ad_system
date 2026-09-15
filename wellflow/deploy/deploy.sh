@@ -13,11 +13,11 @@ SERVER_IP="${SERVER_IP:-192.168.110.254}"
 cd "$(dirname "$0")"
 
 echo "==> 1/4 校验 .env"
-if [ ! -f .env ]; then
-  echo "❌ 缺少 .env，请先创建（至少需要 POSTGRES_PASSWORD / LLM_OFOX_API_KEY / LAOZHANG_API_KEY）"
+if [ ! -f ../.env ]; then
+  echo "❌ 缺少 ../.env（wellflow/ 根目录下），请先创建（至少需要 POSTGRES_PASSWORD / LLM_OFOX_API_KEY / LAOZHANG_API_KEY）"
   exit 1
 fi
-grep -q "POSTGRES_PASSWORD" .env || { echo "❌ .env 缺少 POSTGRES_PASSWORD"; exit 1; }
+grep -q "POSTGRES_PASSWORD" ../.env || { echo "❌ ../.env 缺少 POSTGRES_PASSWORD"; exit 1; }
 
 echo "==> 2/4 构建镜像"
 docker compose build --no-cache
