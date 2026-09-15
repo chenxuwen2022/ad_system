@@ -353,7 +353,7 @@ async function load(){
     $('resultN').textContent = `${list.length} 个结果`;
     $('grid').innerHTML = list.length ? list.map(renderCard).join('')
       : '<div class="empty">没有匹配的资产，试试调整筛选或创建一个</div>';
-    document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openModal(b.dataset.edit));
+    document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openEditModal(b.dataset.edit));
     document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delAsset(b.dataset.del));
   }catch(e){ toast('加载失败: '+e.message, true); }
   $('loading').style.display = 'none';
@@ -483,6 +483,13 @@ function doSearch(){ state.q = $('qInput').value.trim(); load(); }
 $('qBtn').onclick = doSearch;
 $('qInput').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
 $('createBtn').onclick = ()=>openSceneModal();
+
+/* 编辑资产：iframe 加载编辑表单（截图样式） */
+function openEditModal(id){
+  const fr = $('sceneFrame');
+  fr.src = '/static/编辑资产.html?id=' + encodeURIComponent(id);
+  $('sceneMask').classList.add('open');
+}
 function openSceneModal(){
   const fr = $('sceneFrame');
   fr.src = fr.src;              // 每次打开重置（重新加载页面）
@@ -493,7 +500,7 @@ $('sceneMask').addEventListener('click', e=>{
 });
 window.addEventListener('message', ev=>{
   const d = ev.data || {};
-  if(d.type === 'asset-saved'){ $('sceneMask').classList.remove('open'); toast('场景已创建入库: '+d.id); load(); }
+  if(d.type === 'asset-saved'){ $('sceneMask').classList.remove('open'); toast('已保存: '+d.id); load(); }
   if(d.type === 'asset-close'){ $('sceneMask').classList.remove('open'); }
 });
 
