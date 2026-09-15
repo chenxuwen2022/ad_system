@@ -44,3 +44,19 @@ wellflow/uploads/
 
 # AI 场景处理产物
 static/scene_ai/
+
+# ===== 图片/视频素材一律不入库（用户要求：不上传图片到云效）=====
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.ico
+*.svg
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+static/assets/
