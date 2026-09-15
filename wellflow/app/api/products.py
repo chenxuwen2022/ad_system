@@ -119,7 +119,10 @@ def delete_brand(brand_id: int, db: Session = Depends(get_db)):
 # ============================================================================
 
 @router.get("/series", response_model=list[SeriesResponse], summary="列出系列（可按 brand_id 过滤）")
-def list_series(brand_id: int | None = None, db: Session = Depends(get_db)):
+def list_series(
+    brand_id: int | None = Query(None, description="按品牌 ID 过滤，不传则返回全部系列"),
+    db: Session = Depends(get_db),
+):
     from wellflow.app.models.asset_models import ProductSeries
     repo = SeriesRepo(db)
     if brand_id:
@@ -165,11 +168,11 @@ def delete_series(series_id: int, db: Session = Depends(get_db)):
 
 @router.get("/skus", response_model=SkuListResponse, summary="列出 SKU（分页 + 搜索 + 过滤）")
 def list_skus(
-    search: str | None = Query(None, description="按名称/货号/SKU编号模糊搜索"),
-    brand_id: int | None = Query(None),
-    series_id: int | None = Query(None),
-    page: int = 1,
-    page_size: int = 20,
+    search: str | None = Query(None, description="按 SKU 名称/货号/SKU 编号模糊搜索"),
+    brand_id: int | None = Query(None, description="按品牌 ID 精确过滤"),
+    series_id: int | None = Query(None, description="按系列 ID 精确过滤"),
+    page: int = Query(1, description="当前页码，从 1 开始"),
+    page_size: int = Query(20, description="每页条数，默认 20"),
     db: Session = Depends(get_db),
 ):
     if page < 1:
