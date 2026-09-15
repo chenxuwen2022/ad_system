@@ -191,13 +191,13 @@ const DIMS = {
   '背景风格': ['极简','高级','自然','温馨','生活化','户外','专业','科技','潮流','轻奢','都市'],
 };
 const DIM_ORDER = ['空间类型','地域环境','季节','天气','背景风格'];
-// 初始选中（示例）
+// 初始选中（空，AI 识别后自动填充）
 const INIT_SEL = {
-  '空间类型': ['摄影棚','卫生间'],
-  '地域环境': ['城市','城市街头','郊外','森林','山地','雪地','湖泊','海边','沙漠'],
-  '季节': ['春','夏','秋','冬'],
-  '天气': ['阴天','雨天','雪天','雾','日落'],
-  '背景风格': ['极简','高级','自然','温馨','生活化','户外','专业','科技','潮流','轻奢','都市'],
+  '空间类型': [],
+  '地域环境': [],
+  '季节': [],
+  '天气': [],
+  '背景风格': [],
 };
 let sel = JSON.parse(JSON.stringify(INIT_SEL));
 
@@ -365,6 +365,22 @@ function hideAiLoading(){
       const j = await r.json();
       if(j.code!==0) continue;
       const d = j.data;
+      // 应用 AI 识别的标签（补选，用户手选的保留）
+      if(d.dims && typeof d.dims==='object'){
+        let changed = false;
+        DIM_ORDER.forEach(k=>{
+          const ai = d.dims[k] || [];
+          if(ai.length){
+            const cur = sel[k] || (sel[k]=[]);
+            ai.forEach(v=>{ if(!cur.includes(v)){ cur.push(v); changed=true; } });
+          }
+        });
+        if(changed){
+          refreshAll();
+          const w = $('aiWarn');
+          if(w && sessionStorage.getItem('scene_task_id')) w.innerHTML = '<span class="tag2" style="color:#7ea0ff">AI 处理</span>已识别图片标签并自动选中，可修改；场景图后台生成中…';
+        }
+      }
       if(d.status==='done' && d.scene_url){
         sessionStorage.removeItem('scene_task_id');
         window.__scene.scene_url = d.scene_url;
