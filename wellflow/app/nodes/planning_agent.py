@@ -14,7 +14,7 @@ import re
 from typing import Any
 
 from wellflow.app.llm.factory import get_llm_client
-from wellflow.app.prompt.constant import PLANNING_AGENT_SYSTEM_PROMPT
+from wellflow.app.prompt.constant import GENERATE_IMAGE_PROMPT
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -92,7 +92,7 @@ async def stream_plan(
     client = get_llm_client("vlm")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
 
-    system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
+    system_prompt = GENERATE_IMAGE_PROMPT
 
     # user message
     user_text_parts = [f"【识别报告】\n{product_insight}"]
@@ -156,7 +156,7 @@ async def plan(
     client = get_llm_client("vlm")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
 
-    system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
+    system_prompt = GENERATE_IMAGE_PROMPT
 
     # user message
     user_text_parts = [f"【识别报告】\n{product_insight}"]
