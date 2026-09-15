@@ -4,6 +4,9 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    # .env 放在 wellflow/ 根目录，deploy/ 只是部署入口
+    env_file:
+      - ../.env
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -19,8 +22,12 @@ services:
       retries: 12
 
   app:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    env_file:
+      - ../.env
     depends_on:
       db:
         condition: service_healthy
