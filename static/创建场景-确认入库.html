@@ -37,6 +37,12 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0
 .preview-box .ph .t { font-size: 14px; font-weight: 600; }
 .preview-box .ph .s { font-size: 12px; margin-top: 4px; }
 .preview-box img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  /* AI 生成中等待遮罩 */
+  .ai-loading { position: absolute; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; background: rgba(14,17,23,.72); backdrop-filter: blur(2px); }
+  .ai-loading .spin { width: 46px; height: 46px; border-radius: 50%; border: 4px solid #2b5bff33; border-top-color: #2b5bff; animation: aiSpin 1s linear infinite; }
+  .ai-loading .lt { font-size: 14px; font-weight: 600; color: #e8eaed; }
+  .ai-loading .ls { font-size: 11px; color: #8b949e; }
+  @keyframes aiSpin { to { transform: rotate(360deg); } }
 .preview-note { font-size: 11px; color: #8b949e; line-height: 1.7; margin-bottom: 12px; }
 .preview-ops { display: flex; gap: 8px; }
 .preview-ops button { flex: 1; padding: 7px 0; border-radius: 8px; font-size: 12px; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; cursor: pointer; }
@@ -300,7 +306,11 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
     box.innerHTML = `<img id="sceneImg" src="${img}" alt="场景图"
       onerror="this.outerHTML='<div class=\\'ph\\'><div class=\\'i\\'>⚠️</div><div class=\\'t\\'>图片加载失败</div></div>'">`;
   }
-})();
+  // AI 任务进行中：图片区叠加等待显示
+  if(sessionStorage.getItem('scene_task_id') && !sessionStorage.getItem('scene_ai_failed')){
+    window.__scene.ai_pending = true;
+    showAiLoading();
+  }})();
 /* 页签切换：场景图 / 原图 */
 (function(){
   const s = window.__scene || {};
@@ -309,10 +319,34 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
     tab.classList.add('on');
     const si = $('sceneImg');
     if(!si || !s.img) return;
-    if(tab.textContent.trim()==='原图' && s.orig) si.src = s.orig;
-    else si.src = s.scene_url || s.img;
+    if(tab.textContent.trim()==='原图' && s.orig){
+      si.src = s.orig;
+      hideAiLoading();
+    }else{
+      si.src = s.scene_url || s.img;
+      if(s.ai_pending) showAiLoading(); else hideAiLoading();
+    }
   });
 })();
+
+/* 全局：AI 生成中等待层控制 */
+function showAiLoading(){
+  const bx = $('previewBox');
+  if(!bx) return;
+  let ld = bx.querySelector('.ai-loading');
+  if(!ld){
+    ld = document.createElement('div');
+    ld.className = 'ai-loading';
+    ld.innerHTML = '<div class="spin"></div><div class="lt">AI 场景图生成中…</div><div class="ls">后台处理约 30~60 秒，可先填写资料</div>';
+    bx.appendChild(ld);
+  }
+  ld.style.display = 'flex';
+}
+function hideAiLoading(){
+  const bx = $('previewBox');
+  const ld = bx && bx.querySelector('.ai-loading');
+  if(ld) ld.style.display = 'none';
+}
 
 /* AI 后台处理轮询：完成后自动显示场景图 */
 (async function pollAI(){
@@ -330,6 +364,8 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
       if(d.status==='done' && d.scene_url){
         sessionStorage.removeItem('scene_task_id');
         window.__scene.scene_url = d.scene_url;
+        window.__scene.ai_pending = false;
+        hideAiLoading();
         sessionStorage.setItem('scene_img', d.scene_url);
         sessionStorage.setItem('scene_img_type', 'url');
         sessionStorage.removeItem('scene_ai_failed');
@@ -345,6 +381,8 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
       }
       if(d.status==='failed'){
         sessionStorage.removeItem('scene_task_id');
+        window.__scene.ai_pending = false;
+        hideAiLoading();
         sessionStorage.setItem('scene_ai_failed','1');
         if(w) w.innerHTML = '<span class="tag2" style="color:#ff9d45;border-color:#ff9d45">AI 不可用</span>场景图生成失败，当前显示原图：'+(d.error||'请检查AI服务');
         return;
