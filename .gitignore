@@ -1,18 +1,30 @@
 # ===== Python =====
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# ===== 虚拟环境 =====
+venv/
 .venv/
+env/
 
 # ===== IDE / 系统 =====
 .idea/
+.vscode/
 .DS_Store
 Thumbs.db
 
 # ===== 运行时数据与敏感信息（禁止入库）=====
-token_store.db
-*.db
 .env
+*.db
 *.log
+token_store.db
 media_storage/
 upload_materials/
 
