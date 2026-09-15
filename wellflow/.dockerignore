@@ -25,11 +25,29 @@ venv/
 *.swo
 .DS_Store
 
-# Build / deploy scaffolding（镜像里不需要）
+# 项目根非 WellFlow 的广告投放子系统代码（不需要打进镜像）
 deploy/
-scripts/
-README.md
+routes/
+static/
+templates/
+assets_data/
+*.db
+*.log
+media_storage/
+upload_materials/
+token_manager.py
+douyin_api.py
+db.py
+file_service.py
+models.py
+main.py
+config.py
+requirements.txt
+
+# WellFlow 内部排除（不打进镜像）
+wellflow/deploy/
+wellflow/scripts/
+wellflow/README.md
 
 # Runtime data（落在宿主卷，不打进镜像）
-uploads/
-*.log
+wellflow/uploads/
