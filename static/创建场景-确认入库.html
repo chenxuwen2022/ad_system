@@ -194,7 +194,7 @@ const INIT_SEL = {
 let sel = JSON.parse(JSON.stringify(INIT_SEL));
 
 function $(id){ return document.getElementById(id); }
-function toast(msg){ const t=$('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', 2400); }
+function toast(msg, err){ const t=$('toast'); t.textContent=msg; t.style.background=err?'#c23b3b':'#1f8b4c'; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', 2400); }
 
 /* 渲染多选维度 */
 function renderDims(){
@@ -294,9 +294,38 @@ function notifyParent(type, extra){
   }
 }
 $('changeImg').addEventListener('click', ()=>location.href='创建场景.html');
-$('confirmBtn').onclick = ()=>{
-  notifyParent('asset-saved', {id:'WF-S011'});
-  toast('✅ 场景已入库');
+/* 真正提交入库 */
+async function submitAsset(){
+  const name = document.querySelector('.name-input').value.trim() || ('场景' + Date.now().toString().slice(-6));
+  const fd = new FormData();
+  fd.append('category','scene');
+  fd.append('name', name);
+  fd.append('tags','');
+  fd.append('scope','mine');
+  fd.append('dims', JSON.stringify(sel));
+  const img = sessionStorage.getItem('scene_img');
+  const type = sessionStorage.getItem('scene_img_type') || '';
+  if(img && type==='data'){
+    const blob = await (await fetch(img)).blob();
+    fd.append('image', blob, 'scene.png');
+  } else if(img && type==='url'){
+    fd.append('image_url', img);
+  }
+  const r = await fetch('/api/assets', {method:'POST', body:fd});
+  const j = await r.json().catch(()=>({code:-1, msg:'响应解析失败'}));
+  if(j.code!==0) throw new Error(j.msg||'入库失败');
+  return j.data;
+}
+$('confirmBtn').onclick = async ()=>{
+  $('confirmBtn').disabled = true;
+  try{
+    const data = await submitAsset();
+    notifyParent('asset-saved', {id:data.id});
+    toast('✅ 场景已入库');
+  }catch(e){
+    toast('入库失败: ' + (e.message||e), true);
+    $('confirmBtn').disabled = false;
+  }
 };
 $('cancelBtn').onclick = $('closeBtn').onclick = ()=>{
   notifyParent('asset-close');

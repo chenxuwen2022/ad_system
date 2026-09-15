@@ -113,9 +113,13 @@ def list_assets(category: str = "", scope: str = "", q: str = "", dims: str = ""
     if dims:
         try:
             fdims = json.loads(dims)
+            norm = {}
             for k, v in fdims.items():
-                if v:
-                    items = [it for it in items if str(it.get("dims", {}).get(k, "")) == str(v)]
+                if not v:
+                    continue
+                norm[k] = [str(x) for x in (v if isinstance(v, list) else [v])]
+            if norm:
+                items = [it for it in items if _dims_match(it.get("dims", {}), norm)]
         except Exception:
             pass
     items.sort(key=lambda x: x.get("id", ""))
@@ -190,10 +194,37 @@ def delete_asset(asset_id: str):
     return {"code": 0, "data": {"deleted": asset_id}}
 
 
+def _dims_match(ad: dict, fd: dict) -> bool:
+    """多值维度匹配：查询值集合与资产值有任一交集即命中"""
+    for k, vals in fd.items():
+        av = ad.get(k)
+        if isinstance(av, str):
+            av = [av]
+        if not av:
+            return False
+        avs = {str(x) for x in av}
+        if not any(str(x) in avs for x in vals):
+            return False
+    return True
+
+
 def _parse_dims(raw: str) -> dict:
+    """维度值统一规范为 list（兼容单值 string）"""
     try:
         d = json.loads(raw) if raw else {}
-        return d if isinstance(d, dict) else {}
+        if not isinstance(d, dict):
+            return {}
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, list):
+                arr = [str(x).strip() for x in v if str(x).strip()]
+            elif v not in ("", None):
+                arr = [str(v).strip()]
+            else:
+                arr = []
+            if arr:
+                out[k] = arr
+        return out
     except Exception:
         return {}
 

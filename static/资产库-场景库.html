@@ -33,9 +33,12 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 
 .dims { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
 .dim-wrap { position: relative; }
-.dimbtn { padding: 5px 12px; border-radius: 6px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; border: 1px solid transparent; }
+.dimbtn { padding: 5px 12px; border-radius: 999px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; border: 1px solid #30363d; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dimbtn .arrow { color: #8b949e; margin-left: 4px; }
-.dimbtn.sel { background: #2b5bff; color: #fff; }
+.dimbtn.sel { background: #b8e27a; color: #151b0d; border-color: #b8e27a; font-weight: 600; }
+.dim-panel .panel-ops { display: flex; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 11px; color: #8b949e; }
+.dim-panel .panel-ops span { cursor: pointer; }
+.dim-panel .panel-ops span:hover { color: #ffd83d; }
 .dim-clear { color: #8b949e; font-size: 12px; cursor: pointer; text-decoration: underline; }
 .dim-clear:hover { color: #ffd83d; }
 .dim-panel { position: absolute; top: 32px; left: 0; z-index: 20; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px; min-width: 200px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none; }
@@ -257,9 +260,11 @@ function renderDims(){
   const defs = DIM_DEFS[state.cat] || {};
   const keys = Object.keys(defs);
   $('dimsBar').innerHTML = keys.map(k=>{
-    const v = state.dims[k];
-    return `<div class="dim-wrap"><button class="dimbtn ${v?'sel':''}" data-dim="${esc(k)}">${esc(k)}${v?': '+esc(v):''}<span class="arrow">▾</span></button>
-      <div class="dim-panel" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${x===v?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div><div class="reset">重置该维度</div></div></div>`;
+    const arr = state.dims[k] || [];
+    const txt = arr.length ? arr.map(v=>`${k}/${v}`).join('、') : k;
+    return `<div class="dim-wrap"><button class="dimbtn ${arr.length?'sel':''}" data-dim="${esc(k)}" title="${esc(txt)}">${esc(txt)}<span class="arrow">▾</span></button>
+      <div class="dim-panel" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${arr.includes(x)?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div>
+      <div class="panel-ops"><span class="all">全选</span><span class="reset">重置该维度</span></div></div></div>`;
   }).join('') + `<div class="dim-clear" id="dimClear">清空筛选</div>`;
   $('dimsBar').querySelectorAll('.dimbtn').forEach(b=>b.onclick=e=>{
     e.stopPropagation();
@@ -273,10 +278,14 @@ function renderDims(){
     p.querySelectorAll('.val').forEach(v=>v.onclick=()=>{
       const k = p.dataset.panel;
       const val = v.dataset.val;
-      if(state.dims[k] === val) delete state.dims[k]; else state.dims[k] = val;
-      p.classList.remove('open'); load();
+      const arr = state.dims[k] || (state.dims[k]=[]);
+      const i = arr.indexOf(val);
+      if(i>=0) arr.splice(i,1); else arr.push(val);
+      if(!arr.length) delete state.dims[k];
+      load();
     });
-    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; p.classList.remove('open'); load(); };
+    p.querySelector('.all').onclick=()=>{ state.dims[p.dataset.panel] = [...defs[p.dataset.panel]]; load(); };
+    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; load(); };
   });
   const clear = $('dimClear');
   if(clear) clear.onclick = ()=>{ state.dims={}; load(); };
@@ -285,7 +294,10 @@ function renderDims(){
 
 /* ── 渲染卡片 ── */
 function renderCard(it){
-  const dimsTxt = Object.entries(it.dims||{}).filter(([k,v])=>v).map(([k,v])=>`${k}·${v}`).join(' · ');
+  const dimsTxt = Object.entries(it.dims||{}).filter(([k,v])=>Array.isArray(v)?v.length:v).map(([k,v])=>{
+    const arr = Array.isArray(v)?v:[v];
+    return `${k}·${arr.join('、')}`;
+  }).join(' · ');
   const tagsTxt = [it.tags, dimsTxt].filter(Boolean).join(' · ');
   const imgHtml = it.image
     ? `<img src="${esc(it.image)}" alt="">`
@@ -380,14 +392,11 @@ function openModal(id){
 function renderDimForm(prefill){
   const cat = $('fCategory').value;
   const defs = DIM_DEFS[cat] || {};
-  $('fDims').innerHTML = Object.entries(defs).map(([k,vals])=>
-    `<div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">${k}</label>
-     <select data-dimkey="${k}"><option value="">不限</option>${vals.map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('')}</select></div>`
-  ).join('');
-  for(const sel of $('fDims').querySelectorAll('select')){
-    const k = sel.dataset.dimkey;
-    if(prefill && prefill[k]) sel.value = prefill[k];
-  }
+  $('fDims').innerHTML = Object.entries(defs).map(([k,vals])=>{
+    const cur = (prefill && prefill[k]) ? (Array.isArray(prefill[k]) ? prefill[k] : [prefill[k]]) : [];
+    return `<div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">${k}</label>
+     <select data-dimkey="${k}"><option value="">不限</option>${vals.map(v=>`<option value="${esc(v)}" ${cur.includes(v)?'selected':''}>${esc(v)}</option>`).join('')}</select></div>`
+  }).join('');
 }
 $('fCategory').onchange = renderDimForm;
 
