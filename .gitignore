@@ -42,3 +42,6 @@ _sample_export.html
 # ===== 商拍子系统（WellFlow）=====
 uploads/
 wellflow/.env
+
+# AI 场景处理产物
+static/scene_ai/

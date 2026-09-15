@@ -155,19 +155,39 @@ $('uploadBox').addEventListener('click', ()=>$('fileInput').click());
 $('fileInput').addEventListener('change', async ()=>{
   const f = $('fileInput').files[0];
   if(!f) return;
-  $('nextBtn').textContent = '处理中…';
+  $('nextBtn').textContent = 'AI 处理中…（约30秒）';
   $('nextBtn').disabled = true;
   try{
-    const dataUrl = await compressImage(f);
-    sessionStorage.setItem('scene_img', dataUrl);
-    sessionStorage.setItem('scene_img_type', 'data');
+    // 优先交给 AI 处理：生成场景图 + 保留原图
+    const res = await aiExtract(f);
+    sessionStorage.setItem('scene_img', res.scene_url);
+    sessionStorage.setItem('scene_img_orig', res.orig_url);
+    sessionStorage.setItem('scene_img_type', 'url');
     location.href = '创建场景-确认入库.html';
   }catch(e){
-    toast('图片处理失败: '+e.message, 'err');
-    $('nextBtn').textContent = '下一步 →';
-    $('nextBtn').disabled = false;
+    // AI 不可用时降级：本地压缩原图
+    try{
+      const dataUrl = await compressImage(f);
+      sessionStorage.setItem('scene_img', dataUrl);
+      sessionStorage.removeItem('scene_img_orig');
+      sessionStorage.setItem('scene_img_type', 'data');
+      location.href = '创建场景-确认入库.html';
+    }catch(e2){
+      toast('图片处理失败: '+e2.message, 'err');
+      $('nextBtn').textContent = '下一步 →';
+      $('nextBtn').disabled = false;
+    }
   }
 });
+/* 调后端 AI 提取场景图 */
+async function aiExtract(file){
+  const fd = new FormData();
+  fd.append('image', file);
+  const r = await fetch('/api/scene/ai-extract', {method:'POST', body:fd});
+  const j = await r.json().catch(()=>({code:-1, msg:'响应解析失败'}));
+  if(j.code!==0) throw new Error(j.msg||'AI处理失败');
+  return j.data;
+}
 /* 压缩图片（最长边1200，jpeg0.8），避免 sessionStorage 超限 */
 function compressImage(file, maxSize){
   maxSize = maxSize || 1200;
