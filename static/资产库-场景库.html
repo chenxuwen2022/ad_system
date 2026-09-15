@@ -35,7 +35,7 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 .dim-wrap { position: relative; }
 .dimbtn { padding: 5px 12px; border-radius: 999px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; border: 1px solid #30363d; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dimbtn .arrow { color: #8b949e; margin-left: 4px; }
-.dimbtn.sel { background: #b8e27a; color: #151b0d; border-color: #b8e27a; font-weight: 600; }
+.dimbtn.sel { background: #ffd83d; color: #151b0d; border-color: #ffd83d; font-weight: 600; }
 .dim-panel .panel-ops { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 12px; color: #8b949e; }
 .dim-panel .panel-ops .reset { cursor: pointer; padding: 4px 10px; border-radius: 6px; background: #21262d; color: #c9d1d9; }
 .dim-panel .panel-ops .reset:hover { background: #30363d; }
@@ -45,9 +45,9 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 .dim-clear:hover { color: #ffd83d; }
 .dim-panel { position: absolute; top: 32px; left: 0; z-index: 20; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px; min-width: 200px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none; }
 .dim-panel.open { display: block; }
-.dim-panel .vals { display: flex; flex-wrap: wrap; gap: 6px; }
+.dim-panel .vals { display: grid; grid-template-columns: repeat(3, minmax(88px, auto)); gap: 6px; }
 .dim-panel .val { padding: 4px 10px; border-radius: 6px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; }
-.dim-panel .val.on { background: #2b5bff; color: #fff; }
+.dim-panel .val.on { background: #ffd83d; color: #151b0d; font-weight: 600; }
 .dim-panel .reset { margin-top: 8px; font-size: 11px; color: #8b949e; cursor: pointer; text-align: right; }
 
 .resultbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
