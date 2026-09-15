@@ -19,6 +19,7 @@ AI_KEY = os.environ.get(
     "AI_KEY", "sk-VOt0ZKEhTKeYybPQeONFwQEsuCmlI7Mgrv5tuiID3E7tKO9Y"
 )
 AI_MODEL = os.environ.get("AI_MODEL", "gpt-image-2")
+AI_MODELS = [AI_MODEL, "gpt-image-2.5-flare", "mai-image-2.5"]  # 自动降级链
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SCENE_AI_DIR = BASE_DIR / "static" / "scene_ai"
@@ -69,45 +70,49 @@ def _multipart(fields):
 
 
 def _run_ai(task: dict, raw: bytes, prompt: str):
-    """后台线程：调 gpt-image-2 生成场景图，更新任务状态"""
-    try:
-        body, boundary = _multipart([
-            ("model", AI_MODEL),
-            ("image", raw),
-            ("prompt", prompt),
-            ("size", "1024x1024"),
-            ("quality", "medium"),
-            ("output_format", "png"),
-        ])
-        req = urllib.request.Request(
-            AI_BASE + "/images/edits",
-            data=body,
-            method="POST",
-            headers={
-                "Authorization": "Bearer " + AI_KEY,
-                "Content-Type": "multipart/form-data; boundary=" + boundary,
-            },
-        )
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            r = json.loads(resp.read().decode("utf-8"))
-        data = (r.get("data") or [{}])[0]
-        b64 = data.get("b64_json", "")
-        if not b64:
-            raise RuntimeError("AI 未返回图片结果")
-        scene_bytes = base64.b64decode(b64)
-        scene_name = f"scene_{task['task_id']}.png"
-        (SCENE_AI_DIR / scene_name).write_bytes(scene_bytes)
-        task["scene_url"] = f"/static/scene_ai/{scene_name}"
-        task["status"] = "done"
-        task["usage"] = r.get("usage", {})
-    except urllib.error.HTTPError as e:
-        task["status"] = "failed"
-        task["error"] = f"AI 服务错误 {e.code}: {e.read().decode('utf-8','ignore')[:300]}"
-    except Exception as e:
-        task["status"] = "failed"
-        task["error"] = str(e)[:300]
-    finally:
-        _save_task(task)
+    """后台线程：按降级链依次尝试图像模型生成场景图，更新任务状态"""
+    errors = []
+    for model in AI_MODELS:
+        try:
+            body, boundary = _multipart([
+                ("model", model),
+                ("image", raw),
+                ("prompt", prompt),
+                ("size", "1024x1024"),
+                ("quality", "medium"),
+                ("output_format", "png"),
+            ])
+            req = urllib.request.Request(
+                AI_BASE + "/images/edits",
+                data=body,
+                method="POST",
+                headers={
+                    "Authorization": "Bearer " + AI_KEY,
+                    "Content-Type": "multipart/form-data; boundary=" + boundary,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=180) as resp:
+                r = json.loads(resp.read().decode("utf-8"))
+            data = (r.get("data") or [{}])[0]
+            b64 = data.get("b64_json", "")
+            if not b64:
+                raise RuntimeError("AI 未返回图片结果")
+            scene_bytes = base64.b64decode(b64)
+            scene_name = f"scene_{task['task_id']}.png"
+            (SCENE_AI_DIR / scene_name).write_bytes(scene_bytes)
+            task["scene_url"] = f"/static/scene_ai/{scene_name}"
+            task["status"] = "done"
+            task["usage"] = r.get("usage", {})
+            task["model"] = model
+            _save_task(task)
+            return
+        except urllib.error.HTTPError as e:
+            errors.append(f"{model}: HTTP {e.code} {e.read().decode('utf-8','ignore')[:120]}")
+        except Exception as e:
+            errors.append(f"{model}: {str(e)[:120]}")
+    task["status"] = "failed"
+    task["error"] = "；".join(errors)[:500]
+    _save_task(task)
 
 
 @router.post("/ai-extract")
