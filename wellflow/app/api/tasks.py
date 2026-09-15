@@ -24,11 +24,13 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
+from wellflow.app.api.utils import ok, StandardResponse
 from wellflow.app.models.task_models import TaskPhase
 from wellflow.app.repositories.task_repo import TaskRepo
 from wellflow.app.schemas.task_schemas import (
     TaskListResponse,
     TaskListItem,
+    TaskInfoResponse,
 )
 
 
@@ -570,7 +572,7 @@ async def resume_task(
 # ===========================================================================
 
 
-@router.get("", response_model=TaskListResponse, summary="列出任务（分页）")
+@router.get("", response_model=StandardResponse[TaskListResponse], summary="列出任务（分页）")
 def list_tasks(
     page: int = 1,
     page_size: int = 20,
@@ -599,12 +601,12 @@ def list_tasks(
             updated_at=t.updated_at.isoformat(),
         ))
 
-    return TaskListResponse(
+    return ok(TaskListResponse(
         items=list_items,
         total=total,
         page=page,
         page_size=page_size,
-    )
+    ))
 
 
 async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
@@ -622,7 +624,7 @@ async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
         return None
 
 
-@router.get("/{task_id}", summary="查询任务状态")
+@router.get("/{task_id}", response_model=StandardResponse[TaskInfoResponse], summary="查询任务状态")
 async def get_task(task_id: str, db: Session = Depends(get_db)):
     """查询单任务状态（从 DB + LangGraph checkpoint）。保留给旧版客户端用。"""
     from wellflow.app.schemas.task_schemas import TaskInfoResponse
@@ -654,7 +656,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             item["variant_index"] = img.variant_index
             output_images.append(item)
 
-    return TaskInfoResponse(
+    return ok(TaskInfoResponse(
         task_id=task.task_id,
         phase=task.phase,
         request=task.request_json or {},
@@ -669,7 +671,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         output_images=output_images,
         created_at=task.created_at.isoformat(),
         updated_at=task.updated_at.isoformat(),
-    )
+    ))
 
 
 # ===========================================================================
@@ -677,7 +679,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 # ===========================================================================
 
 
-@router.delete("/{task_id}", summary="删除任务及所有关联数据")
+@router.delete("/{task_id}", response_model=StandardResponse[dict], summary="删除任务及所有关联数据")
 async def delete_task(task_id: str):
     """删除指定任务的全部数据：DB 所有子表记录 + 主表 + uploads/{task_id}/ 磁盘文件 + LangGraph checkpoint。
 
@@ -723,4 +725,4 @@ async def delete_task(task_id: str):
             print(f"[delete_task] ⚠️ checkpoint 清理失败（不影响主流程）: {e}", flush=True)
 
     print(f"[delete_task] 🗑️ 任务已彻底删除 task_id={task_id}", flush=True)
-    return {"task_id": task_id, "deleted": True}
+    return ok({"task_id": task_id, "deleted": True})

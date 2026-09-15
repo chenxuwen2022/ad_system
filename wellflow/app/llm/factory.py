@@ -40,13 +40,16 @@ def get_llm_client(role: ModelRole, *, model_override: str | None = None) -> Bas
     """拿到指定角色的 LLM 客户端。
 
     路由规则（统一走 new-api 中转网关）：
-    ┌─────────┬───────────────────────────────────────────────────┐
-    │ vlm     │ OpenAI 协议 → OfoxGateway（/v1/chat/completions）│
-    │ image   │ multipart → LaozhangGateway（/v1/images/edits） │
-    └─────────┴───────────────────────────────────────────────────┘
+    ┌─────────┬──────────────────────────────────────────────────────────────────────┐
+    │ vlm     │ OfoxGateway（/v1/chat/completions + chat_with_images）               │
+    │ image   │ OfoxGateway（继承 BaseLLMClient.generate_image 完整分流逻辑）       │
+    │         │   GPT 图生图 → _generate_image_via_edits multipart                 │
+    │         │   GPT 文生图 → /v1/responses + image_generation tool               │
+    │         │   非 GPT     → _generate_image_via_generations JSON                │
+    └─────────┴──────────────────────────────────────────────────────────────────────┘
 
     Args:
-        role: 角色 —— "vlm" 多模态识别 / "image" 图像生成。
+        role: 角色 —— "vlm" 多模态识别 / "image" 图像生成 / "text" 纯文本。
         model_override: 临时覆盖模型名——Node 3 从 state 读用户在前端选的 image_model 时用。
     """
     if not settings.newapi_api_key:
@@ -56,26 +59,21 @@ def get_llm_client(role: ModelRole, *, model_override: str | None = None) -> Bas
     newapi_base = settings.newapi_base_url
     newapi_key = settings.newapi_api_key
 
-    if role == "image":
-        from wellflow.app.llm.laozhang_gateway import LaozhangGateway
-
-        print(f"[factory] → image → LaozhangGateway (new-api) model={model}", flush=True)
-        return LaozhangGateway(
-            base_url=newapi_base,
-            api_key=newapi_key,
-            model=model,
-            timeout=settings.image_timeout,
-            proxy_url=None,  # new-api 在局域网，不走代理
-        )
-
-    # vlm / 其他 role
+    # image 和 vlm 统一走 OfoxGateway（继承 BaseLLMClient 的 generate_image 完整分流）
+    # ── generate_image 自动分流：
+    #   - GPT 图生图（有 refs）    → _generate_image_via_edits  multipart
+    #   - GPT 文生图（无 refs）    → /v1/responses + image_generation tool
+    #   - 非 GPT 模型              → _generate_image_via_generations JSON + reference_images
+    # 以前固定 LaozhangGateway 重写 generate_image 只走 edits multipart，
+    # 纯文生图场景（无 refs）会 POST /images/edits 但没有 image 文件字段 → gpt-image-2 报错
     from wellflow.app.llm.ofox_gateway import OfoxGateway
 
-    print(f"[factory] → vlm → OfoxGateway (new-api) model={model}", flush=True)
+    is_image_role = (role == "image")
+    print(f"[factory] → {role} → OfoxGateway (new-api) model={model}", flush=True)
     return OfoxGateway(
         model=model,
         base_url=newapi_base,
         api_key=newapi_key,
-        timeout=settings.llm_timeout,
+        timeout=settings.image_timeout if is_image_role else settings.llm_timeout,
         proxy_url=None,  # new-api 在局域网，不走代理
     )

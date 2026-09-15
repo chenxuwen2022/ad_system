@@ -129,13 +129,17 @@ class SeriesRepo:
         # brand 迁移：修正 usage_count
         if new_brand_id is not None and new_brand_id != old_brand_id:
             obj.brand_id = new_brand_id
+            # 先 flush，让 brand_id 变更持久化，后续 COUNT 查询才能看到最新数据
+            self.db.flush()
+
             old_brand = self.db.get(ProductBrand, old_brand_id)
             if old_brand:
                 old_brand.sku_count -= obj.sku_count
+                old_brand.series_count = max(0, old_brand.series_count - 1)
             new_brand = self.db.get(ProductBrand, new_brand_id)
             if new_brand:
                 new_brand.sku_count += obj.sku_count
-                # series_count 重新统计
+                # series_count 重新统计（flush 之后查才准确）
                 new_brand.series_count = self.db.execute(
                     select(func.count(ProductSeries.id)).where(ProductSeries.brand_id == new_brand_id)
                 ).scalar() or 0
@@ -177,7 +181,7 @@ class SkuRepo:
         series_id: int,
         brand_id: int,
         name: str,
-        style_no: str | None = None,
+        style_no: str,
         category: str | None = None,
         color: str | None = None,
         material: str | None = None,
@@ -229,6 +233,14 @@ class SkuRepo:
 
         self.db.flush()
         return obj
+
+    def find_duplicate(self, series_id: int, style_no: str, name: str) -> ProductSku | None:
+        """按 (series_id, style_no, name) 三元组查重，精确匹配。"""
+        return self.db.query(ProductSku).filter(
+            ProductSku.series_id == series_id,
+            ProductSku.style_no == style_no,
+            ProductSku.name == name,
+        ).first()
 
     def update(self, sku_id: int, **kwargs: Any) -> ProductSku:
         obj = self.get(sku_id)

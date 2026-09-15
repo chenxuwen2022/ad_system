@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Depends, Query
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db
+from wellflow.app.api.utils import ok, StandardResponse
 from wellflow.app.repositories.product_repo import BrandRepo, SeriesRepo, SkuRepo
 from wellflow.app.schemas.asset_schemas import (
     BrandResponse, BrandUpdateRequest,
@@ -43,7 +44,7 @@ def _storage_uri_url(uri: str | None) -> str:
 # 导航树
 # ============================================================================
 
-@router.get("/nav", summary="左侧品牌/系列/SKU 导航树")
+@router.get("/nav", summary="左侧品牌/系列/SKU 导航树", response_model=StandardResponse[list[dict]])
 def get_nav(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     brand_repo = BrandRepo(db)
     series_repo = SeriesRepo(db)
@@ -59,7 +60,6 @@ def get_nav(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
             "children": [],
         }
         for s in series_list:
-            # 查该系列下的 SKU
             skus, _ = sku_repo.list(series_id=s.id, page_size=1000)
             series_node: dict[str, Any] = {
                 "type": "series", "id": s.id, "label": s.name,
@@ -71,29 +71,29 @@ def get_nav(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
             }
             brand_node["children"].append(series_node)
         result.append(brand_node)
-    return result
+    return ok(result)
 
 
 # ============================================================================
 # Brand
 # ============================================================================
 
-@router.get("/brands", response_model=list[BrandResponse], summary="列出所有品牌")
+@router.get("/brands", response_model=StandardResponse[list[BrandResponse]], summary="列出所有品牌")
 def list_brands(db: Session = Depends(get_db)):
     repo = BrandRepo(db)
-    return [_brand_to_dict(b) for b in repo.list()]
+    return ok([_brand_to_dict(b) for b in repo.list()])
 
 
-@router.get("/brands/{brand_id}", response_model=BrandResponse, summary="查询单个品牌")
+@router.get("/brands/{brand_id}", response_model=StandardResponse[BrandResponse], summary="查询单个品牌")
 def get_brand(brand_id: int, db: Session = Depends(get_db)):
     repo = BrandRepo(db)
     brand = repo.get(brand_id)
     if not brand:
         raise HTTPException(404, "品牌不存在")
-    return _brand_to_dict(brand)
+    return ok(_brand_to_dict(brand))
 
 
-@router.put("/brands/{brand_id}", response_model=BrandResponse, summary="更新品牌信息")
+@router.put("/brands/{brand_id}", response_model=StandardResponse[BrandResponse], summary="更新品牌信息")
 def update_brand(brand_id: int, body: BrandUpdateRequest, db: Session = Depends(get_db)):
     repo = BrandRepo(db)
     try:
@@ -101,24 +101,24 @@ def update_brand(brand_id: int, body: BrandUpdateRequest, db: Session = Depends(
         db.commit()
     except ValueError as e:
         raise HTTPException(404, str(e))
-    return _brand_to_dict(brand)
+    return ok(_brand_to_dict(brand))
 
 
-@router.delete("/brands/{brand_id}", summary="删除品牌（有系列时拒绝）")
+@router.delete("/brands/{brand_id}", response_model=StandardResponse[dict], summary="删除品牌（有系列时拒绝）")
 def delete_brand(brand_id: int, db: Session = Depends(get_db)):
     repo = BrandRepo(db)
-    ok, msg = repo.delete(brand_id)
-    if not ok:
+    ok_repo, msg = repo.delete(brand_id)
+    if not ok_repo:
         raise HTTPException(409, msg)
     db.commit()
-    return {"deleted": True, "brand_id": brand_id}
+    return ok({"deleted": True, "brand_id": brand_id})
 
 
 # ============================================================================
 # Series
 # ============================================================================
 
-@router.get("/series", response_model=list[SeriesResponse], summary="列出系列（可按 brand_id 过滤）")
+@router.get("/series", response_model=StandardResponse[list[SeriesResponse]], summary="列出系列（可按 brand_id 过滤）")
 def list_series(
     brand_id: int | None = Query(None, description="按品牌 ID 过滤，不传则返回全部系列"),
     db: Session = Depends(get_db),
@@ -129,19 +129,19 @@ def list_series(
         items = repo.list_by_brand(brand_id)
     else:
         items = list(db.query(ProductSeries).all())
-    return [_series_to_dict(s) for s in items]
+    return ok([_series_to_dict(s) for s in items])
 
 
-@router.get("/series/{series_id}", response_model=SeriesResponse, summary="查询单个系列")
+@router.get("/series/{series_id}", response_model=StandardResponse[SeriesResponse], summary="查询单个系列")
 def get_series(series_id: int, db: Session = Depends(get_db)):
     repo = SeriesRepo(db)
     series = repo.get(series_id)
     if not series:
         raise HTTPException(404, "系列不存在")
-    return _series_to_dict(series)
+    return ok(_series_to_dict(series))
 
 
-@router.put("/series/{series_id}", response_model=SeriesResponse, summary="更新系列（可迁移到其他品牌）")
+@router.put("/series/{series_id}", response_model=StandardResponse[SeriesResponse], summary="更新系列（可迁移到其他品牌）")
 def update_series(series_id: int, body: SeriesUpdateRequest, db: Session = Depends(get_db)):
     repo = SeriesRepo(db)
     try:
@@ -149,24 +149,24 @@ def update_series(series_id: int, body: SeriesUpdateRequest, db: Session = Depen
         db.commit()
     except ValueError as e:
         raise HTTPException(404, str(e))
-    return _series_to_dict(series)
+    return ok(_series_to_dict(series))
 
 
-@router.delete("/series/{series_id}", summary="删除系列（有 SKU 时拒绝）")
+@router.delete("/series/{series_id}", response_model=StandardResponse[dict], summary="删除系列（有 SKU 时拒绝）")
 def delete_series(series_id: int, db: Session = Depends(get_db)):
     repo = SeriesRepo(db)
-    ok, msg = repo.delete(series_id)
-    if not ok:
+    ok_repo, msg = repo.delete(series_id)
+    if not ok_repo:
         raise HTTPException(409, msg)
     db.commit()
-    return {"deleted": True, "series_id": series_id}
+    return ok({"deleted": True, "series_id": series_id})
 
 
 # ============================================================================
 # SKU
 # ============================================================================
 
-@router.get("/skus", response_model=SkuListResponse, summary="列出 SKU（分页 + 搜索 + 过滤）")
+@router.get("/skus", response_model=StandardResponse[SkuListResponse], summary="列出 SKU（分页 + 搜索 + 过滤）")
 def list_skus(
     search: str | None = Query(None, description="按 SKU 名称/货号/SKU 编号模糊搜索"),
     brand_id: int | None = Query(None, description="按品牌 ID 精确过滤"),
@@ -182,22 +182,22 @@ def list_skus(
     repo = SkuRepo(db)
     items, total = repo.list(search=search, brand_id=brand_id, series_id=series_id,
                              page=page, page_size=page_size)
-    return SkuListResponse(
+    return ok(SkuListResponse(
         items=[_sku_to_list_item(s, db) for s in items],
         total=total, page=page, page_size=page_size,
-    )
+    ))
 
 
-@router.get("/skus/{sku_id}", response_model=SkuDetailResponse, summary="查询 SKU 详情")
+@router.get("/skus/{sku_id}", response_model=StandardResponse[SkuDetailResponse], summary="查询 SKU 详情")
 def get_sku(sku_id: int, db: Session = Depends(get_db)):
     repo = SkuRepo(db)
     sku = repo.get(sku_id)
     if not sku:
         raise HTTPException(404, "SKU 不存在")
-    return _sku_to_detail(sku, db)
+    return ok(_sku_to_detail(sku, db))
 
 
-@router.post("/skus", response_model=SkuDetailResponse, summary="创建 SKU（品牌/系列自动 find-or-create）")
+@router.post("/skus", response_model=StandardResponse[SkuDetailResponse], summary="创建 SKU（品牌/系列自动 find-or-create）")
 def create_sku(body: SkuCreateRequest, db: Session = Depends(get_db)):
     brand_repo = BrandRepo(db)
     series_repo = SeriesRepo(db)
@@ -229,7 +229,20 @@ def create_sku(body: SkuCreateRequest, db: Session = Depends(get_db)):
     else:
         raise HTTPException(400, "必须提供 series_id 或 series_name 之一")
 
-    # 3. 创建 SKU
+    # 3. 查重（series + style_no + name 三元组）
+    existing = sku_repo.find_duplicate(series.id, body.style_no, body.name)
+    if existing:
+        db.rollback()  # 清理 brand/series get_or_create 的 flush 副作用
+        raise HTTPException(409, detail={
+            "message": "该商品已存在",
+            "sku_id": existing.id,
+            "sku_no": existing.sku_no,
+            "name": existing.name,
+            "style_no": existing.style_no,
+        })
+
+    # 4. 创建 SKU
+    from sqlalchemy.exc import IntegrityError
     try:
         sku = sku_repo.create(
             series_id=series.id,
@@ -247,15 +260,27 @@ def create_sku(body: SkuCreateRequest, db: Session = Depends(get_db)):
             images=[m.model_dump() for m in body.images],
         )
         db.commit()
+    except IntegrityError:
+        db.rollback()
+        # 并发竞争下 find_duplicate 没查到，但唯一约束拒绝了——重新查返回完整信息
+        dup = sku_repo.find_duplicate(series.id, body.style_no, body.name)
+        detail = {
+            "message": "该商品已存在",
+            "sku_id": dup.id if dup else None,
+            "sku_no": dup.sku_no if dup else None,
+            "name": dup.name if dup else body.name,
+            "style_no": dup.style_no if dup else body.style_no,
+        }
+        raise HTTPException(409, detail=detail)
     except Exception as e:
         db.rollback()
         raise HTTPException(400, f"创建失败: {e}")
 
     # 重新查一遍拿 brand/series 名称（repo.flush 了但没 commit，关系数据可能没完全加载）
-    return _sku_to_detail(sku, db)
+    return ok(_sku_to_detail(sku, db))
 
 
-@router.put("/skus/{sku_id}", response_model=SkuDetailResponse, summary="更新 SKU")
+@router.put("/skus/{sku_id}", response_model=StandardResponse[SkuDetailResponse], summary="更新 SKU")
 def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(get_db)):
     repo = SkuRepo(db)
     try:
@@ -263,17 +288,24 @@ def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(get_db
         db.commit()
     except ValueError as e:
         raise HTTPException(404, str(e))
-    return _sku_to_detail(sku, db)
+    except Exception as e:
+        db.rollback()
+        # 唯一约束冲突 → 409，其他 DB 错误 → 500
+        err_str = str(e)
+        if "UniqueViolation" in err_str or "unique constraint" in err_str:
+            raise HTTPException(409, detail={"message": "该商品已存在"})
+        raise HTTPException(400, f"更新失败: {e}")
+    return ok(_sku_to_detail(sku, db))
 
 
-@router.delete("/skus/{sku_id}", summary="删除 SKU（级联清理子表，不动品牌/系列）")
+@router.delete("/skus/{sku_id}", response_model=StandardResponse[dict], summary="删除 SKU（级联清理子表，不动品牌/系列）")
 def delete_sku(sku_id: int, db: Session = Depends(get_db)):
     repo = SkuRepo(db)
-    ok = repo.delete(sku_id)
-    if not ok:
+    ok_repo = repo.delete(sku_id)
+    if not ok_repo:
         raise HTTPException(404, "SKU 不存在")
     db.commit()
-    return {"deleted": True, "sku_id": sku_id}
+    return ok({"deleted": True, "sku_id": sku_id})
 
 
 # ============================================================================

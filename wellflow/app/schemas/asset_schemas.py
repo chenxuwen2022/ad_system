@@ -79,7 +79,7 @@ class SkuCreateRequest(BaseModel):
     series_name: str | None = None
 
     name: str
-    style_no: str | None = None
+    style_no: str = Field(..., description="货号/款号，必填")
     category: str | None = None
     color: str | None = None
     material: str | None = None
