@@ -27,7 +27,7 @@ from wellflow.app.schemas.asset_schemas import (
 )
 
 
-router = APIRouter(prefix="/reference/mannequins", tags=["模特库"])
+router = APIRouter(prefix="/reference/mannequins")
 
 
 def _storage_uri_url(uri: str | None) -> str | None:
@@ -54,7 +54,7 @@ def _tags_to_grouped(tags_rows) -> list[MannequinTagIn]:
 # 维度枚举（前端下拉菜单）
 # ============================================================================
 
-@router.get("/dimensions", response_model=MannequinDimensionsResponse, summary="获取全部维度选项（前端筛选下拉菜单用）")
+@router.get("/dimensions", response_model=MannequinDimensionsResponse, summary="获取全部维度选项（前端筛选下拉菜单用）", tags=["模特库"])
 def get_dimensions():
     """返回硬编码的维度分组和可选值。"""
     return MannequinDimensionsResponse(groups=MANNEQUIN_DIMENSION_GROUPS)
@@ -64,7 +64,7 @@ def get_dimensions():
 # CRUD
 # ============================================================================
 
-@router.get("", response_model=MannequinListResponse, summary="列出模特（支持 scope / q 搜索 / 多维筛选）")
+@router.get("", response_model=MannequinListResponse, summary="列出模特（支持 scope / q 搜索 / 多维筛选）", tags=["模特库"])
 def list_mannequins(
     scope: str | None = Query(default=None, description="归属范围：official（官方公共模特）/ mine（个人私有）/ 不传表示全部"),
     q: str | None = Query(default=None, description="关键词或自然语言描述，匹配模特名称/英文名/编号/描述"),
@@ -114,7 +114,7 @@ def list_mannequins(
     return MannequinListResponse(items=out_items, total=total, page=page, page_size=page_size)
 
 
-@router.get("/{mannequin_id}", response_model=MannequinDetailResponse, summary="查询模特详情")
+@router.get("/{mannequin_id}", response_model=MannequinDetailResponse, summary="查询模特详情", tags=["模特库"])
 def get_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     m = repo.get(mannequin_id)
@@ -197,7 +197,7 @@ def create_mannequin(body: MannequinCreateRequest, db: Session = Depends(get_db)
     )
 
 
-@router.put("/{mannequin_id}", response_model=MannequinDetailResponse, summary="更新模特")
+@router.put("/{mannequin_id}", response_model=MannequinDetailResponse, summary="更新模特", tags=["模特库"])
 def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     try:
@@ -227,7 +227,7 @@ def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Sessio
     )
 
 
-@router.delete("/{mannequin_id}", summary="删除模特（级联清理标签，生成日志保留）")
+@router.delete("/{mannequin_id}", summary="删除模特（级联清理标签，生成日志保留）", tags=["模特库"])
 def delete_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     ok = repo.delete(mannequin_id)
