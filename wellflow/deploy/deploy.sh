@@ -142,7 +142,7 @@ if [ "$SKIP_DB" = false ]; then
         $COMPOSE exec -T db pg_isready -U postgres -d wellflow >/dev/null 2>&1 && break
         sleep 2
     done
-    $COMPOSE run --rm app sh -c "cd wellflow && alembic upgrade head"
+    $COMPOSE run --rm app sh -c "cd wellflow && PYTHONPATH=/app alembic upgrade head"
     echo "  ✅ alembic upgrade head"
 else
     echo ""

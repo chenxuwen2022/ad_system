@@ -15,5 +15,7 @@ COPY .env .
 EXPOSE 8000
 
 # 启动前先跑 Alembic 迁移，再起 uvicorn
-# alembic.ini 在 wellflow/ 下，且 CWD 需要 wellflow/ 以便 `from wellflow.app import ...` 解析
-CMD ["sh", "-c", "cd wellflow && alembic upgrade head && uvicorn wellflow.app.main:app --host 0.0.0.0 --port 8000"]
+# 容器内 wellflow/ 位于 /app/wellflow，从 /app/wellflow 内部找不到 wellflow 包
+# （会变成 /app/wellflow/wellflow/ 不存在），需要 PYTHONPATH=/app 让 Python 从 /app 找 wellflow/
+# alembic.ini 已有 prepend_sys_path=.. 做了同样的事，这里显式加 PYTHONPATH 统一保证
+CMD ["sh", "-c", "cd wellflow && PYTHONPATH=/app alembic upgrade head && PYTHONPATH=/app uvicorn wellflow.app.main:app --host 0.0.0.0 --port 8000"]
