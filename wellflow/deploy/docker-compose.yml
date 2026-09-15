@@ -40,6 +40,7 @@ services:
       HTTP_PROXY_URL: ""
     volumes:
       # 生成图/上传图落盘到宿主机 /data/wellflow/uploads，便于备份与迁移
+      # 容器内 upload_dir = /app/uploads（_PROJECT_ROOT / "uploads"），与 volume 映射一致
       - /data/wellflow/uploads:/app/uploads
     ports:
       - "8000:8000"

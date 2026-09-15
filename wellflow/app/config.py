@@ -94,8 +94,8 @@ class Settings(BaseSettings):
         "jpeg": "jpg", "png": "png", "webp": "webp", "gif": "gif",
     }
 
-    # 上传图片落盘目录（相对项目根）—— state 只存文件路径，不再塞 data URI
-    upload_dir: str = "uploads"
+    # 上传图片落盘目录（绝对路径，固定为 wellflow/uploads/）—— state 只存文件路径，不再塞 data URI
+    upload_dir: str = str(_PROJECT_ROOT / "uploads")
 
     # new-api 中转网关 — 所有 LLM/VLM/生图请求统一走这里，由 new-api 按模型名路由到真实后端
     newapi_base_url: str = "http://192.168.110.254/v1"
@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     def _empty_str_to_none(cls, v):
         if isinstance(v, str) and v.strip() == "":
             return None
+        return v
+
+    @field_validator("upload_dir", mode="before")
+    @classmethod
+    def _resolve_upload_dir(cls, v):
+        """.env 里如果写相对路径（如 uploads），自动解析为 wellflow/uploads 绝对路径。"""
+        if isinstance(v, str) and v.strip() and not Path(v).is_absolute():
+            return str(_PROJECT_ROOT / v)
         return v
 
     model_config = SettingsConfigDict(

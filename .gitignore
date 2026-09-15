@@ -40,8 +40,7 @@ AI店铺运营九大模块分析报告*.docx
 _sample_export.html
 
 # ===== 商拍子系统（WellFlow）=====
-uploads/
-wellflow/.env
+wellflow/uploads/
 
 # AI 场景处理产物
 static/scene_ai/

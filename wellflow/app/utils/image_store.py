@@ -128,15 +128,25 @@ def _pil_compress(raw: bytes, quality: int, max_side: int | None = None) -> tupl
     return buf.getvalue(), "image/jpeg", new_w, new_h
 
 
+def _resolve_path(path: str) -> Path:
+    """相对路径（如 uploads/taskX/p0.jpg）→ 基于项目根的绝对路径。
+
+    项目根 = upload_dir.parent = wellflow/（本地）或 /app（容器内）。
+    绝对路径原样返回。
+    """
+    abs_path = Path(path)
+    if abs_path.is_absolute():
+        return abs_path
+    return _get_upload_dir().parent / path
+
+
 def path_to_data_uri(path: str) -> str:
     """单张路径 → data URI，不做压缩（原始 base64）。
 
     文件不存在时返回空字符串。
     批量场景请用 paths_to_data_uris — 那里才做统一压缩决策。
     """
-    abs_path = Path(path)
-    if not abs_path.is_absolute():
-        abs_path = Path.cwd() / path
+    abs_path = _resolve_path(path)
     if not abs_path.exists():
         print(f"[image_store] ⚠️ 路径不存在，跳过: {path}", flush=True)
         return ""
@@ -177,9 +187,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
         if len(path_items) >= MAX_IMAGES_PER_CALL:
             print(f"[image_store] 🪒 忽略第 {MAX_IMAGES_PER_CALL + 1} 张起的图片（上限 {MAX_IMAGES_PER_CALL}）", flush=True)
             break
-        abs_path = Path(p)
-        if not abs_path.is_absolute():
-            abs_path = Path.cwd() / p
+        abs_path = _resolve_path(p)
         if not abs_path.exists():
             print(f"[image_store] ⚠️ 路径不存在，跳过: {p}", flush=True)
             continue
@@ -200,7 +208,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
 
     # 3) 逐张处理
     for p, raw in path_items:
-        abs_path = Path(p)
+        abs_path = _resolve_path(p)
         mime, _ = mimetypes.guess_type(str(abs_path))
         mime = mime or "image/jpeg"
 
