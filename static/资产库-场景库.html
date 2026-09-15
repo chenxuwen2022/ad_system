@@ -318,6 +318,10 @@ function refreshDimUI(){
   });
 }
 
+function imgFailCard(elm){
+  const th = elm.closest('.thumb');
+  if(th){ const imgs = th.querySelectorAll('img'); imgs.forEach(i=>i.remove()); }
+}
 /* ── 渲染卡片 ── */
 function renderCard(it){
   const dimsTxt = Object.entries(it.dims||{}).filter(([k,v])=>Array.isArray(v)?v.length:v).map(([k,v])=>{
@@ -326,7 +330,7 @@ function renderCard(it){
   }).join(' · ');
   const tagsTxt = [it.tags, dimsTxt].filter(Boolean).join(' · ');
   const imgHtml = it.image
-    ? `<img src="${esc(it.image)}" alt="">`
+    ? `<img src="${esc(it.image)}" alt="" onerror="imgFailCard(this)">`
     : `<div class="grad" style="background:${hashGrad(it.id+it.name)}"></div>`;
   return `<div class="card">
     <div class="thumb">${imgHtml}<span class="id">ID · ${esc(it.id)}</span><span class="scope-tag">${it.scope==='official'?'官方':'我的'}</span></div>
