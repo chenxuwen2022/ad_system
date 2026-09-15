@@ -37,6 +37,8 @@ from token_manager import get_token_mgr
 
 # ── 子系统二：电商商拍（WellFlow）──
 from wellflow.app.api.tasks import router as wf_tasks_router
+from wellflow.app.api.products import router as wf_products_router
+from wellflow.app.api.mannequins import router as wf_mannequins_router
 from wellflow.app.sse import router as wf_sse_router
 from wellflow.app.config import settings as wf_settings
 from wellflow.app.main import init_wellflow_runtime
@@ -76,6 +78,8 @@ app.include_router(scene_ai_router, prefix="/api/scene")
 
 # ── 子系统二：电商商拍（WellFlow，API 路径与独立运行时一致）──
 app.include_router(wf_tasks_router, prefix="/api")
+app.include_router(wf_products_router, prefix="/api")
+app.include_router(wf_mannequins_router, prefix="/api")
 app.include_router(wf_sse_router)
 _wf_upload_dir = Path(wf_settings.upload_dir).resolve()
 _wf_upload_dir.mkdir(parents=True, exist_ok=True)
