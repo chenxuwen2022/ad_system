@@ -1,0 +1,53 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 虚拟环境
+venv/
+.venv/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# 项目根 —— 广告投放子系统（不打进 WellFlow 镜像）
+deploy/
+routes/
+static/
+templates/
+assets_data/
+media_storage/
+upload_materials/
+*.db
+*.log
+token_manager.py
+douyin_api.py
+db.py
+file_service.py
+models.py
+main.py
+config.py
+requirements.txt
+
+# WellFlow 子目录下排除的内容
+# （Dockerfile 会 COPY wellflow/ wellflow/，这些子路径会被跳过）
+wellflow/deploy/
+wellflow/scripts/
+wellflow/README.md
+wellflow/uploads/
+wellflow/__pycache__/
