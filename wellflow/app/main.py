@@ -79,8 +79,6 @@ async def init_wellflow_runtime() -> None:
             _graph = None
     except Exception as exc:
         print(f"⚠️  [商拍子系统] LangGraph checkpointer 初始化失败（graph 相关功能降级）: {exc}")
-        import traceback
-        traceback.print_exc()
         _checkpointer = None
         _graph = None
 
