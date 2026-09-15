@@ -132,12 +132,13 @@ async def create_asset(
     scope: str = Form("mine"),
     dims: str = Form("{}"),
     image: UploadFile | None = File(None),
+    image_url: str = Form(""),
 ):
     if category not in CATEGORIES:
         raise HTTPException(400, f"未知分类: {category}")
     items = _load()
     asset_id = _next_id(category, items)
-    img_url = await _save_image(image) if image else ""
+    img_url = (await _save_image(image)) if image else _valid_img_url(image_url)
     item = {
         "id": asset_id, "category": category, "name": name.strip(),
         "tags": tags.strip(), "scope": scope,
@@ -158,6 +159,7 @@ async def update_asset(
     scope: str = Form("mine"),
     dims: str = Form("{}"),
     image: UploadFile | None = File(None),
+    image_url: str = Form(""),
 ):
     items = _load()
     target = next((it for it in items if it.get("id") == asset_id), None)
@@ -166,6 +168,8 @@ async def update_asset(
     if image:
         _remove_old_image(target)
         target["image"] = await _save_image(image)
+    elif image_url:
+        target["image"] = _valid_img_url(image_url)
     target["name"] = name.strip()
     target["tags"] = tags.strip()
     target["scope"] = scope
@@ -192,6 +196,11 @@ def _parse_dims(raw: str) -> dict:
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
+
+
+def _valid_img_url(url: str) -> str:
+    u = url.strip()
+    return u if u.startswith(("http://", "https://", "/")) else ""
 
 
 async def _save_image(image: UploadFile) -> str:
