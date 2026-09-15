@@ -4,7 +4,6 @@ services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
-    # .env 放在项目根目录（只有这一份），deploy/ 只是部署入口
     env_file:
       - ../../.env
     environment:
