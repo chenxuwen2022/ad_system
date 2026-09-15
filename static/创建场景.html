@@ -170,6 +170,7 @@ $('fileInput').addEventListener('change', async ()=>{
 });
 /* 压缩图片（最长边1200，jpeg0.8），避免 sessionStorage 超限 */
 function compressImage(file, maxSize){
+  maxSize = maxSize || 1200;
   return new Promise((resolve, reject)=>{
     const reader = new FileReader();
     reader.onload = ()=>{
