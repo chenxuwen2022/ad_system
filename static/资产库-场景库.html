@@ -254,26 +254,29 @@ function renderTabs(stats){
   $('tabs').innerHTML = Object.entries(CATS).map(([k,v])=>
     `<div class="tab ${k===state.cat?'on':''}" data-cat="${k}">${v}<span class="cnt">${stats[k]||0}</span></div>`).join('');
   $('headBadge').textContent = `${stats[state.cat]||0} 个${CAT_NAME[state.cat]}素材`;
-  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ state.cat=t.dataset.cat; state.dims={}; $('qInput').value=''; load(); });
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ state.cat=t.dataset.cat; state.dims={}; state.openDim=null; $('qInput').value=''; load(); });
 }
 
 /* ── 渲染维度筛选栏 ── */
 function renderDims(){
   const defs = DIM_DEFS[state.cat] || {};
   const keys = Object.keys(defs);
+  const openDim = state.openDim || null;
   $('dimsBar').innerHTML = keys.map(k=>{
     const arr = state.dims[k] || [];
     const txt = arr.length ? arr.map(v=>`${k}/${v}`).join('、') : k;
     return `<div class="dim-wrap"><button class="dimbtn ${arr.length?'sel':''}" data-dim="${esc(k)}" title="${esc(txt)}">${esc(txt)}<span class="arrow">▾</span></button>
-      <div class="dim-panel" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${arr.includes(x)?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div>
+      <div class="dim-panel ${k===openDim?'open':''}" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${arr.includes(x)?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div>
       <div class="panel-ops"><span class="reset">清空本项</span><button class="done" type="button">完成</button></div></div></div>`;
   }).join('') + `<div class="dim-clear" id="dimClear">清空筛选</div>`;
   $('dimsBar').querySelectorAll('.dimbtn').forEach(b=>b.onclick=e=>{
     e.stopPropagation();
+    const k = b.dataset.dim;
     const p = b.parentElement.querySelector('.dim-panel');
     const wasOpen = p.classList.contains('open');
     document.querySelectorAll('.dim-panel').forEach(x=>x.classList.remove('open'));
-    if(!wasOpen) p.classList.add('open');
+    if(!wasOpen){ p.classList.add('open'); state.openDim = k; }
+    else state.openDim = null;
   });
   $('dimsBar').querySelectorAll('.dim-panel').forEach(p=>{
     p.addEventListener('click', e=>e.stopPropagation());
@@ -284,14 +287,19 @@ function renderDims(){
       const i = arr.indexOf(val);
       if(i>=0) arr.splice(i,1); else arr.push(val);
       if(!arr.length) delete state.dims[k];
+      state.openDim = k;   // 保持本面板打开，支持连续多选
       load();
     });
-    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; load(); };
-    p.querySelector('.done').onclick=()=>{ p.classList.remove('open'); };
+    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; state.openDim = p.dataset.panel; load(); };
+    p.querySelector('.done').onclick=()=>{ state.openDim = null; p.classList.remove('open'); };
   });
   const clear = $('dimClear');
-  if(clear) clear.onclick = ()=>{ state.dims={}; load(); };
-  document.addEventListener('click', ()=>document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open')));
+  if(clear) clear.onclick = ()=>{ state.dims={}; state.openDim=null; load(); };
+  document.addEventListener('click', e=>{
+    if(!e.target.closest('.dim-panel') && !e.target.closest('.dimbtn')){
+      document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open'));
+    }
+  });
 }
 
 /* ── 渲染卡片 ── */

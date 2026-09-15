@@ -272,7 +272,11 @@ $('dimGrid').addEventListener('click', e=>{
     done.closest('.dim-panel').classList.remove('open');
   }
 });
-document.addEventListener('click', ()=>document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open')));
+document.addEventListener('click', e=>{
+  if(!e.target.closest('.dim-panel') && !e.target.closest('.dim-btn')){
+    document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open'));
+  }
+});
 
 /* 清空标签 */
 $('clearTags').onclick = ()=>{
