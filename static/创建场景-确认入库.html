@@ -118,13 +118,13 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0
         <span class="preview-title">场景图·演示预览</span>
         <div class="preview-tabs"><span class="on">场景图</span><span>原图</span><span>交互演示</span></div>
       </div>
-      <div class="warn"><span class="tag2">交互演示</span>标签为预设示例，请核对修改；当前图片未经人物识别或消除。</div>
+      <div class="warn"><span class="tag2">AI 处理</span>场景图由 AI 生成，原图完整保留；标签可修改，核对无误后确认入库。</div>
       <div class="preview-box" id="previewBox">
         <div class="ph"><div class="i">🖼</div><div class="t">场景图预览</div><div class="s">沿用上传原图 · 演示</div></div>
       </div>
       <div class="preview-note">
-        演示预览沿用上传原图，未实际消除人物；入库后仍可切换查看原图。<br>
-        原图完整保留，与场景图归入同一条资产。
+        场景图由 AI 自动整理生成；可切换「原图」查看上传前的样子。<br>
+        原图与场景图归入同一条资产，入库后仍可切换查看。
       </div>
       <div class="preview-ops">
         <button id="changeImg">更换图片</button>
@@ -289,10 +289,24 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
   const img = sessionStorage.getItem('scene_img');
   const type = sessionStorage.getItem('scene_img_type') || '';
   const box = $('previewBox');
+  const orig = sessionStorage.getItem('scene_img_orig');
+  window.__scene = { img, type, orig };
   if(img && (type==='data' || type==='url')){
-    box.innerHTML = `<img src="${img}" alt="场景图"
+    box.innerHTML = `<img id="sceneImg" src="${img}" alt="场景图"
       onerror="this.outerHTML='<div class=\\'ph\\'><div class=\\'i\\'>⚠️</div><div class=\\'t\\'>图片加载失败</div></div>'">`;
   }
+})();
+/* 页签切换：场景图 / 原图 */
+(function(){
+  const s = window.__scene || {};
+  document.querySelectorAll('.preview-tabs span').forEach(tab=>tab.onclick=()=>{
+    document.querySelectorAll('.preview-tabs span').forEach(x=>x.classList.remove('on'));
+    tab.classList.add('on');
+    const si = $('sceneImg');
+    if(!si || !s.img) return;
+    if(tab.textContent.trim()==='原图' && s.orig) si.src = s.orig;
+    else si.src = s.img;
+  });
 })();
 
 /* 联动父页面 */
