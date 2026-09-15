@@ -36,9 +36,11 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 .dimbtn { padding: 5px 12px; border-radius: 999px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; border: 1px solid #30363d; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dimbtn .arrow { color: #8b949e; margin-left: 4px; }
 .dimbtn.sel { background: #b8e27a; color: #151b0d; border-color: #b8e27a; font-weight: 600; }
-.dim-panel .panel-ops { display: flex; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 11px; color: #8b949e; }
-.dim-panel .panel-ops span { cursor: pointer; }
-.dim-panel .panel-ops span:hover { color: #ffd83d; }
+.dim-panel .panel-ops { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 12px; color: #8b949e; }
+.dim-panel .panel-ops .reset { cursor: pointer; padding: 4px 10px; border-radius: 6px; background: #21262d; color: #c9d1d9; }
+.dim-panel .panel-ops .reset:hover { background: #30363d; }
+.dim-panel .panel-ops .done { cursor: pointer; padding: 4px 16px; border-radius: 6px; border: none; background: #ffd83d; color: #151b0d; font-size: 12px; font-weight: 600; }
+.dim-panel .panel-ops .done:hover { background: #ffe066; }
 .dim-clear { color: #8b949e; font-size: 12px; cursor: pointer; text-decoration: underline; }
 .dim-clear:hover { color: #ffd83d; }
 .dim-panel { position: absolute; top: 32px; left: 0; z-index: 20; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px; min-width: 200px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none; }
@@ -221,7 +223,7 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 const API = '/api/assets';
 const CATS = { brand:'品牌资产库', reference:'参考素材', model:'模特库', outfit:'穿搭库', scene:'场景库' };
 const DIM_DEFS = {
-  scene: { '空间类型':['室内','户外','摄影棚','半开放'], '地域环境':['城市','海边','森林','建筑','乡村'], '季节':['春','夏','秋','冬','不限'], '天气':['晴','阴','雨','雪','黄昏','夜景'], '背景风格':['极简','自然','轻奢','温馨','高级','专业','生活化','户外','海边','复古','科技','清新'] },
+  scene: { '空间类型':['纯色棚拍','摄影棚','客厅','卧室','厨房','卫生间','办公室','商场','街道','公园','体育场','健身房','山林','雪山','沙滩','营地','岩壁'], '地域环境':['城市','城市街头','郊外','森林','山地','雪地','湖泊','海边','沙漠'], '季节':['春','夏','秋','冬'], '天气':['晴天','阴天','雨天','雪天','雾','日落','夜晚'], '背景风格':['极简','专业','高级','自然','温馨','生活化','户外','科技','潮流','轻奢','都市'] },
   model: { '性别':['女','男','儿童','老人'], '风格':['休闲','职业','时尚','甜美','运动'], '年龄':['18-25','25-35','35-45','45+'] },
   outfit: { '风格':['休闲','职业','时尚','甜美','运动','复古'], '季节':['春','夏','秋','冬','不限'], '适用场景':['通勤','约会','旅行','居家','运动'] },
   reference: { '类型':['摄影','插画','海报','视频','文案'], '风格':['极简','自然','复古','科技','国潮'] },
@@ -264,7 +266,7 @@ function renderDims(){
     const txt = arr.length ? arr.map(v=>`${k}/${v}`).join('、') : k;
     return `<div class="dim-wrap"><button class="dimbtn ${arr.length?'sel':''}" data-dim="${esc(k)}" title="${esc(txt)}">${esc(txt)}<span class="arrow">▾</span></button>
       <div class="dim-panel" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${arr.includes(x)?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div>
-      <div class="panel-ops"><span class="all">全选</span><span class="reset">重置该维度</span></div></div></div>`;
+      <div class="panel-ops"><span class="reset">清空本项</span><button class="done" type="button">完成</button></div></div></div>`;
   }).join('') + `<div class="dim-clear" id="dimClear">清空筛选</div>`;
   $('dimsBar').querySelectorAll('.dimbtn').forEach(b=>b.onclick=e=>{
     e.stopPropagation();
@@ -284,8 +286,8 @@ function renderDims(){
       if(!arr.length) delete state.dims[k];
       load();
     });
-    p.querySelector('.all').onclick=()=>{ state.dims[p.dataset.panel] = [...defs[p.dataset.panel]]; load(); };
     p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; load(); };
+    p.querySelector('.done').onclick=()=>{ p.classList.remove('open'); };
   });
   const clear = $('dimClear');
   if(clear) clear.onclick = ()=>{ state.dims={}; load(); };

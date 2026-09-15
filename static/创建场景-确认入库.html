@@ -66,9 +66,11 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0
 .dim-panel .vals { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
 .dim-panel .val { text-align: center; padding: 6px 4px; border-radius: 6px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; user-select: none; }
 .dim-panel .val.on { background: #2b5bff; color: #fff; }
-.dim-panel .panel-ops { display: flex; justify-content: space-between; margin-top: 10px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 11px; color: #8b949e; }
-.dim-panel .panel-ops span { cursor: pointer; }
-.dim-panel .panel-ops span:hover { color: #ffd83d; }
+.dim-panel .panel-ops { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 12px; color: #8b949e; }
+.dim-panel .panel-ops .reset { cursor: pointer; padding: 4px 10px; border-radius: 6px; background: #21262d; color: #c9d1d9; }
+.dim-panel .panel-ops .reset:hover { background: #30363d; }
+.dim-panel .panel-ops .done { cursor: pointer; padding: 4px 16px; border-radius: 6px; border: none; background: #ffd83d; color: #151b0d; font-size: 12px; font-weight: 600; }
+.dim-panel .panel-ops .done:hover { background: #ffe066; }
 .style-row { grid-column: 1 / -1; }
 
 .tag-meta { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
@@ -76,13 +78,15 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0
 .tag-meta .clear { font-size: 12px; color: #8b949e; cursor: pointer; text-decoration: underline; }
 .tag-tip { font-size: 11px; color: #6e7681; margin-top: 6px; }
 
-.desc-wrap { position: relative; }
-.desc-wrap textarea { min-height: 72px; resize: vertical; }
-.desc-ops { display: flex; justify-content: space-between; margin-top: 6px; }
-.desc-ops .left-ops { display: flex; gap: 8px; }
-.desc-ops button { padding: 5px 12px; border-radius: 6px; font-size: 11px; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; cursor: pointer; }
+.desc-wrap { position: relative; display: flex; gap: 8px; align-items: stretch; }
+.desc-wrap textarea { min-height: 84px; resize: vertical; flex: 1; }
+.desc-wrap .gen.float { writing-mode: vertical-lr; letter-spacing: 4px; padding: 10px 8px; border-radius: 8px; border: none; background: #2b5bff; color: #fff; font-size: 13px; cursor: pointer; flex-shrink: 0; }
+.desc-wrap .gen.float:hover { background: #3d6bff; }
+.desc-ops { display: flex; justify-content: flex-end; gap: 8px; position: absolute; bottom: 8px; right: 76px; }
+.desc-ops button { padding: 4px 14px; border-radius: 6px; font-size: 12px; background: #21262d; color: #c9d1d9; border: 1px solid #30363d; cursor: pointer; }
 .desc-ops button:hover { background: #30363d; }
-.desc-ops .gen { background: #2b5bff; border-color: #2b5bff; color: #fff; }
+.desc-ops .done { background: #ffd83d; color: #151b0d; border-color: #ffd83d; font-weight: 600; }
+.desc-ops .done:hover { background: #ffe066; }
 .desc-tip { font-size: 11px; color: #6e7681; margin-top: 6px; }
 
 .foot { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding: 14px 24px 18px; border-top: 1px solid #21262d; }
@@ -152,12 +156,10 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0
         <label>一句话素材描述</label>
         <div class="desc-wrap">
           <textarea id="descArea" placeholder="输入素材描述"></textarea>
+          <button id="genDesc" class="gen float" title="按标签更新">按标签更新</button>
           <div class="desc-ops">
-            <div class="left-ops">
-              <button id="genDesc" class="gen">按标签更新</button>
-              <button id="clearDesc">清空本项</button>
-              <button id="doneDesc">完成</button>
-            </div>
+            <button id="clearDesc">清空本项</button>
+            <button id="doneDesc" class="done">完成</button>
           </div>
         </div>
         <div class="desc-tip">描述随标签自动更新，概括所有已选标签。</div>
@@ -177,10 +179,10 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0
 <script>
 const DIMS = {
   '空间类型': ['纯色棚拍','摄影棚','客厅','卧室','厨房','卫生间','办公室','商场','街道','公园','体育场','健身房','山林','雪山','沙滩','营地','岩壁'],
-  '地域环境': ['城市街头','城市','海边','森林','建筑','乡村','山区','雪原','湖畔','广场'],
+  '地域环境': ['城市','城市街头','郊外','森林','山地','雪地','湖泊','海边','沙漠'],
   '季节': ['春','夏','秋','冬'],
   '天气': ['晴天','阴天','雨天','雪天','雾','日落','夜晚'],
-  '背景风格': ['极简','专业','温馨','自然','轻奢','高级','复古','科技','清新','国潮'],
+  '背景风格': ['极简','专业','高级','自然','温馨','生活化','户外','科技','潮流','轻奢','都市'],
 };
 const DIM_ORDER = ['空间类型','地域环境','季节','天气','背景风格'];
 // 初始选中（示例）
@@ -203,7 +205,7 @@ function renderDims(){
       <button class="dim-btn" data-dim="${k}" title="${k}"><span class="dim-label">${k}</span><span class="arr">▾</span></button>
       <div class="dim-panel" data-panel="${k}">
         <div class="vals">${DIMS[k].map(v=>`<span class="val" data-v="${v}">${v}</span>`).join('')}</div>
-        <div class="panel-ops"><span class="select-all">全选</span><span class="reset">清空该项</span></div>
+        <div class="panel-ops"><span class="reset">清空本项</span><button class="done" type="button">完成</button></div>
       </div>
     </div>`).join('');
   refreshAll();
@@ -250,12 +252,18 @@ $('dimGrid').addEventListener('click', e=>{
     refreshAll();
     return;
   }
-  const op = e.target.closest('.panel-ops span');
+  const op = e.target.closest('.panel-ops .reset');
   if(op){
     const k = op.closest('.dim-panel').dataset.panel;
-    if(op.classList.contains('select-all')) sel[k] = [...DIMS[k]];
-    else sel[k] = [];
+    sel[k] = [];
     refreshAll();
+    return;
+  }
+  const done = e.target.closest('.panel-ops .done');
+  if(done){
+    const k = done.closest('.dim-panel').dataset.panel;
+    refreshAll();
+    done.closest('.dim-panel').classList.remove('open');
   }
 });
 document.addEventListener('click', ()=>document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open')));
