@@ -222,7 +222,7 @@ def _run_ai(task: dict, raw: bytes, prompt: str):
 @router.post("/ai-extract")
 async def ai_extract_async(
     image: UploadFile = File(...),
-    prompt: str = Form("提取这张图片中的主体物体并整理成干净、专业的电商商拍场景图，主体完整保留，背景干净统一，光线自然"),
+    prompt: str = Form("提取这张图片中的场景部分，生成场景图片"),
 ):
     """上传图片 → 立即返回任务ID（AI 后台处理）"""
     raw = await image.read()
