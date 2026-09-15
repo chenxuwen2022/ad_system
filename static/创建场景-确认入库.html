@@ -118,7 +118,7 @@ body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0
         <span class="preview-title">场景图·演示预览</span>
         <div class="preview-tabs"><span class="on">场景图</span><span>原图</span><span>交互演示</span></div>
       </div>
-      <div class="warn"><span class="tag2">AI 处理</span>场景图由 AI 生成，原图完整保留；标签可修改，核对无误后确认入库。</div>
+      <div class="warn" id="aiWarn"><span class="tag2">AI 处理</span>场景图由 AI 生成，原图完整保留；标签可修改，核对无误后确认入库。</div>
       <div class="preview-box" id="previewBox">
         <div class="ph"><div class="i">🖼</div><div class="t">场景图预览</div><div class="s">沿用上传原图 · 演示</div></div>
       </div>
@@ -290,7 +290,12 @@ $('doneDesc').onclick = ()=>toast('描述已保存');
   const type = sessionStorage.getItem('scene_img_type') || '';
   const box = $('previewBox');
   const orig = sessionStorage.getItem('scene_img_orig');
+  const aiFailed = sessionStorage.getItem('scene_ai_failed');
   window.__scene = { img, type, orig };
+  if(aiFailed){
+    const w = $('aiWarn');
+    if(w) w.innerHTML = '<span class="tag2" style="color:#ff9d45;border-color:#ff9d45">AI 不可用</span>当前显示上传原图，AI 服务恢复后可重新整理生成场景图。';
+  }
   if(img && (type==='data' || type==='url')){
     box.innerHTML = `<img id="sceneImg" src="${img}" alt="场景图"
       onerror="this.outerHTML='<div class=\\'ph\\'><div class=\\'i\\'>⚠️</div><div class=\\'t\\'>图片加载失败</div></div>'">`;
