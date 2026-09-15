@@ -288,17 +288,33 @@ function renderDims(){
       if(i>=0) arr.splice(i,1); else arr.push(val);
       if(!arr.length) delete state.dims[k];
       state.openDim = k;   // 保持本面板打开，支持连续多选
-      load();
+      refreshDimUI();      // 只更新筛选栏显示，点"搜索"才查询
     });
-    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; state.openDim = p.dataset.panel; load(); };
+    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; state.openDim = p.dataset.panel; refreshDimUI(); };
     p.querySelector('.done').onclick=()=>{ state.openDim = null; p.classList.remove('open'); };
   });
   const clear = $('dimClear');
-  if(clear) clear.onclick = ()=>{ state.dims={}; state.openDim=null; load(); };
+  if(clear) clear.onclick = ()=>{ state.dims={}; state.openDim=null; refreshDimUI(); };
   document.addEventListener('click', e=>{
     if(!e.target.closest('.dim-panel') && !e.target.closest('.dimbtn')){
       document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open'));
     }
+  });
+}
+
+/* ── 仅刷新筛选栏 UI（不查询列表，点"搜索"才查询）── */
+function refreshDimUI(){
+  document.querySelectorAll('.dim-wrap').forEach(w=>{
+    const k = w.querySelector('.dimbtn').dataset.dim;
+    const arr = state.dims[k] || [];
+    const txt = arr.length ? arr.map(v=>`${k}/${v}`).join('、') : k;
+    const btn = w.querySelector('.dimbtn');
+    btn.innerHTML = esc(txt) + '<span class="arrow"> ▾</span>';
+    btn.title = txt;
+    btn.classList.toggle('sel', !!arr.length);
+    w.querySelector('.dim-panel').querySelectorAll('.val').forEach(v=>{
+      v.classList.toggle('on', arr.includes(v.dataset.val));
+    });
   });
 }
 
