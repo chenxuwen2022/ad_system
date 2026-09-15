@@ -163,6 +163,7 @@ $('fileInput').addEventListener('change', async ()=>{
     sessionStorage.setItem('scene_img', res.scene_url);
     sessionStorage.setItem('scene_img_orig', res.orig_url);
     sessionStorage.setItem('scene_img_type', 'url');
+    sessionStorage.removeItem('scene_ai_failed');
     location.href = '创建场景-确认入库.html';
   }catch(e){
     // AI 不可用时降级：本地压缩原图
@@ -171,6 +172,7 @@ $('fileInput').addEventListener('change', async ()=>{
       sessionStorage.setItem('scene_img', dataUrl);
       sessionStorage.removeItem('scene_img_orig');
       sessionStorage.setItem('scene_img_type', 'data');
+      sessionStorage.setItem('scene_ai_failed', '1');
       location.href = '创建场景-确认入库.html';
     }catch(e2){
       toast('图片处理失败: '+e2.message, 'err');
