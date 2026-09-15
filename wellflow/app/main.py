@@ -13,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 
 from wellflow.app.api.tasks import router as tasks_router
+from wellflow.app.api.products import router as products_router
+from wellflow.app.api.mannequins import router as mannequins_router
 from wellflow.app.sse import router as sse_router
 from wellflow.app.api.utils import fail
 from wellflow.app.config import settings
@@ -165,6 +167,12 @@ def health():
 
 # 任务 API
 app.include_router(tasks_router, prefix="/api")
+
+# SKU 商品库（品牌 / 系列 / SKU）
+app.include_router(products_router, prefix="/api")
+
+# 模特库（参考素材）
+app.include_router(mannequins_router, prefix="/api")
 
 # SSE
 app.include_router(sse_router)

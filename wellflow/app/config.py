@@ -5,6 +5,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# 根目录（WellFlow 的上层，也是整个仓库根目录）
+_REPO_ROOT = _PROJECT_ROOT.parent
 
 
 class Settings(BaseSettings):
@@ -168,7 +170,11 @@ class Settings(BaseSettings):
             return None
         return v
 
-    model_config = SettingsConfigDict(env_file=".env", case_sensitive=False, extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(_REPO_ROOT / ".env"),  # 根目录唯一一份 .env，用绝对路径
+        case_sensitive=False,
+        extra="ignore",
+    )
 
 
 settings = Settings()
