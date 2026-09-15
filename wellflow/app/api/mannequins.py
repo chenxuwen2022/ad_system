@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from wellflow.app.config import settings
 from wellflow.app.database import get_db
+from wellflow.app.api.utils import ok, StandardResponse
 from wellflow.app.repositories.mannequin_repo import MannequinRepo, MANNEQUIN_DIMENSION_GROUPS
 from wellflow.app.schemas.asset_schemas import (
     MannequinCreateRequest, MannequinUpdateRequest,
@@ -39,32 +40,28 @@ def _storage_uri_url(uri: str | None) -> str | None:
 
 
 def _tags_to_grouped(tags_rows) -> list[MannequinTagIn]:
-    """把 repo 返回的扁平 tag 列表按 group_key+dim_key 聚合。"""
-    grouped: dict[tuple[str, str], list[str]] = {}
-    for t in tags_rows:
-        key = (t["group_key"], t["dim_key"])
-        grouped.setdefault(key, []).append(t["tag_value"])
-    result = []
-    for (gk, dk), vals in grouped.items():
-        result.append(MannequinTagIn(group_key=gk, dim_key=dk, tag_values=vals))
-    return result
+    """把 repo.list_tags() 返回的已聚合 tag 列表转成 Pydantic 对象。"""
+    return [
+        MannequinTagIn(group_key=t["group_key"], dim_key=t["dim_key"], tag_values=t["tag_values"])
+        for t in tags_rows
+    ]
 
 
 # ============================================================================
 # 维度枚举（前端下拉菜单）
 # ============================================================================
 
-@router.get("/dimensions", response_model=MannequinDimensionsResponse, summary="获取全部维度选项（前端筛选下拉菜单用）", tags=["模特库"])
+@router.get("/dimensions", response_model=StandardResponse[MannequinDimensionsResponse], summary="获取全部维度选项（前端筛选下拉菜单用）", tags=["模特库"])
 def get_dimensions():
     """返回硬编码的维度分组和可选值。"""
-    return MannequinDimensionsResponse(groups=MANNEQUIN_DIMENSION_GROUPS)
+    return ok(MannequinDimensionsResponse(groups=MANNEQUIN_DIMENSION_GROUPS))
 
 
 # ============================================================================
 # CRUD
 # ============================================================================
 
-@router.get("", response_model=MannequinListResponse, summary="列出模特（支持 scope / q 搜索 / 多维筛选）", tags=["模特库"])
+@router.get("", response_model=StandardResponse[MannequinListResponse], summary="列出模特（支持 scope / q 搜索 / 多维筛选）", tags=["模特库"])
 def list_mannequins(
     scope: str | None = Query(default=None, description="归属范围：official（官方公共模特）/ mine（个人私有）/ 不传表示全部"),
     q: str | None = Query(default=None, description="关键词或自然语言描述，匹配模特名称/英文名/编号/描述"),
@@ -111,17 +108,17 @@ def list_mannequins(
             updated_at=m.updated_at.isoformat(),
         ))
 
-    return MannequinListResponse(items=out_items, total=total, page=page, page_size=page_size)
+    return ok(MannequinListResponse(items=out_items, total=total, page=page, page_size=page_size))
 
 
-@router.get("/{mannequin_id}", response_model=MannequinDetailResponse, summary="查询模特详情", tags=["模特库"])
+@router.get("/{mannequin_id}", response_model=StandardResponse[MannequinDetailResponse], summary="查询模特详情", tags=["模特库"])
 def get_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     m = repo.get(mannequin_id)
     if not m:
         raise HTTPException(404, "模特不存在")
     tag_rows = repo.list_tags(mannequin_id)
-    return MannequinDetailResponse(
+    return ok(MannequinDetailResponse(
         id=m.id,
         mannequin_no=m.mannequin_no,
         name=m.name,
@@ -137,12 +134,12 @@ def get_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
         tags=_tags_to_grouped(tag_rows),
         created_at=m.created_at.isoformat(),
         updated_at=m.updated_at.isoformat(),
-    )
+    ))
 
 
 @router.post(
     "",
-    response_model=MannequinDetailResponse,
+    response_model=StandardResponse[MannequinDetailResponse],
     summary="确认入库（写 Mannequin + Tag + GenerateLog，路径A/B 最终都走到这里）",
     tags=["模特创建流程 · 入库端点"],
 )
@@ -185,7 +182,7 @@ def create_mannequin(body: MannequinCreateRequest, db: Session = Depends(get_db)
         raise HTTPException(400, f"创建失败: {e}")
 
     tag_rows = repo.list_tags(m.id)
-    return MannequinDetailResponse(
+    return ok(MannequinDetailResponse(
         id=m.id, mannequin_no=m.mannequin_no, name=m.name, en_name=m.en_name,
         scope=m.scope, origin=m.origin, status=m.status,
         cover_storage_uri=m.cover_storage_uri,
@@ -194,10 +191,10 @@ def create_mannequin(body: MannequinCreateRequest, db: Session = Depends(get_db)
         generate_model=m.generate_model, generate_prompt=m.generate_prompt,
         tags=_tags_to_grouped(tag_rows),
         created_at=m.created_at.isoformat(), updated_at=m.updated_at.isoformat(),
-    )
+    ))
 
 
-@router.put("/{mannequin_id}", response_model=MannequinDetailResponse, summary="更新模特", tags=["模特库"])
+@router.put("/{mannequin_id}", response_model=StandardResponse[MannequinDetailResponse], summary="更新模特", tags=["模特库"])
 def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     try:
@@ -215,7 +212,7 @@ def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Sessio
         raise HTTPException(404, str(e))
 
     tag_rows = repo.list_tags(m.id)
-    return MannequinDetailResponse(
+    return ok(MannequinDetailResponse(
         id=m.id, mannequin_no=m.mannequin_no, name=m.name, en_name=m.en_name,
         scope=m.scope, origin=m.origin, status=m.status,
         cover_storage_uri=m.cover_storage_uri,
@@ -224,17 +221,17 @@ def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Sessio
         generate_model=m.generate_model, generate_prompt=m.generate_prompt,
         tags=_tags_to_grouped(tag_rows),
         created_at=m.created_at.isoformat(), updated_at=m.updated_at.isoformat(),
-    )
+    ))
 
 
-@router.delete("/{mannequin_id}", summary="删除模特（级联清理标签，生成日志保留）", tags=["模特库"])
+@router.delete("/{mannequin_id}", response_model=StandardResponse[dict], summary="删除模特（级联清理标签，生成日志保留）", tags=["模特库"])
 def delete_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
-    ok = repo.delete(mannequin_id)
-    if not ok:
+    ok_repo = repo.delete(mannequin_id)
+    if not ok_repo:
         raise HTTPException(404, "模特不存在")
     db.commit()
-    return {"deleted": True, "mannequin_id": mannequin_id}
+    return ok({"deleted": True, "mannequin_id": mannequin_id})
 
 
 # ============================================================================
@@ -296,11 +293,11 @@ async def upload_mannequin_images(
             filename=files[i].filename or f"image{i}",
         ))
 
-    return {
+    return ok({
         "session_id": sid,
         "count": len(uploaded),
         "images": uploaded,
-    }
+    })
 
 
 # ───────────────────────────────────────────────────────────────────────────
@@ -309,7 +306,7 @@ async def upload_mannequin_images(
 
 @router.post(
     "/optimize-prompt",
-    response_model=MannequinOptimizePromptResponse,
+    response_model=StandardResponse[MannequinOptimizePromptResponse],
     summary="1. 优化提示词（可选，bailian/qwen-turbo 纯文本，把原始提示词整合成适合生图的英文 prompt）",
     tags=["模特创建流程 · 交互端点"],
 )
@@ -367,7 +364,7 @@ async def optimize_prompt(body: MannequinOptimizePromptRequest):
             raise RuntimeError("LLM 返回空内容")
 
         print(f"[mannequin/optimize-prompt] ✅ 优化完成 ({len(final_prompt)} chars)", flush=True)
-        return MannequinOptimizePromptResponse(final_prompt=final_prompt)
+        return ok(MannequinOptimizePromptResponse(final_prompt=final_prompt))
 
     except Exception as e:
         print(f"[mannequin/optimize-prompt] ❌ 失败: {e}", flush=True)
@@ -380,7 +377,7 @@ async def optimize_prompt(body: MannequinOptimizePromptRequest):
 
 @router.post(
     "/generate",
-    response_model=MannequinGenerateResponse,
+    response_model=StandardResponse[MannequinGenerateResponse],
     summary="2. 首轮批量生图（路径B必须，gpt-image-2 生成 n 张模特图并自动落盘）",
     tags=["模特创建流程 · 交互端点"],
 )
@@ -453,11 +450,11 @@ async def generate_mannequin_images(body: MannequinGenerateRequest):
             raise HTTPException(502, "全部生图失败")
 
         print(f"[mannequin/generate] ✅ 成功 {len(images)}/{body.num_output}", flush=True)
-        return MannequinGenerateResponse(
+        return ok(MannequinGenerateResponse(
             images=images,
             model=backend_model,
             final_prompt=body.prompt,
-        )
+        ))
 
     except HTTPException:
         raise
@@ -472,7 +469,7 @@ async def generate_mannequin_images(body: MannequinGenerateRequest):
 
 @router.post(
     "/fine-tune",
-    response_model=MannequinFineTuneResponse,
+    response_model=StandardResponse[MannequinFineTuneResponse],
     summary="3. 单张微调（可选，图生图，对选中的一张模特图做局部/风格微调）",
     tags=["模特创建流程 · 交互端点"],
 )
@@ -521,13 +518,13 @@ async def fine_tune_mannequin(body: MannequinFineTuneRequest):
         storage_uri = save_output_image(body.session_id, "fine-tuned", data_uri)
         url = _storage_uri_url(storage_uri) if storage_uri else None
         print(f"[mannequin/fine-tune] ✅ 成功 → {storage_uri}", flush=True)
-        return MannequinFineTuneResponse(
+        return ok(MannequinFineTuneResponse(
             base64=img.b64_json,
             storage_uri=storage_uri,
             url=url,
             model=backend_model,
             revised_prompt=getattr(img, "revised_prompt", None),
-        )
+        ))
     except Exception as e:
         print(f"[mannequin/fine-tune] ❌ 失败: {e}", flush=True)
         raise HTTPException(502, f"微调失败: {e}")
@@ -539,7 +536,7 @@ async def fine_tune_mannequin(body: MannequinFineTuneRequest):
 
 @router.post(
     "/auto-tag",
-    response_model=MannequinAutoTagResponse,
+    response_model=StandardResponse[MannequinAutoTagResponse],
     summary="4. VLM 读图自动打标签（gemini-3.7-flash，入库前必须步骤）",
     tags=["模特创建流程 · 交互端点"],
 )
@@ -631,12 +628,12 @@ async def auto_tag_mannequin(body: MannequinAutoTagRequest):
         print(f"[mannequin/auto-tag] ✅ 标签 {len(validated_tags)} 组, "
               f"描述 {len(description)} chars", flush=True)
 
-        return MannequinAutoTagResponse(
+        return ok(MannequinAutoTagResponse(
             tags=validated_tags,
             description=description,
             suggested_name=suggested_name if isinstance(suggested_name, str) else None,
             model=model_name,
-        )
+        ))
 
     except json_mod.JSONDecodeError as e:
         print(f"[mannequin/auto-tag] ❌ JSON 解析失败: {e}", flush=True)

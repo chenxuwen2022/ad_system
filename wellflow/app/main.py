@@ -6,7 +6,8 @@ import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,8 +16,8 @@ from pathlib import Path
 from wellflow.app.api.tasks import router as tasks_router
 from wellflow.app.api.products import router as products_router
 from wellflow.app.api.mannequins import router as mannequins_router
+from wellflow.app.api.utils import ok, fail, StandardResponse
 from wellflow.app.sse import router as sse_router
-from wellflow.app.api.utils import fail
 from wellflow.app.config import settings
 
 
@@ -133,16 +134,41 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------------------------------------------------------------------
+# 全局异常处理（统一转为 {code, data, message}）
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# 全局异常处理
-# ---------------------------------------------------------------------------
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    if isinstance(exc.detail, dict):
+        message = exc.detail.get("message") or str(exc.detail)
+        data = {k: v for k, v in exc.detail.items() if k != "message"} or None
+    else:
+        message = str(exc.detail) if exc.detail else "请求错误"
+        data = None
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=fail(message=message, code=exc.status_code, data=data),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    simplified = []
+    for err in exc.errors():
+        loc = ".".join(str(x) for x in err.get("loc", ()))
+        simplified.append({"loc": loc, "msg": err.get("msg", ""), "type": err.get("type", "")})
+    return JSONResponse(
+        status_code=422,
+        content=fail(message="参数校验失败", code=422, data=simplified),
+    )
+
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
-        content=fail(message=f"服务内部错误: {str(exc)}", code=500),
+        content=fail(message=f"服务内部错误: {exc}", code=500),
     )
 
 
@@ -150,15 +176,15 @@ async def global_exception_handler(request: Request, exc: Exception):
 # 健康检查
 # ---------------------------------------------------------------------------
 
-@app.get("/health", tags=["系统"], summary="健康检查")
+@app.get("/health", tags=["系统"], summary="健康检查", response_model=StandardResponse[dict])
 def health():
-    return {
+    return ok({
         "status": "ok",
         "version": app.version,
         "gateway": "new-api",
         "langgraph_available": _graph is not None,
         "checkpointer_available": _checkpointer is not None,
-    }
+    })
 
 
 # ---------------------------------------------------------------------------

@@ -140,7 +140,7 @@ class MannequinRepo:
     ) -> Mannequin:
         obj = self.get(mannequin_id)
         if obj is None:
-            raise ValueError(f"model {mannequin_id} 不存在")
+            raise ValueError(f"mannequin {mannequin_id} 不存在")
         if name is not None:
             obj.name = name.strip()
         if en_name is not None:

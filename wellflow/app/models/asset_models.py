@@ -82,7 +82,7 @@ class ProductSku(Base):
         BIGINT, ForeignKey("product_brand.id", ondelete="RESTRICT"), nullable=False,
     )
     name: Mapped[str] = mapped_column(String(256), nullable=False)
-    style_no: Mapped[str | None] = mapped_column(String(64), nullable=True)     # 货号/款号
+    style_no: Mapped[str] = mapped_column(String(64), nullable=False)             # 货号/款号
     category: Mapped[str | None] = mapped_column(String(64), nullable=True)       # 商品类目
     color: Mapped[str | None] = mapped_column(String(32), nullable=True)
     material: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -102,6 +102,7 @@ class ProductSku(Base):
     )
 
     __table_args__ = (
+        UniqueConstraint("series_id", "style_no", "name", name="uk_product_sku_series_style_name"),
         Index("ix_product_sku_series", "series_id"),
         Index("ix_product_sku_brand", "brand_id"),
         Index("ix_product_sku_status", "status"),
