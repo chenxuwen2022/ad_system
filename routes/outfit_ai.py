@@ -45,6 +45,15 @@ AI_KEY = os.environ.get(
 )
 AI_MODELS = ["mai-image-2.5", "gpt-image-2.5-flare", "gpt-image-2"]  # 自动降级链
 
+# 真实拆解配置
+OUTFIT_VLM_MODEL = os.environ.get("OUTFIT_VLM_MODEL", "gemini-3.7-flash")  # VLM 单品识别
+# 抠图降级链(gpt-image-2 优先,质量优先;mai 保底,人物图不被安全策略拦截)
+OUTFIT_EXTRACT_MODELS = ["gpt-image-2", "gpt-image-2.5-flare", "mai-image-2.5"]
+OUTFIT_MAX_ITEMS = 6                 # 单品数量上限(防 VLM 失控)
+OUTFIT_EXTRACT_CONCURRENCY = 3       # 抠图并发数
+OUTFIT_VLM_TIMEOUT = 120             # VLM 识别超时(秒)
+_TASK_LOCK = threading.RLock()       # 任务文件写锁(可重入,worker 锁内调用 _save_task 不会自锁)
+
 # 演示模式 6 件示例单品(与 PM demo 一致)
 DEMO_ITEMS = [
     {"id": "jacket", "name": "军绿衬衫外套", "category": "衬衫", "color": "军绿"},
@@ -67,9 +76,10 @@ def _task_path(task_id: str) -> Path:
 
 def _save_task(task: dict):
     _ensure_dir()
-    _task_path(task["task_id"]).write_text(
-        json.dumps(task, ensure_ascii=False), encoding="utf-8"
-    )
+    with _TASK_LOCK:
+        _task_path(task["task_id"]).write_text(
+            json.dumps(task, ensure_ascii=False), encoding="utf-8"
+        )
 
 
 def _load_task(task_id: str):
@@ -189,15 +199,222 @@ def _run_demo_extract(task: dict, raw: bytes):
     _save_task(task)
 
 
+# ---------------------------------------------------------------------------
+# 真实拆解(二期已上线):VLM 识别 + 逐件白底抠图
+# ---------------------------------------------------------------------------
+
+def _extract_json(text: str):
+    """从 VLM 返回文本提取 JSON(直接 parse → 剥 fence → 截 {..})。"""
+    if not text:
+        return {}
+    try:
+        obj = json.loads(text.strip())
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    import re as _re
+    fenced = _re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=_re.IGNORECASE)
+    fenced = _re.sub(r"\s*```$", "", fenced)
+    try:
+        obj = json.loads(fenced.strip())
+        if isinstance(obj, dict):
+            return obj
+    except json.JSONDecodeError:
+        pass
+    first = fenced.find("{")
+    last = fenced.rfind("}")
+    if first >= 0 and last > first:
+        try:
+            obj = json.loads(fenced[first:last + 1])
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+
+def _call_vlm_recognize(raw: bytes):
+    """VLM(gemini-3.7-flash)识别穿搭照片中的单品清单。
+
+    Returns:
+        [{"name","category","color"}, ...](≤ OUTFIT_MAX_ITEMS),失败抛 RuntimeError。
+    """
+    b64 = base64.b64encode(raw).decode()
+    prompt = (
+        "这是一张人物全身穿搭照片。请识别照片中人物身上穿/戴的每一件单品"
+        "(上衣、裤装、鞋、包、腰带、眼镜等),输出 JSON:\n"
+        '{"items":[{"name":"单品名(简洁,如 军绿衬衫外套)",'
+        '"category":"品类(衬衫/T恤/裤子/鞋/包/配饰 等通用词)",'
+        '"color":"颜色(简洁,如 军绿/米白/黑)"}]}\n'
+        "要求:\n"
+        "1. 按从上到下、从外到内排列\n"
+        "2. 不要包含人物本身特征(发型、肤色、身材)\n"
+        "3. 只输出 JSON,不要任何解释"
+    )
+    payload = {
+        "model": OUTFIT_VLM_MODEL,
+        "messages": [
+            {"role": "system", "content": "你是专业的电商服饰单品识别专家。"},
+            {"role": "user", "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+            ]},
+        ],
+        "response_format": {"type": "json_object"},
+        "temperature": 0.2,
+    }
+    req = urllib.request.Request(
+        AI_BASE + "/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Authorization": "Bearer " + AI_KEY, "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=OUTFIT_VLM_TIMEOUT) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    content = data["choices"][0]["message"]["content"]
+    parsed = _extract_json(content)
+    items = parsed.get("items")
+    if not isinstance(items, list) or not items:
+        raise RuntimeError(f"VLM 未返回有效单品清单: {content[:200]}")
+
+    norm = []
+    for it in items[:OUTFIT_MAX_ITEMS]:
+        if not isinstance(it, dict) or not it.get("name"):
+            continue
+        norm.append({
+            "name": str(it["name"]).strip(),
+            "category": str(it.get("category") or "").strip(),
+            "color": str(it.get("color") or "").strip(),
+        })
+    if not norm:
+        raise RuntimeError(f"VLM 单品清单为空: {content[:200]}")
+    print(f"[outfit-ai] 🔍 VLM 识别 {len(norm)} 件单品", flush=True)
+    return norm
+
+
+def _extract_item_image(raw: bytes, name: str):
+    """单件抠图:按降级链依次尝试,成功返回 b64,全败抛 RuntimeError。"""
+    prompt = (
+        f"提取这张穿搭照片中的「{name}」,生成干净的专业白底商品图。"
+        "要求:只保留这一件单品,主体完整(被遮挡部分合理补全),"
+        "背景纯白,居中构图,无阴影、无文字"
+    )
+    errors = []
+    for model in OUTFIT_EXTRACT_MODELS:
+        try:
+            r = _call_model(model, raw, prompt)
+            b64 = (r.get("data") or [{}])[0].get("b64_json", "")
+            if not b64:
+                raise RuntimeError(f"{model}: AI 未返回图片结果")
+            return b64
+        except Exception as e:
+            errors.append(f"{model}: {str(e)[:100]}")
+    raise RuntimeError("；".join(errors))
+
+
+def _run_real_extract(task: dict, raw: bytes):
+    """后台线程:真实拆解 = VLM 识别 → 逐件抠图(并发)→ 进度落盘。
+
+    终态:
+      - 全部成功 → done,items 每项带图片
+      - 部分失败 → done + failed_items(成功部分不受影响)
+      - 全部失败 → failed + 失败汇总
+    """
+    try:
+        # ① VLM 识别(失败则整个任务 failed)
+        try:
+            recognized = _call_vlm_recognize(raw)
+        except Exception as e:
+            task["status"] = "failed"
+            task["error"] = f"单品识别失败: {str(e)[:400]}"
+            _save_task(task)
+            return
+
+        # 识别结果先行落盘:前端轮询立即可见清单与进度
+        norm_items = [
+            {"id": f"r{i + 1}", "name": it["name"], "category": it["category"],
+             "color": it["color"], "image": ""}
+            for i, it in enumerate(recognized)
+        ]
+        task["items"] = norm_items
+        task["progress"] = {"done": 0, "total": len(norm_items)}
+        task["failed_items"] = []
+        _save_task(task)
+
+        # ② 逐件抠图(线程池并发 OUTFIT_EXTRACT_CONCURRENCY)
+        from concurrent.futures import ThreadPoolExecutor
+
+        results: dict = {}
+        errors: dict = {}
+
+        def worker(idx: int):
+            b64 = None
+            err = ""
+            try:
+                b64 = _extract_item_image(raw, norm_items[idx]["name"])
+            except Exception as e:
+                err = str(e)[:200]
+
+            # 图片落盘放锁外(磁盘 I/O 不占锁)
+            image_url = ""
+            if b64 is not None:
+                fname = f"item_{task['task_id']}_{idx}.png"
+                (OUTFIT_AI_DIR / fname).write_bytes(base64.b64decode(b64))
+                image_url = f"/static/outfit_ai/{fname}"
+
+            # 结果记录 + 进度计算 + 任务文件写入在同一把锁内,
+            # 保证进度单调且终值正确(消除并发写竞态)
+            with _TASK_LOCK:
+                if b64 is not None:
+                    results[idx] = b64
+                    task["items"][idx]["image"] = image_url
+                else:
+                    errors[idx] = err
+                    task["failed_items"].append({
+                        "name": norm_items[idx]["name"], "error": err})
+                done = len(results) + len(errors)
+                task["progress"] = {"done": done, "total": len(norm_items)}
+                _save_task(task)
+            print(f"[outfit-ai] 🖼️ 抠图进度 {task['progress']['done']}/{len(norm_items)} "
+                  f"({'✅' if b64 is not None else '❌'} {norm_items[idx]['name']})", flush=True)
+
+        with ThreadPoolExecutor(
+            max_workers=min(OUTFIT_EXTRACT_CONCURRENCY, len(norm_items))
+        ) as ex:
+            list(ex.map(worker, range(len(norm_items))))
+
+        # ③ 终态
+        ok_n = len(results)
+        total = len(norm_items)
+        if ok_n == 0:
+            task["status"] = "failed"
+            task["error"] = (
+                f"全部 {total} 件单品抠图失败: "
+                + "；".join(errors.values())[:400]
+            )
+        else:
+            task["status"] = "done"
+            task["error"] = (
+                f"{len(errors)} 件单品抠图失败(详见 failed_items)" if errors else ""
+            )
+        _save_task(task)
+        print(f"[outfit-ai] ✅ 真实拆解完成 {ok_n}/{total}", flush=True)
+    except Exception as e:
+        task["status"] = "failed"
+        task["error"] = str(e)[:600]
+        _save_task(task)
+
+
 @router.post("/ai-extract")
 async def ai_extract(
     image: UploadFile = File(default=None),
-    mode: str = Form(default="demo"),
+    mode: str = Form(default=""),
     source_url: str = Form(default=""),
 ):
-    """上传照片 → 立即返回 task_id(演示模式异步任务)。
+    """上传照片 → 立即返回 task_id(异步任务 + 轮询)。
 
-    mode=demo:对示例照片拆解 6 件预制单品;未上传图片时使用内置示例照片。
+    mode 自动判定:传了照片(上传/直链)→ real 真实拆解;
+    无图(内置示例照片)→ demo 演示模式;显式传 mode=demo|real 可覆盖。
     """
     _ensure_dir()
     if image is not None:
@@ -223,6 +440,11 @@ async def ai_extract(
     else:
         return {"code": 1, "msg": "未上传图片且示例照片不存在"}
 
+    # mode 自动判定:传了照片 → real;示例照片 → demo;显式参数覆盖
+    has_photo = (image is not None) or bool(source_url.strip())
+    if mode not in ("demo", "real"):
+        mode = "real" if has_photo else "demo"
+
     ts = int(time.time() * 1000)
     task_id = f"{ts}_{uuid.uuid4().hex[:6]}"
 
@@ -236,10 +458,13 @@ async def ai_extract(
         "status": "processing",
         "original_url": f"/static/outfit_ai/{orig_name}",
         "items": [],
+        "failed_items": [],
+        "progress": {"done": 0, "total": 0},
         "error": "",
     }
     _save_task(task)
-    threading.Thread(target=_run_demo_extract, args=(task, raw), daemon=True).start()
+    target = _run_real_extract if mode == "real" else _run_demo_extract
+    threading.Thread(target=target, args=(task, raw), daemon=True).start()
     return {
         "code": 0,
         "data": {

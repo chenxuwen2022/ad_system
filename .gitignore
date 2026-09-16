@@ -47,3 +47,6 @@ static/scene_ai/
 
 # AI 穿搭拆解/平铺图运行时产物
 static/outfit_ai/
+
+# 资产库迁移备份文件
+assets_data/*.bak_*

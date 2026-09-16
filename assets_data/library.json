@@ -1140,5 +1140,66 @@
     },
     "image": "/static/assets/outfits/wf-o011.png",
     "created_at": "2026-09-16 08:14:51"
+  },
+  {
+    "id": "WF-O012",
+    "category": "outfit",
+    "name": "灰色长袖上衣搭配",
+    "desc": "灰色长袖上衣、黑色高腰阔腿裤、浅灰色运动鞋组成的3件搭配，呈现休闲、极简风格。",
+    "tags": "休闲,极简,上衣,裤子,鞋",
+    "scope": "mine",
+    "origin": "demo",
+    "cover": "/static/assets/outfits/user_cover_56df3f17e4ae.png",
+    "original": "/static/assets/outfits/user_orig_b47bbdf841d0.png",
+    "items": [
+      {
+        "id": "r1",
+        "name": "灰色长袖上衣",
+        "category": "上衣",
+        "color": "灰",
+        "image": "/static/assets/outfits/user_item_a04e6a3a202e.png"
+      },
+      {
+        "id": "r2",
+        "name": "黑色高腰阔腿裤",
+        "category": "裤子",
+        "color": "黑",
+        "image": "/static/assets/outfits/user_item_5be8969a5c93.png"
+      },
+      {
+        "id": "r3",
+        "name": "浅灰色运动鞋",
+        "category": "鞋",
+        "color": "浅灰",
+        "image": "/static/assets/outfits/user_item_95fd7e7c2cd0.png"
+      }
+    ],
+    "dims": {
+      "category": [
+        "上衣",
+        "裤子",
+        "鞋"
+      ],
+      "outfitStyle": [
+        "休闲",
+        "极简"
+      ],
+      "color": [
+        "灰",
+        "黑",
+        "浅灰"
+      ],
+      "material": [
+        "羽绒"
+      ],
+      "fit": [
+        "合身"
+      ],
+      "func": [
+        "保暖"
+      ]
+    },
+    "image": "/static/assets/outfits/user_cover_56df3f17e4ae.png",
+    "created_at": "2026-09-16 14:16:36"
   }
 ]

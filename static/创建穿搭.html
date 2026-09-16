@@ -117,7 +117,7 @@ input[type=text]:focus, textarea:focus { outline:none; border-color:#1f6feb; }
     </div>
     <div class="preview" id="previewBox" style="display:none"></div>
     <div class="hint" id="srcHint">原图会完整保留,供详情页切换查看。</div>
-    <div class="note">演示模式说明:当前为演示模式,AI 拆解将返回预制示例单品(军绿衬衫外套、米白圆领内搭、炭灰直筒长裤、白色低帮运动鞋、黑色银扣腰带、黑色方框墨镜)。真实 AI 拆解将在二期开放。</div>
+    <div class="note">模式说明:使用「示例照片」走演示模式,返回 6 件预制示例单品(军绿衬衫外套、米白圆领内搭等),秒回;「上传图片 / 图片链接」走真实 AI 拆解,识别照片中的单品并逐件生成白底图,约需 1-3 分钟。</div>
   </div>
 
   <!-- 步骤 2 -->
@@ -234,7 +234,7 @@ async function startExtract() {
     const fd = new FormData();
     if (file) fd.append('image', file);
     if (urlVal) fd.append('source_url', urlVal);
-    fd.append('mode', 'demo');
+    // 不传 mode:后端自动判定(上传照片→真实拆解,示例照片→演示模式)
     const j = await api('/api/outfit/ai-extract', { method: 'POST', body: fd });
     extractTask = { task_id: j.data.task_id, original_url: j.data.original_url };
     pollTask();
@@ -250,9 +250,17 @@ function pollTask() {
     try {
       const j = await api('/api/outfit/ai-status?task_id=' + extractTask.task_id);
       const d = j.data;
-      if (d.status === 'done') {
+      if (d.status === 'processing') {
+        const p = d.progress || {};
+        const msg = (p.total > 0)
+          ? `已识别到 ${p.total} 件单品,白底图生成中 ${p.done}/${p.total}…`
+          : 'AI 识别中,请稍候…';
+        document.getElementById('extractArea').innerHTML =
+          `<div style="color:#7a8699"><span class="spin"></span>${esc(msg)}</div>`;
+      } else if (d.status === 'done') {
         clearInterval(pollTimer);
         extractedItems = d.items || [];
+        extractTask.failed_items = d.failed_items || [];
         selected = new Set(extractedItems.map(it => it.id));
         renderItems();
       } else if (d.status === 'failed') {
@@ -270,9 +278,13 @@ function pollTask() {
 }
 
 function renderItems() {
+  const fails = extractTask.failed_items || [];
+  const failNote = fails.length
+    ? `<div class="err-box" style="margin-top:10px">⚠️ ${fails.length} 件单品生成失败:${fails.map(f => f.name).join('、')} —— 可取消部分单品后继续,或返回上一步重试</div>`
+    : '';
   document.getElementById('extractArea').innerHTML =
     `<div class="note">AI 拆解完成:识别到 ${extractedItems.length} 件单品,默认全选,
-      可取消不需要的单品(未选单品不会出现在平铺总图与入库图库中)。</div>
+      可取消不需要的单品(未选单品不会出现在平铺总图与入库图库中)。</div>${failNote}
      <div class="items">` +
     extractedItems.map(it => `
       <div class="sel-item on" id="it_${it.id}" onclick="toggleItem('${it.id}')">

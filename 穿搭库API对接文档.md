@@ -106,7 +106,7 @@
 - `image`:上传的照片文件
 - `source_url`:图片直链(http/https,仅可直开的图片)
 - 都不传:使用内置示例照片
-- `mode`:固定 `demo`(当前仅演示模式)
+- `mode`(可选):`real` / `demo`;**不传则自动判定**:传了照片 → real 真实拆解;无图(示例照片)→ demo 演示模式
 
 立即返回:
 ```json
@@ -114,11 +114,16 @@
 ```
 轮询 `GET /api/outfit/ai-status?task_id=xxx`(建议 2s 间隔):
 ```json
+// processing 时(真实模式):
+{ "code":0, "data": { "status":"processing", "progress":{"done":3,"total":6}, "items":[...], "failed_items":[...] } }
 // done 时:
-{ "code":0, "data": { "status":"done", "items":[ {"id":"jacket","name":"军绿衬衫外套","category":"衬衫","color":"军绿","image":"/static/assets/outfit-demo/jacket.png"}, ...共6件 ] } }
+{ "code":0, "data": { "status":"done", "items":[ {"id":"r1","name":"军绿色工装衬衫外套","category":"衬衫","color":"军绿","image":"/static/outfit_ai/item_xxx_0.png"}, ... ], "failed_items":[{"name":"...","error":"..."}], "progress":{"done":6,"total":6} } }
 // failed 时:data.status="failed", data.error=原因(前端展示错误并给「重试」按钮,后端不会降级)
 ```
-**重要**:当前为演示模式,无论传什么照片,返回的都是 6 件预制示例单品;真实识别为二期。
+
+**两种模式**:
+- **真实模式(mode=real,上传照片自动触发)**:VLM(gemini-3.7-flash)识别照片单品清单(≤6 件)→ 逐件生成白底图(gpt-image-2 优先,降级 gpt-image-2.5-flare → mai-image-2.5),约 1-3 分钟;识别结果先行返回,前端可用 `progress` 展示「识别到 N 件,抠图中 x/N」;部分单品失败不影响成功部分(见 `failed_items`)
+- **演示模式(mode=demo,示例照片)**:返回 6 件预制示例单品,秒回
 
 ### 9. 平铺总图合成
 `POST /api/outfit/flatlay`(multipart:`items_json` = 已选单品数组,最多 6 件)
