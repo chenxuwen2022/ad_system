@@ -50,3 +50,10 @@ static/outfit_ai/
 
 # 资产库迁移备份文件
 assets_data/*.bak_*
+
+# static 目录整体忽略(运行时产物与页面,不纳入版本控制)
+static/
+static/assets/
+static/outfit_ai/
+static/.gitkeep
+static/*.html
