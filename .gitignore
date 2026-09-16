@@ -44,3 +44,6 @@ wellflow/uploads/
 
 # AI 场景处理产物
 static/scene_ai/
+
+# AI 穿搭拆解/平铺图运行时产物
+static/outfit_ai/

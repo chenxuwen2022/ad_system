@@ -31,6 +31,8 @@ from routes.upload_routes import router as upload_router
 from routes.ad_routes import router as ad_router
 from routes.asset_routes import router as asset_router
 from routes.scene_ai import router as scene_ai_router
+from routes.outfit_routes import assets_router as outfit_assets_router, outfit_router
+from routes.outfit_ai import router as outfit_ai_router
 from config import MEDIA_STORAGE_PATH
 from db import init_db
 from token_manager import get_token_mgr
@@ -72,6 +74,9 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(upload_router)
 app.include_router(ad_router)
 app.include_router(asset_router)
+app.include_router(outfit_assets_router)  # 穿搭库:GET /api/assets/{id} 详情
+app.include_router(outfit_router)        # 穿搭库:/api/outfit 写端点 + dimensions
+app.include_router(outfit_ai_router)     # 穿搭库:/api/outfit ai-extract/ai-status/flatlay
 app.include_router(scene_ai_router, prefix="/api/scene")
 
 # ── 子系统二：电商商拍（WellFlow，API 路径与独立运行时一致）──

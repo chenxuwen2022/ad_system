@@ -696,449 +696,115 @@
     "created_at": "2026-09-15 10:03:12"
   },
   {
+    "id": "WF-O001",
+    "category": "outfit",
+    "name": "通勤西装套装",
+    "tags": "职业,春秋,通勤",
+    "scope": "official",
+    "dims": {
+      "风格": "职业",
+      "季节": "春秋",
+      "适用场景": "通勤"
+    },
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
+  },
+  {
+    "id": "WF-O002",
+    "category": "outfit",
+    "name": "休闲针织开衫",
+    "tags": "休闲,春秋,居家",
+    "scope": "official",
+    "dims": {
+      "风格": "休闲",
+      "季节": "春秋",
+      "适用场景": "居家"
+    },
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
+  },
+  {
+    "id": "WF-O003",
+    "category": "outfit",
+    "name": "夏日碎花连衣裙",
+    "tags": "甜美,夏,约会",
+    "scope": "official",
+    "dims": {
+      "风格": "甜美",
+      "季节": "夏",
+      "适用场景": "约会"
+    },
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
+  },
+  {
     "id": "WF-O004",
     "category": "outfit",
-    "name": "藏青短裤凉拖搭配",
-    "desc": "藏青短裤与黑色夹趾凉拖组成的两件搭配，以深色搭配米色鞋床，呈现极简、休闲风格。",
-    "tags": "极简,休闲,裤子,鞋",
+    "name": "户外冲锋衣",
+    "tags": "运动,冬,旅行",
     "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o004.png",
-    "original": "/static/assets/outfits/wf-o004.png",
-    "items": [
-      {
-        "id": "wf-o004-shorts",
-        "name": "藏青短裤",
-        "category": "裤子",
-        "color": "藏青",
-        "image": "/static/assets/outfits/wf-o004-shorts.png"
-      },
-      {
-        "id": "wf-o004-sandals",
-        "name": "黑色夹趾凉拖",
-        "category": "鞋",
-        "color": "黑",
-        "image": "/static/assets/outfits/wf-o004-sandals.png"
-      }
-    ],
     "dims": {
-      "outfitStyle": [
-        "极简",
-        "休闲"
-      ],
-      "category": [
-        "裤子",
-        "鞋"
-      ],
-      "color": [
-        "藏青",
-        "黑",
-        "米"
-      ],
-      "material": [],
-      "fit": [
-        "短款"
-      ],
-      "func": []
+      "风格": "运动",
+      "季节": "冬",
+      "适用场景": "旅行"
     },
-    "image": "/static/assets/outfits/wf-o004.png",
-    "created_at": "2026-09-16 08:14:51"
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
   },
   {
     "id": "WF-O005",
     "category": "outfit",
-    "name": "米白长裤通勤搭配",
-    "desc": "米白长裤、米色系带鞋、卡其手提包与细框眼镜组成的四件搭配，同色系搭配呈现极简、通勤风格。",
-    "tags": "极简,通勤,休闲,裤子,鞋,包,配饰",
+    "name": "复古牛仔外套",
+    "tags": "复古,春秋,通勤",
     "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o005.png",
-    "original": "/static/assets/outfits/wf-o005.png",
-    "items": [
-      {
-        "id": "wf-o005-trousers",
-        "name": "米白长裤",
-        "category": "裤子",
-        "color": "米白",
-        "image": "/static/assets/outfits/wf-o005-trousers.png"
-      },
-      {
-        "id": "wf-o005-shoes",
-        "name": "米色系带鞋",
-        "category": "鞋",
-        "color": "米",
-        "image": "/static/assets/outfits/wf-o005-shoes.png"
-      },
-      {
-        "id": "wf-o005-bag",
-        "name": "卡其手提包",
-        "category": "包",
-        "color": "卡其",
-        "image": "/static/assets/outfits/wf-o005-bag.png"
-      },
-      {
-        "id": "wf-o005-glasses",
-        "name": "细框眼镜",
-        "category": "配饰",
-        "color": "棕",
-        "image": "/static/assets/outfits/wf-o005-glasses.png"
-      }
-    ],
     "dims": {
-      "outfitStyle": [
-        "极简",
-        "通勤",
-        "休闲"
-      ],
-      "category": [
-        "裤子",
-        "鞋",
-        "包",
-        "配饰"
-      ],
-      "color": [
-        "米白",
-        "米",
-        "卡其"
-      ],
-      "material": [],
-      "fit": [
-        "长款"
-      ],
-      "func": []
+      "风格": "复古",
+      "季节": "春秋",
+      "适用场景": "通勤"
     },
-    "image": "/static/assets/outfits/wf-o005.png",
-    "created_at": "2026-09-16 08:14:51"
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
   },
   {
     "id": "WF-O006",
     "category": "outfit",
-    "name": "米白长裤凉拖搭配",
-    "desc": "米白长裤、黑色交叉带凉拖、卡其手提包与细框眼镜的夏日休闲搭配。",
-    "tags": "极简,休闲,裤子,配饰,包,鞋",
+    "name": "轻盈防晒套装",
+    "tags": "时尚,夏,旅行",
     "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o006.png",
-    "original": "/static/assets/outfits/wf-o006.png",
-    "items": [
-      {
-        "id": "wf-o006-trousers",
-        "name": "米白长裤",
-        "category": "裤子",
-        "color": "米白",
-        "image": "/static/assets/outfits/wf-o006-trousers.png"
-      },
-      {
-        "id": "wf-o006-glasses",
-        "name": "细框眼镜",
-        "category": "配饰",
-        "color": "棕",
-        "image": "/static/assets/outfits/wf-o006-glasses.png"
-      },
-      {
-        "id": "wf-o006-bag",
-        "name": "卡其手提包",
-        "category": "包",
-        "color": "卡其",
-        "image": "/static/assets/outfits/wf-o006-bag.png"
-      },
-      {
-        "id": "wf-o006-sandals",
-        "name": "黑色交叉带凉拖",
-        "category": "鞋",
-        "color": "黑",
-        "image": "/static/assets/outfits/wf-o006-sandals.png"
-      }
-    ],
     "dims": {
-      "outfitStyle": [
-        "极简",
-        "休闲"
-      ],
-      "category": [
-        "裤子",
-        "配饰",
-        "包",
-        "鞋"
-      ],
-      "color": [
-        "米白",
-        "黑",
-        "卡其"
-      ],
-      "material": [],
-      "fit": [
-        "长款"
-      ],
-      "func": []
+      "风格": "时尚",
+      "季节": "夏",
+      "适用场景": "旅行"
     },
-    "image": "/static/assets/outfits/wf-o006.png",
-    "created_at": "2026-09-16 08:14:51"
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
   },
   {
     "id": "WF-O007",
     "category": "outfit",
-    "name": "米白短裤腕表搭配",
-    "desc": "米白抽绳短裤与银色电子腕表组成的两件搭配，呈现简洁、轻松的日常风格。",
-    "tags": "极简,休闲,裤子,配饰",
+    "name": "居家棉质睡衣",
+    "tags": "休闲,冬,居家",
     "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o007.png",
-    "original": "/static/assets/outfits/wf-o007.png",
-    "items": [
-      {
-        "id": "wf-o007-shorts",
-        "name": "米白抽绳短裤",
-        "category": "裤子",
-        "color": "米白",
-        "image": "/static/assets/outfits/wf-o007-shorts.png"
-      },
-      {
-        "id": "wf-o007-watch",
-        "name": "银色电子腕表",
-        "category": "配饰",
-        "color": "灰",
-        "image": "/static/assets/outfits/wf-o007-watch.png"
-      }
-    ],
     "dims": {
-      "outfitStyle": [
-        "极简",
-        "休闲"
-      ],
-      "category": [
-        "裤子",
-        "配饰"
-      ],
-      "color": [
-        "米白",
-        "灰"
-      ],
-      "material": [],
-      "fit": [
-        "短款"
-      ],
-      "func": []
+      "风格": "休闲",
+      "季节": "冬",
+      "适用场景": "居家"
     },
-    "image": "/static/assets/outfits/wf-o007.png",
-    "created_at": "2026-09-16 08:14:51"
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
   },
   {
     "id": "WF-O008",
     "category": "outfit",
-    "name": "米白长裤手提包搭配",
-    "desc": "米白长裤、卡其手提包与细框眼镜组成的三件搭配，以自然中性色呈现简洁通勤风格。",
-    "tags": "极简,通勤,休闲,裤子,配饰,包",
+    "name": "晚宴礼服",
+    "tags": "时尚,不限,约会",
     "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o008.png",
-    "original": "/static/assets/outfits/wf-o008.png",
-    "items": [
-      {
-        "id": "wf-o008-trousers",
-        "name": "米白长裤",
-        "category": "裤子",
-        "color": "米白",
-        "image": "/static/assets/outfits/wf-o008-trousers.png"
-      },
-      {
-        "id": "wf-o008-glasses",
-        "name": "细框眼镜",
-        "category": "配饰",
-        "color": "棕",
-        "image": "/static/assets/outfits/wf-o008-glasses.png"
-      },
-      {
-        "id": "wf-o008-bag",
-        "name": "卡其手提包",
-        "category": "包",
-        "color": "卡其",
-        "image": "/static/assets/outfits/wf-o008-bag.png"
-      }
-    ],
     "dims": {
-      "outfitStyle": [
-        "极简",
-        "通勤",
-        "休闲"
-      ],
-      "category": [
-        "裤子",
-        "配饰",
-        "包"
-      ],
-      "color": [
-        "米白",
-        "卡其",
-        "棕"
-      ],
-      "material": [],
-      "fit": [
-        "长款"
-      ],
-      "func": []
+      "风格": "时尚",
+      "季节": "不限",
+      "适用场景": "约会"
     },
-    "image": "/static/assets/outfits/wf-o008.png",
-    "created_at": "2026-09-16 08:14:51"
-  },
-  {
-    "id": "WF-O009",
-    "category": "outfit",
-    "name": "浅米短裤假日搭配",
-    "desc": "浅米短裤、橄榄色太阳镜与橙色花卉书册组成的假日搭配；书册作为搭配道具保留。",
-    "tags": "休闲,裤子,配饰",
-    "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o009.png",
-    "original": "/static/assets/outfits/wf-o009.png",
-    "items": [
-      {
-        "id": "wf-o009-shorts",
-        "name": "浅米短裤",
-        "category": "裤子",
-        "color": "米",
-        "image": "/static/assets/outfits/wf-o009-shorts.png"
-      },
-      {
-        "id": "wf-o009-sunglasses",
-        "name": "橄榄色太阳镜",
-        "category": "配饰",
-        "color": "军绿",
-        "image": "/static/assets/outfits/wf-o009-sunglasses.png"
-      },
-      {
-        "id": "wf-o009-book",
-        "name": "橙色花卉书册",
-        "category": "配饰",
-        "color": "橙",
-        "image": "/static/assets/outfits/wf-o009-book.png"
-      }
-    ],
-    "dims": {
-      "outfitStyle": [
-        "休闲"
-      ],
-      "category": [
-        "裤子",
-        "配饰"
-      ],
-      "color": [
-        "米",
-        "军绿",
-        "橙"
-      ],
-      "material": [],
-      "fit": [
-        "短款"
-      ],
-      "func": []
-    },
-    "image": "/static/assets/outfits/wf-o009.png",
-    "created_at": "2026-09-16 08:14:51"
-  },
-  {
-    "id": "WF-O010",
-    "category": "outfit",
-    "name": "米白长裤棕鞋搭配",
-    "desc": "米白长裤、棕色皮鞋、卡其手提包与细框眼镜组成的四件搭配，以米棕配色呈现简洁通勤风格。",
-    "tags": "极简,通勤,休闲,裤子,配饰,包,鞋",
-    "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o010.png",
-    "original": "/static/assets/outfits/wf-o010.png",
-    "items": [
-      {
-        "id": "wf-o010-trousers",
-        "name": "米白长裤",
-        "category": "裤子",
-        "color": "米白",
-        "image": "/static/assets/outfits/wf-o010-trousers.png"
-      },
-      {
-        "id": "wf-o010-glasses",
-        "name": "细框眼镜",
-        "category": "配饰",
-        "color": "棕",
-        "image": "/static/assets/outfits/wf-o010-glasses.png"
-      },
-      {
-        "id": "wf-o010-bag",
-        "name": "卡其手提包",
-        "category": "包",
-        "color": "卡其",
-        "image": "/static/assets/outfits/wf-o010-bag.png"
-      },
-      {
-        "id": "wf-o010-shoes",
-        "name": "棕色皮鞋",
-        "category": "鞋",
-        "color": "棕",
-        "image": "/static/assets/outfits/wf-o010-shoes.png"
-      }
-    ],
-    "dims": {
-      "outfitStyle": [
-        "极简",
-        "通勤",
-        "休闲"
-      ],
-      "category": [
-        "裤子",
-        "配饰",
-        "包",
-        "鞋"
-      ],
-      "color": [
-        "米白",
-        "卡其",
-        "棕"
-      ],
-      "material": [],
-      "fit": [
-        "长款"
-      ],
-      "func": []
-    },
-    "image": "/static/assets/outfits/wf-o010.png",
-    "created_at": "2026-09-16 08:14:51"
-  },
-  {
-    "id": "WF-O011",
-    "category": "outfit",
-    "name": "浅米双扣短裤",
-    "desc": "浅米色双扣短裤，带腰袢与斜插口袋，呈现简洁休闲风格。原图仅含这一件单品，完整保留并直接用于单品查看。",
-    "tags": "极简,休闲,裤子",
-    "scope": "official",
-    "origin": "ai",
-    "cover": "/static/assets/outfits/wf-o011.png",
-    "original": "/static/assets/outfits/wf-o011.png",
-    "items": [
-      {
-        "id": "wf-o011-shorts",
-        "name": "浅米双扣短裤",
-        "category": "裤子",
-        "color": "米",
-        "image": "/static/assets/outfits/wf-o011.png"
-      }
-    ],
-    "dims": {
-      "outfitStyle": [
-        "极简",
-        "休闲"
-      ],
-      "category": [
-        "裤子"
-      ],
-      "color": [
-        "米"
-      ],
-      "material": [],
-      "fit": [
-        "短款"
-      ],
-      "func": []
-    },
-    "image": "/static/assets/outfits/wf-o011.png",
-    "created_at": "2026-09-16 08:14:51"
+    "image": "",
+    "created_at": "2026-09-15 10:03:12"
   }
 ]
