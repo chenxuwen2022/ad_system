@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>资产库 - WellFlow AI 电商商拍创作平台</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0e1117; color: #e8eaed; min-height: 100vh; }
+.wrap { max-width: 1180px; margin: 0 auto; padding: 24px 20px 60px; }
+.topline { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; }
+.topline .slogan { color: #8b949e; font-size: 12px; letter-spacing: 1px; }
+.topline .badge { color: #ffd83d; font-size: 13px; }
+h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
+.subtitle { color: #8b949e; font-size: 13px; margin-bottom: 22px; }
+
+.tabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
+.tab { display: flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 999px; background: #161b22; color: #c9d1d9; border: 1px solid #21262d; font-size: 13px; cursor: pointer; transition: all .15s; user-select: none; }
+.tab .cnt { color: #8b949e; font-size: 12px; }
+.tab.on { background: #ffd83d; color: #0e1117; border-color: #ffd83d; font-weight: 600; }
+.tab.on .cnt { color: #5c5200; }
+
+.filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+.fgroup { display: flex; gap: 6px; }
+.fbtn { padding: 6px 14px; border-radius: 8px; font-size: 13px; background: #161b22; color: #c9d1d9; border: 1px solid #21262d; cursor: pointer; user-select: none; }
+.fbtn.on { background: #2b5bff; border-color: #2b5bff; color: #fff; }
+.search { flex: 1; min-width: 260px; display: flex; align-items: center; gap: 8px; background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 0 10px; height: 34px; }
+.search input { flex: 1; background: none; border: none; outline: none; color: #e8eaed; font-size: 13px; }
+.search input::placeholder { color: #6e7681; }
+.search button { background: none; border: none; color: #c9d1d9; cursor: pointer; font-size: 13px; padding: 0 4px; }
+.demo { width: 100%; margin: 8px 0 14px; background: #17233b; border: 1px solid #2b5bff44; border-radius: 8px; padding: 8px 12px; font-size: 12px; color: #7ea0ff; }
+.demo b { color: #ffd83d; font-weight: 600; }
+
+.dims { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+.dim-wrap { position: relative; }
+.dimbtn { padding: 5px 12px; border-radius: 999px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; border: 1px solid #30363d; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dimbtn .arrow { color: #8b949e; margin-left: 4px; }
+.dimbtn.sel { background: #b8e27a; color: #151b0d; border-color: #b8e27a; font-weight: 600; }
+.dim-panel .panel-ops { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 12px; color: #8b949e; }
+.dim-panel .panel-ops .reset { cursor: pointer; padding: 4px 10px; border-radius: 6px; background: #21262d; color: #c9d1d9; }
+.dim-panel .panel-ops .reset:hover { background: #30363d; }
+.dim-panel .panel-ops .done { cursor: pointer; padding: 4px 16px; border-radius: 6px; border: none; background: #ffd83d; color: #151b0d; font-size: 12px; font-weight: 600; }
+.dim-panel .panel-ops .done:hover { background: #ffe066; }
+.dim-clear { color: #8b949e; font-size: 12px; cursor: pointer; text-decoration: underline; }
+.dim-clear:hover { color: #ffd83d; }
+.dim-panel { position: absolute; top: 32px; left: 0; z-index: 20; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px; min-width: 200px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none; }
+.dim-panel.open { display: block; }
+.dim-panel .vals { display: flex; flex-wrap: wrap; gap: 6px; }
+.dim-panel .val { padding: 4px 10px; border-radius: 6px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; }
+.dim-panel .val.on { background: #2b5bff; color: #fff; }
+.dim-panel .reset { margin-top: 8px; font-size: 11px; color: #8b949e; cursor: pointer; text-align: right; }
+
+.resultbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.resultbar .n { font-size: 13px; color: #8b949e; }
+.create { display: flex; align-items: center; gap: 6px; background: #ffd83d; color: #0e1117; font-weight: 600; border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; }
+.create .plus { font-size: 16px; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(232px, 1fr)); gap: 16px; }
+.card { background: #161b22; border: 1px solid #21262d; border-radius: 12px; overflow: hidden; transition: transform .15s, border-color .15s; }
+.card:hover { transform: translateY(-2px); border-color: #30363d; }
+.thumb { height: 300px; position: relative; background: #21262d; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .cover { position: absolute; inset: 0; }
+.thumb .id { position: absolute; left: 10px; top: 10px; background: #0e1117cc; color: #e8eaed; border-radius: 6px; padding: 2px 8px; font-size: 11px; }
+.thumb .scope-tag { position: absolute; right: 10px; top: 10px; background: #ffd83d; color: #0e1117; border-radius: 6px; padding: 2px 8px; font-size: 11px; font-weight: 600; }
+.card .body { padding: 12px 12px 10px; }
+.card .name { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.card .tags { color: #8b949e; font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
+.card .ops { display: flex; gap: 8px; }
+.ops .btn { flex: 1; text-align: center; padding: 5px 0; border-radius: 6px; font-size: 12px; cursor: pointer; background: #21262d; color: #c9d1d9; border: none; }
+.ops .btn:hover { background: #30363d; }
+.ops .btn.del:hover { background: #5c1a1a; color: #ff6b6b; }
+.empty { text-align: center; color: #6e7681; padding: 60px 0; font-size: 14px; }
+
+/* ── 弹窗（两步） ── */
+.modal-mask { position: fixed; inset: 0; background: #000a; display: none; align-items: center; justify-content: center; z-index: 100; }
+.modal-mask.open { display: flex; }
+.modal { background: #161b22; border: 1px solid #30363d; border-radius: 16px; width: 600px; max-width: 94vw; max-height: 90vh; overflow: auto; padding: 22px 26px; }
+.modal h3 { font-size: 17px; margin-bottom: 10px; }
+.demo-tip { display: flex; gap: 8px; background: #17233b; border: 1px solid #2b5bff44; border-radius: 8px; padding: 7px 12px; font-size: 12px; color: #7ea0ff; margin-bottom: 16px; }
+.demo-tip .tag { flex-shrink: 0; color: #ffd83d; font-weight: 600; }
+.steps { display: flex; gap: 10px; margin-bottom: 18px; }
+.step { flex: 1; display: flex; align-items: center; gap: 8px; background: #21262d; border-radius: 10px; padding: 9px 12px; font-size: 13px; color: #8b949e; }
+.step .num { width: 22px; height: 22px; border-radius: 50%; background: #30363d; color: #8b949e; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.step.on { background: #1c2a4d; border: 1px solid #2b5bff66; color: #c9d1d9; }
+.step.on .num { background: #2b5bff; color: #fff; }
+
+.upload { border: 2px dashed #30363d; border-radius: 12px; padding: 30px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; margin-bottom: 14px; }
+.upload:hover { border-color: #2b5bff; background: #1c2a4d22; }
+.upload .icon { font-size: 32px; color: #8b949e; margin-bottom: 8px; }
+.upload .main { font-size: 14px; font-weight: 600; color: #e8eaed; margin-bottom: 4px; }
+.upload .sub { font-size: 12px; color: #8b949e; }
+.upload.has-img { border-style: solid; border-color: #2b5bff; padding: 8px; }
+.upload.has-img img { width: 100%; max-height: 230px; object-fit: contain; border-radius: 8px; display: block; }
+.upload input[type=file] { display: none; }
+.or-line { display: flex; align-items: center; gap: 12px; color: #6e7681; font-size: 12px; margin-bottom: 12px; }
+.or-line::before, .or-line::after { content: ""; flex: 1; height: 1px; background: #21262d; }
+.link-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.link-row label { font-size: 13px; color: #c9d1d9; flex-shrink: 0; }
+.link-row input { flex: 1; background: #0e1117; border: 1px solid #30363d; border-radius: 8px; color: #e8eaed; padding: 8px 10px; font-size: 13px; outline: none; }
+.link-row input:focus { border-color: #2b5bff; }
+.link-row button { background: #2b5bff; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 13px; cursor: pointer; flex-shrink: 0; }
+.link-row button:disabled { background: #21262d; color: #6e7681; cursor: not-allowed; }
+.link-note { font-size: 12px; color: #8b949e; margin-bottom: 18px; }
+.spinner { width: 14px; height: 14px; border: 2px solid #fff8; border-top-color: transparent; border-radius: 50%; display: inline-block; vertical-align: -2px; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.form-row { margin-bottom: 12px; }
+.form-row label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 5px; }
+.form-row input[type=text], .form-row select, .form-row textarea { width: 100%; background: #0e1117; border: 1px solid #30363d; border-radius: 8px; color: #e8eaed; padding: 8px 10px; font-size: 13px; outline: none; }
+.form-row .dimgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.form-row .dimgrid select { width: 100%; }
+.form-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.btn-primary { background: #ffd83d; color: #0e1117; border: none; border-radius: 8px; padding: 8px 20px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn-primary:disabled { background: #6e7681; color: #0e1117; cursor: not-allowed; }
+.btn-ghost { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 8px; padding: 8px 20px; font-size: 13px; cursor: pointer; }
+.step-pane { display: none; }
+.step-pane.on { display: block; }
+.toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #2b5bff; color: #fff; border-radius: 8px; padding: 10px 22px; font-size: 13px; z-index: 200; display: none; }
+.toast.err { background: #c0341d; }
+.loading { text-align: center; color: #8b949e; padding: 40px; }
+.grad { position: absolute; inset: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="topline"><div class="slogan">官方精选与个人沉淀</div><div class="badge" id="headBadge"></div></div>
+  <h1>资产库</h1>
+  <div class="subtitle">统一管理可用于策划版本的模特、服装搭配和背景资产。</div>
+
+  <div class="tabs" id="tabs"></div>
+
+  <div class="filters">
+    <div class="fgroup" id="scopeGroup">
+      <div class="fbtn on" data-scope="">全部</div>
+      <div class="fbtn" data-scope="official">官方资产</div>
+      <div class="fbtn" data-scope="mine">我的资产</div>
+    </div>
+    <div class="search">
+      <input id="qInput" placeholder="搜索 ID、背景名或标签，也可描述你想要的场景">
+      <button id="qBtn">🔍 搜索</button>
+    </div>
+  </div>
+  <div class="demo" id="demoTip"></div>
+
+  <div class="dims" id="dimsBar"></div>
+
+  <div class="resultbar">
+    <div class="n" id="resultN"></div>
+    <button class="create" id="createBtn"><span class="plus">＋</span> 创建场景</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <div class="loading" id="loading">加载中…</div>
+</div>
+
+<!-- 创建场景 iframe 弹窗 -->
+<div class="modal-mask" id="sceneMask">
+  <div class="modal" style="width:680px;padding:0;overflow:hidden;background:#0e1117;border:none">
+    <iframe id="sceneFrame" src="创建场景.html" style="width:100%;height:560px;border:none;display:block;background:#0e1117"></iframe>
+  </div>
+</div>
+
+<!-- 创建/编辑弹窗（两步） -->
+<div class="modal-mask" id="modalMask">
+  <div class="modal">
+    <h3 id="modalTitle">创建场景</h3>
+    <div class="demo-tip"><span class="tag">交互演示</span>提供图片，核对资料，体验完整入库流程；不执行真实人物消除。</div>
+
+    <div class="steps">
+      <div class="step on" id="step1Bar"><span class="num">1</span>提供图片</div>
+      <div class="step" id="step2Bar"><span class="num">2</span>确认入库资料</div>
+    </div>
+
+    <!-- 步骤 1：图片 -->
+    <div class="step-pane on" id="pane1">
+      <div class="upload" id="uploadBox">
+        <input type="file" id="fileInput" accept="image/*">
+        <div id="uploadInner">
+          <div class="icon">🖼</div>
+          <div class="main">上传图片</div>
+          <div class="sub">选择一张图片，上传后自动进入资料确认</div>
+        </div>
+      </div>
+      <div class="or-line">或</div>
+      <div class="link-row">
+        <label>图片链接</label>
+        <input id="linkInput" placeholder="https://...图片直链" type="url">
+        <button id="readBtn">读取图片</button>
+      </div>
+      <div class="link-note">仅支持可直接打开的图片链接，不解析商品页或社交平台页面。</div>
+      <div class="form-actions">
+        <button class="btn-ghost" id="cancelBtn">取消</button>
+        <button class="btn-primary" id="nextBtn">下一步 →</button>
+      </div>
+    </div>
+
+    <!-- 步骤 2：资料确认 -->
+    <div class="step-pane" id="pane2">
+      <div class="form-row"><label>分类</label><select id="fCategory"></select></div>
+      <div class="form-row"><label>名称 *</label><input type="text" id="fName" placeholder="输入资产名称"></div>
+      <div class="form-row"><label>标签（逗号分隔）</label><input type="text" id="fTags" placeholder="例如：极简,自然,户外"></div>
+      <div class="form-row"><label>来源</label>
+        <select id="fScope"><option value="mine">我的资产</option><option value="official">官方资产</option></select>
+      </div>
+      <div class="form-row"><label>维度属性</label><div class="dimgrid" id="fDims"></div></div>
+      <div class="form-row"><label>已选图片</label>
+        <div class="upload has-img" id="confirmImgBox" style="display:none;cursor:default"></div>
+        <div class="upload" id="confirmEmpty" style="cursor:default"><div class="main" style="font-size:13px">未上传图片（可跳过）</div></div>
+      </div>
+      <div class="form-actions">
+        <button class="btn-ghost" id="backBtn">← 上一步</button>
+        <button class="btn-ghost" id="cancelBtn2">取消</button>
+        <button class="btn-primary" id="saveBtn">保存入库</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '/api/assets';
+const CATS = { brand:'品牌资产库', reference:'参考素材', model:'模特库', outfit:'穿搭库', scene:'场景库' };
+const DIM_DEFS = {
+  scene: { '空间类型':['纯色棚拍','摄影棚','客厅','卧室','厨房','卫生间','办公室','商场','街道','公园','体育场','健身房','山林','雪山','沙滩','营地','岩壁'], '地域环境':['城市','城市街头','郊外','森林','山地','雪地','湖泊','海边','沙漠'], '季节':['春','夏','秋','冬'], '天气':['晴天','阴天','雨天','雪天','雾','日落','夜晚'], '背景风格':['极简','专业','高级','自然','温馨','生活化','户外','科技','潮流','轻奢','都市'] },
+  model: { '性别':['女','男','儿童','老人'], '风格':['休闲','职业','时尚','甜美','运动'], '年龄':['18-25','25-35','35-45','45+'] },
+  outfit: { '风格':['休闲','职业','时尚','甜美','运动','复古'], '季节':['春','夏','秋','冬','不限'], '适用场景':['通勤','约会','旅行','居家','运动'] },
+  reference: { '类型':['摄影','插画','海报','视频','文案'], '风格':['极简','自然','复古','科技','国潮'] },
+  brand: { '行业':['母婴','美妆','服饰','食品','家居','数码'], '类型':['品牌','白牌','工厂','代理'] }
+};
+const CAT_NAME = { scene:'场景', model:'模特', outfit:'穿搭', reference:'参考素材', brand:'品牌资产' };
+const GRADS = ['linear-gradient(160deg,#e8e4d8 0%,#cfe0c0 45%,#8fae7f 100%)','linear-gradient(160deg,#d9c9a8 0%,#c9b18f 50%,#9c7f5d 100%)','linear-gradient(160deg,#5d9bc4 0%,#2e6d9e 50%,#1b3a56 100%)','linear-gradient(180deg,#ff9d45 0%,#ff6d3d 45%,#26364f 100%)','linear-gradient(160deg,#eef4f6 0%,#9cc9de 55%,#4a7fa8 100%)','linear-gradient(160deg,#a8926e 0%,#6f5b3f 50%,#3f5238 100%)','linear-gradient(160deg,#c9a0dc 0%,#8e5fb8 50%,#4a2a66 100%)','linear-gradient(160deg,#9ad0c2 0%,#4f9e8a 50%,#235a4c 100%)'];
+
+let state = { cat:'scene', scope:'', q:'', dims:{} };
+let editingId = null;
+let pendingFile = null;   // 步骤1选中的本地图片
+let pendingUrl = '';      // 步骤1读取的链接图片
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg, err){ const t=$('toast'); t.textContent=msg; t.className='toast'+(err?' err':''); t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', 2200); }
+function hashGrad(s){ let h=0; for(const c of String(s)) h=(h*31+c.charCodeAt(0))>>>0; return GRADS[h%GRADS.length]; }
+
+async function api(url, opt){
+  const r = await fetch(url, opt);
+  const j = await r.json().catch(()=>({code:-1}));
+  if(j.code !== 0) throw new Error(j.message || '请求失败');
+  return j.data;
+}
+
+/* ── 渲染分类 Tab ── */
+function renderTabs(stats){
+  $('tabs').innerHTML = Object.entries(CATS).map(([k,v])=>
+    `<div class="tab ${k===state.cat?'on':''}" data-cat="${k}">${v}<span class="cnt">${stats[k]||0}</span></div>`).join('');
+  $('headBadge').textContent = `${stats[state.cat]||0} 个${CAT_NAME[state.cat]}素材`;
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ state.cat=t.dataset.cat; state.dims={}; $('qInput').value=''; load(); });
+}
+
+/* ── 渲染维度筛选栏 ── */
+function renderDims(){
+  const defs = DIM_DEFS[state.cat] || {};
+  const keys = Object.keys(defs);
+  $('dimsBar').innerHTML = keys.map(k=>{
+    const arr = state.dims[k] || [];
+    const txt = arr.length ? arr.map(v=>`${k}/${v}`).join('、') : k;
+    return `<div class="dim-wrap"><button class="dimbtn ${arr.length?'sel':''}" data-dim="${esc(k)}" title="${esc(txt)}">${esc(txt)}<span class="arrow">▾</span></button>
+      <div class="dim-panel" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${arr.includes(x)?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div>
+      <div class="panel-ops"><span class="reset">清空本项</span><button class="done" type="button">完成</button></div></div></div>`;
+  }).join('') + `<div class="dim-clear" id="dimClear">清空筛选</div>`;
+  $('dimsBar').querySelectorAll('.dimbtn').forEach(b=>b.onclick=e=>{
+    e.stopPropagation();
+    const p = b.parentElement.querySelector('.dim-panel');
+    const wasOpen = p.classList.contains('open');
+    document.querySelectorAll('.dim-panel').forEach(x=>x.classList.remove('open'));
+    if(!wasOpen) p.classList.add('open');
+  });
+  $('dimsBar').querySelectorAll('.dim-panel').forEach(p=>{
+    p.addEventListener('click', e=>e.stopPropagation());
+    p.querySelectorAll('.val').forEach(v=>v.onclick=()=>{
+      const k = p.dataset.panel;
+      const val = v.dataset.val;
+      const arr = state.dims[k] || (state.dims[k]=[]);
+      const i = arr.indexOf(val);
+      if(i>=0) arr.splice(i,1); else arr.push(val);
+      if(!arr.length) delete state.dims[k];
+      load();
+    });
+    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; load(); };
+    p.querySelector('.done').onclick=()=>{ p.classList.remove('open'); };
+  });
+  const clear = $('dimClear');
+  if(clear) clear.onclick = ()=>{ state.dims={}; load(); };
+  document.addEventListener('click', ()=>document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open')));
+}
+
+/* ── 渲染卡片 ── */
+function renderCard(it){
+  const dimsTxt = Object.entries(it.dims||{}).filter(([k,v])=>Array.isArray(v)?v.length:v).map(([k,v])=>{
+    const arr = Array.isArray(v)?v:[v];
+    return `${k}·${arr.join('、')}`;
+  }).join(' · ');
+  const tagsTxt = [it.tags, dimsTxt].filter(Boolean).join(' · ');
+  const imgHtml = it.image
+    ? `<img src="${esc(it.image)}" alt="">`
+    : `<div class="grad" style="background:${hashGrad(it.id+it.name)}"></div>`;
+  return `<div class="card">
+    <div class="thumb">${imgHtml}<span class="id">ID · ${esc(it.id)}</span><span class="scope-tag">${it.scope==='official'?'官方':'我的'}</span></div>
+    <div class="body">
+      <div class="name">${esc(it.name)}</div>
+      <div class="tags">${esc(tagsTxt)||'—'}</div>
+      <div class="ops"><button class="btn" data-edit="${esc(it.id)}">编辑</button><button class="btn del" data-del="${esc(it.id)}">删除</button></div>
+    </div></div>`;
+}
+
+async function load(){
+  $('loading').style.display = 'block';
+  try{
+    const p = new URLSearchParams();
+    if(state.cat) p.set('category', state.cat);
+    if(state.scope) p.set('scope', state.scope);
+    if(state.q) p.set('q', state.q);
+    if(Object.keys(state.dims).length) p.set('dims', JSON.stringify(state.dims));
+    const d = await api(API+'?'+p.toString());
+    window._lastList = d.list;
+    renderTabs(d.stats);
+    renderDims();
+    const list = d.list;
+    $('resultN').textContent = `${list.length} 个结果`;
+    $('grid').innerHTML = list.length ? list.map(renderCard).join('')
+      : '<div class="empty">没有匹配的资产，试试调整筛选或创建一个</div>';
+    document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openModal(b.dataset.edit));
+    document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delAsset(b.dataset.del));
+  }catch(e){ toast('加载失败: '+e.message, true); }
+  $('loading').style.display = 'none';
+}
+
+/* ── 删除 ── */
+async function delAsset(id){
+  if(!confirm(`确定删除资产 ${id} 吗？该操作不可恢复。`)) return;
+  try{ await api(API+'/'+encodeURIComponent(id), {method:'DELETE'}); toast('已删除 '+id); load(); }
+  catch(e){ toast('删除失败: '+e.message, true); }
+}
+
+/* ── 弹窗两步控制 ── */
+function setStep(n){
+  $('step1Bar').classList.toggle('on', n===1);
+  $('step2Bar').classList.toggle('on', n===2);
+  $('pane1').classList.toggle('on', n===1);
+  $('pane2').classList.toggle('on', n===2);
+  // 保存按钮位置：步骤2的底部操作区随面板
+}
+function setUploadPreview(src){
+  $('uploadBox').classList.add('has-img');
+  $('uploadInner').innerHTML = `<img src="${esc(src)}" alt="预览">`;
+}
+function setConfirmImg(src){
+  $('confirmImgBox').style.display = src ? 'block' : 'none';
+  $('confirmEmpty').style.display = src ? 'none' : 'block';
+  $('confirmImgBox').innerHTML = src ? `<img src="${esc(src)}" alt="已选图片" style="width:100%;max-height:200px;object-fit:contain;border-radius:8px">` : '';
+}
+
+function openModal(id){
+  editingId = id || null;
+  pendingFile = null; pendingUrl = '';
+  const catName = CAT_NAME[state.cat] || '资产';
+  $('modalTitle').textContent = editingId ? '编辑资产' : '创建' + catName;
+  $('fCategory').innerHTML = Object.entries(CATS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('');
+  $('fCategory').value = state.cat;
+  $('fName').value = ''; $('fTags').value = ''; $('fScope').value = 'mine';
+  $('linkInput').value = '';
+  $('fileInput').value = '';
+  $('uploadBox').classList.remove('has-img');
+  $('uploadInner').innerHTML = `<div class="icon">🖼</div><div class="main">上传图片</div><div class="sub">选择一张图片，上传后自动进入资料确认</div>`;
+  renderDimForm();
+
+  if(editingId){
+    const it = (window._lastList||[]).find(x=>x.id===id);
+    if(it){
+      $('fCategory').value = it.category;
+      $('fName').value = it.name; $('fTags').value = it.tags;
+      $('fScope').value = it.scope;
+      renderDimForm(it.dims||{});
+      // 编辑直接进步骤2，展示现有图片
+      setConfirmImg(it.image || '');
+      setStep(2);
+      return;
+    }
+  }
+  setConfirmImg('');
+  setStep(1);
+}
+
+function renderDimForm(prefill){
+  const cat = $('fCategory').value;
+  const defs = DIM_DEFS[cat] || {};
+  $('fDims').innerHTML = Object.entries(defs).map(([k,vals])=>{
+    const cur = (prefill && prefill[k]) ? (Array.isArray(prefill[k]) ? prefill[k] : [prefill[k]]) : [];
+    return `<div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">${k}</label>
+     <select data-dimkey="${k}"><option value="">不限</option>${vals.map(v=>`<option value="${esc(v)}" ${cur.includes(v)?'selected':''}>${esc(v)}</option>`).join('')}</select></div>`
+  }).join('');
+}
+$('fCategory').onchange = renderDimForm;
+
+/* 步骤1：上传 / 链接 */
+$('uploadBox').addEventListener('click', ()=>$('fileInput').click());
+$('fileInput').addEventListener('change', ()=>{
+  const f = $('fileInput').files[0];
+  if(!f) return;
+  pendingFile = f; pendingUrl = '';
+  setUploadPreview(URL.createObjectURL(f));
+});
+$('readBtn').addEventListener('click', async ()=>{
+  const url = $('linkInput').value.trim();
+  if(!url){ $('linkInput').focus(); return; }
+  $('readBtn').disabled = true;
+  $('readBtn').innerHTML = '<span class="spinner"></span> 读取中';
+  await new Promise(r=>setTimeout(r, 700));
+  pendingUrl = url; pendingFile = null;
+  setUploadPreview(url);
+  $('readBtn').disabled = false;
+  $('readBtn').textContent = '读取图片';
+});
+
+/* 下一步 / 上一步 / 保存 */
+$('nextBtn').onclick = ()=>{
+  const src = pendingFile ? URL.createObjectURL(pendingFile) : pendingUrl;
+  setConfirmImg(src);
+  setStep(2);
+};
+$('backBtn').onclick = ()=>setStep(1);
+$('cancelBtn').onclick = $('cancelBtn2').onclick = ()=>$('modalMask').classList.remove('open');
+
+$('saveBtn').onclick = async ()=>{
+  const cat = $('fCategory').value, name = $('fName').value.trim(), tags = $('fTags').value.trim(), scope = $('fScope').value;
+  if(!name){ toast('名称不能为空', true); return; }
+  const dims = {};
+  $('fDims').querySelectorAll('select').forEach(s=>{ if(s.value) dims[s.dataset.dimkey]=s.value; });
+  const fd = new FormData();
+  fd.append('category', cat); fd.append('name', name); fd.append('tags', tags); fd.append('scope', scope);
+  fd.append('dims', JSON.stringify(dims));
+  if(pendingFile) fd.append('image', pendingFile);
+  else if(pendingUrl) fd.append('image_url', pendingUrl);
+  try{
+    if(editingId) await api(API+'/'+encodeURIComponent(editingId), {method:'PUT', body:fd});
+    else await api(API, {method:'POST', body:fd});
+    toast(editingId?'已保存修改':'已创建入库');
+    $('modalMask').classList.remove('open');
+    load();
+  }catch(e){ toast('保存失败: '+e.message, true); }
+};
+
+/* ── 事件绑定 ── */
+$('scopeGroup').querySelectorAll('.fbtn').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#scopeGroup .fbtn').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); state.scope = b.dataset.scope; load();
+});
+function doSearch(){ state.q = $('qInput').value.trim(); load(); }
+$('qBtn').onclick = doSearch;
+$('qInput').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
+$('createBtn').onclick = ()=>openSceneModal();
+function openSceneModal(){
+  const fr = $('sceneFrame');
+  fr.src = fr.src;              // 每次打开重置（重新加载页面）
+  $('sceneMask').classList.add('open');
+}
+$('sceneMask').addEventListener('click', e=>{
+  if(e.target === $('sceneMask')) $('sceneMask').classList.remove('open');
+});
+window.addEventListener('message', ev=>{
+  const d = ev.data || {};
+  if(d.type === 'asset-saved'){ $('sceneMask').classList.remove('open'); toast('场景已创建入库: '+d.id); load(); }
+  if(d.type === 'asset-close'){ $('sceneMask').classList.remove('open'); }
+});
+
+function updateDemo(){
+  const tips = {
+    scene: '演示模式 · 本地规则演示。试试「<b>夏天 海边 沙滩 日落</b>」或「<b>极简 摄影棚</b>」，也可直接输入ID、背景名 · 回车或点击搜索',
+    model: '演示模式 · 试试「<b>女 清新</b>」或「<b>职业 25-35</b>」筛选模特',
+    outfit: '演示模式 · 试试「<b>甜美 夏</b>」或「<b>通勤 职业</b>」筛选穿搭',
+    reference: '演示模式 · 试试「<b>插画</b>」或「<b>国潮</b>」筛选参考素材',
+    brand: '演示模式 · 试试「<b>母婴</b>」或「<b>服饰 白牌</b>」筛选品牌'
+  };
+  $('demoTip').innerHTML = tips[state.cat] || '';
+}
+
+(async function init(){
+  updateDemo();
+  try{
+    const d = await api(API);
+    window._lastList = d.list;
+    renderTabs(d.stats);
+    renderDims();
+    $('resultN').textContent = `${d.total} 个结果`;
+    $('grid').innerHTML = d.list.length ? d.list.map(renderCard).join('') : '<div class="empty">暂无资产</div>';
+    document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openModal(b.dataset.edit));
+    document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delAsset(b.dataset.del));
+    $('loading').style.display = 'none';
+  }catch(e){ $('loading').textContent = '加载失败: '+e.message; }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>创建场景 - WellFlow AI 电商商拍创作平台</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; background: #0e1117; color: #e8eaed; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.modal { width: 640px; max-width: 96vw; background: #161b22; border: 1px solid #30363d; border-radius: 16px; padding: 24px 28px 20px; position: relative; box-shadow: 0 18px 50px rgba(0,0,0,.55); }
+.head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.head h2 { font-size: 18px; font-weight: 700; }
+.close { width: 30px; height: 30px; border-radius: 8px; background: #21262d; color: #8b949e; border: none; font-size: 16px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.close:hover { background: #30363d; color: #fff; }
+.demo-tip { display: flex; gap: 8px; align-items: center; background: #17233b; border: 1px solid #2b5bff44; border-radius: 8px; padding: 8px 12px; font-size: 12px; color: #7ea0ff; margin-bottom: 20px; }
+.demo-tip .tag { flex-shrink: 0; color: #ffd83d; font-weight: 600; }
+.steps { display: flex; gap: 10px; margin-bottom: 22px; }
+.step { flex: 1; display: flex; align-items: center; gap: 8px; background: #21262d; border-radius: 10px; padding: 10px 14px; font-size: 13px; color: #8b949e; }
+.step .num { width: 22px; height: 22px; border-radius: 50%; background: #30363d; color: #8b949e; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+.step.on { background: #1c2a4d; border: 1px solid #2b5bff66; color: #c9d1d9; }
+.step.on .num { background: #2b5bff; color: #fff; }
+.step-pane { display: none; }
+.step-pane.on { display: block; }
+
+.upload { border: 2px dashed #30363d; border-radius: 12px; padding: 32px 20px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; margin-bottom: 16px; }
+.upload:hover { border-color: #2b5bff; background: #1c2a4d22; }
+.upload .icon { font-size: 34px; color: #8b949e; margin-bottom: 10px; }
+.upload .main { font-size: 15px; font-weight: 600; color: #e8eaed; margin-bottom: 6px; }
+.upload .sub { font-size: 12px; color: #8b949e; }
+.upload.has-img { border-style: solid; border-color: #2b5bff; padding: 8px; cursor: default; }
+.upload.has-img img { width: 100%; max-height: 220px; object-fit: contain; border-radius: 8px; display: block; }
+.upload input[type=file] { display: none; }
+.or-line { display: flex; align-items: center; gap: 12px; color: #6e7681; font-size: 12px; margin-bottom: 14px; }
+.or-line::before, .or-line::after { content: ""; flex: 1; height: 1px; background: #21262d; }
+.link-row { display: flex; gap: 10px; align-items: center; margin-bottom: 8px; }
+.link-row label { font-size: 13px; color: #c9d1d9; flex-shrink: 0; }
+.link-row input { flex: 1; background: #0e1117; border: 1px solid #30363d; border-radius: 8px; color: #e8eaed; padding: 9px 12px; font-size: 13px; outline: none; }
+.link-row input:focus { border-color: #2b5bff; }
+.link-row button { background: #2b5bff; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 13px; cursor: pointer; flex-shrink: 0; }
+.link-row button:disabled { background: #21262d; color: #6e7681; cursor: not-allowed; }
+.link-note { font-size: 12px; color: #8b949e; margin-bottom: 20px; }
+.spinner { width: 14px; height: 14px; border: 2px solid #fff8; border-top-color: transparent; border-radius: 50%; display: inline-block; vertical-align: -2px; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 步骤2表单 */
+.form-row { margin-bottom: 14px; }
+.form-row label { display: block; font-size: 12px; color: #8b949e; margin-bottom: 5px; }
+.form-row input[type=text], .form-row select { width: 100%; background: #0e1117; border: 1px solid #30363d; border-radius: 8px; color: #e8eaed; padding: 9px 12px; font-size: 13px; outline: none; }
+.form-row input:focus, .form-row select:focus { border-color: #2b5bff; }
+.dimgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.dimgrid select { width: 100%; }
+.img-confirm { margin-top: 8px; }
+.foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.btn-primary { background: #ffd83d; color: #0e1117; border: none; border-radius: 8px; padding: 9px 24px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn-primary:disabled { background: #6e7681; cursor: not-allowed; }
+.btn-ghost { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 8px; padding: 9px 20px; font-size: 13px; cursor: pointer; }
+.btn-ghost:hover { background: #30363d; }
+.toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #2b5bff; color: #fff; border-radius: 8px; padding: 10px 22px; font-size: 13px; z-index: 200; display: none; }
+.toast.err { background: #c0341d; }
+.toast.ok { background: #1f8b4c; }
+</style>
+</head>
+<body>
+<div class="modal">
+  <div class="head">
+    <h2>创建场景</h2>
+    <button class="close" id="closeBtn" title="关闭">×</button>
+  </div>
+
+  <div class="demo-tip"><span class="tag">交互演示</span>提供图片，核对资料，体验完整入库流程；不执行真实人物消除。</div>
+
+  <div class="steps">
+    <div class="step on" id="step1Bar"><span class="num">1</span>提供场景图片</div>
+    <div class="step" id="step2Bar"><span class="num">2</span>确认入库资料</div>
+  </div>
+
+  <!-- 步骤1：提供场景图片 -->
+  <div class="step-pane on" id="pane1">
+    <div class="upload" id="uploadBox">
+      <input type="file" id="fileInput" accept="image/*">
+      <div id="uploadInner">
+        <div class="icon">🖼</div>
+        <div class="main">上传场景图片</div>
+        <div class="sub">选择一张图片，上传后自动进入资料确认</div>
+      </div>
+    </div>
+    <div class="or-line">或</div>
+    <div class="link-row">
+      <label>图片链接</label>
+      <input id="linkInput" placeholder="https://...图片直链" type="url">
+      <button id="readBtn">读取图片</button>
+    </div>
+    <div class="link-note">仅支持可直接打开的图片链接，不解析商品页或社交平台页面。</div>
+    <div class="foot">
+      <button class="btn-ghost" id="cancelBtn">取消</button>
+      <button class="btn-primary" id="nextBtn">下一步 →</button>
+    </div>
+  </div>
+
+  <!-- 步骤2：确认入库资料 -->
+  <div class="step-pane" id="pane2">
+    <div class="form-row"><label>场景名称 *</label><input type="text" id="fName" placeholder="例如：海边日落沙滩"></div>
+    <div class="form-row"><label>标签（逗号分隔）</label><input type="text" id="fTags" placeholder="例如：海边,自然,日落"></div>
+    <div class="form-row"><label>来源</label>
+      <select id="fScope"><option value="mine">我的资产</option><option value="official">官方资产</option></select>
+    </div>
+    <div class="form-row"><label>维度属性</label>
+      <div class="dimgrid">
+        <div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">空间类型</label><select id="d_space"><option value="">不限</option><option>室内</option><option>户外</option><option>摄影棚</option><option>半开放</option></select></div>
+        <div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">地域环境</label><select id="d_region"><option value="">不限</option><option>城市</option><option>海边</option><option>森林</option><option>建筑</option><option>乡村</option></select></div>
+        <div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">季节</label><select id="d_season"><option value="">不限</option><option>春</option><option>夏</option><option>秋</option><option>冬</option></select></div>
+        <div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">天气</label><select id="d_weather"><option value="">不限</option><option>晴</option><option>阴</option><option>雨</option><option>雪</option><option>黄昏</option><option>夜景</option></select></div>
+        <div><label style="font-size:11px;color:#8b949e;margin-bottom:3px">背景风格</label><select id="d_style"><option value="">不限</option><option>极简</option><option>自然</option><option>轻奢</option><option>温馨</option><option>高级</option><option>专业</option><option>生活化</option><option>复古</option><option>清新</option></select></div>
+      </div>
+    </div>
+    <div class="form-row"><label>已选图片</label>
+      <div class="upload has-img" id="confirmBox" style="display:none;cursor:default"></div>
+      <div class="upload" id="emptyBox" style="cursor:default"><div class="main" style="font-size:13px">未上传图片（可跳过）</div></div>
+    </div>
+    <div class="foot">
+      <button class="btn-ghost" id="backBtn">← 上一步</button>
+      <button class="btn-ghost" id="cancelBtn2">取消</button>
+      <button class="btn-primary" id="saveBtn">保存入库</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '/api/assets';
+let pendingFile = null, pendingUrl = '';
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function toast(msg, cls){ const t=$('toast'); t.textContent=msg; t.className='toast '+(cls||''); t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', 2600); }
+
+/* 步骤切换 */
+function setStep(n){
+  $('step1Bar').classList.toggle('on', n===1);
+  $('step2Bar').classList.toggle('on', n===2);
+  $('pane1').classList.toggle('on', n===1);
+  $('pane2').classList.toggle('on', n===2);
+}
+function setPreview(src){
+  $('uploadBox').classList.add('has-img');
+  $('uploadInner').innerHTML = `<img src="${esc(src)}" alt="预览">`;
+  $('confirmBox').style.display = src ? 'block' : 'none';
+  $('emptyBox').style.display = src ? 'none' : 'block';
+  $('confirmBox').innerHTML = src ? `<img src="${esc(src)}" alt="已选图片" style="width:100%;max-height:200px;object-fit:contain;border-radius:8px">` : '';
+}
+
+/* 步骤1：上传/链接 */
+$('uploadBox').addEventListener('click', ()=>$('fileInput').click());
+$('fileInput').addEventListener('change', async ()=>{
+  const f = $('fileInput').files[0];
+  if(!f) return;
+  $('nextBtn').textContent = '处理中…';
+  $('nextBtn').disabled = true;
+  try{
+    // 本地压缩原图，用于确认页立即显示
+    const dataUrl = await compressImage(f);
+    sessionStorage.setItem('scene_img', dataUrl);           // 当前显示图（先为原图）
+    sessionStorage.setItem('scene_img_orig', dataUrl);      // 原图引用（本地）
+    sessionStorage.setItem('scene_img_type', 'data');
+    sessionStorage.removeItem('scene_task_id');
+    sessionStorage.removeItem('scene_ai_failed');
+    // 提交 AI 后台处理（接口秒回，不阻塞跳转）
+    try{
+      const res = await aiExtract(f);
+      sessionStorage.setItem('scene_task_id', res.task_id);
+    }catch(e){
+      sessionStorage.setItem('scene_ai_failed', '1');
+    }
+    location.href = '创建场景-确认入库.html';
+  }catch(e){
+    toast('图片处理失败: '+e.message, 'err');
+    $('nextBtn').textContent = '下一步 →';
+    $('nextBtn').disabled = false;
+  }
+});
+/* 提交 AI 后台提取任务（立即返回 task_id） */
+async function aiExtract(file){
+  const fd = new FormData();
+  fd.append('image', file);
+  const r = await fetch('/api/scene/ai-extract', {method:'POST', body:fd});
+  const j = await r.json().catch(()=>({code:-1, msg:'响应解析失败'}));
+  if(j.code!==0) throw new Error(j.msg||'AI处理失败');
+  return j.data;
+}
+/* 压缩图片（最长边1200，jpeg0.8），避免 sessionStorage 超限 */
+function compressImage(file, maxSize){
+  maxSize = maxSize || 1200;
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=>{
+      const img = new Image();
+      img.onload = ()=>{
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(img.width * scale);
+        c.height = Math.round(img.height * scale);
+        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+        resolve(c.toDataURL('image/jpeg', 0.8));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+$('readBtn').addEventListener('click', async ()=>{
+  const url = $('linkInput').value.trim();
+  if(!url){ $('linkInput').focus(); return; }
+  sessionStorage.setItem('scene_img', url);
+  sessionStorage.setItem('scene_img_type', 'url');
+  location.href = '创建场景-确认入库.html';
+});
+
+/* 下一步/上一步 */
+$('nextBtn').onclick = ()=>{
+  if(!sessionStorage.getItem('scene_img')){
+    sessionStorage.setItem('scene_img', '');
+    sessionStorage.setItem('scene_img_type', '');
+  }
+  location.href = '创建场景-确认入库.html';
+};
+$('backBtn').onclick = ()=>setStep(1);
+
+/* 保存入库 */
+$('saveBtn').onclick = async ()=>{
+  const name = $('fName').value.trim();
+  if(!name){ toast('场景名称不能为空', 'err'); return; }
+  const dims = {};
+  [['d_space','空间类型'],['d_region','地域环境'],['d_season','季节'],['d_weather','天气'],['d_style','背景风格']]
+    .forEach(([id,k])=>{ const v=$(id).value; if(v) dims[k]=v; });
+  const fd = new FormData();
+  fd.append('category', 'scene');
+  fd.append('name', name);
+  fd.append('tags', $('fTags').value.trim());
+  fd.append('scope', $('fScope').value);
+  fd.append('dims', JSON.stringify(dims));
+  if(pendingFile) fd.append('image', pendingFile);
+  else if(pendingUrl) fd.append('image_url', pendingUrl);
+  $('saveBtn').disabled = true;
+  try{
+    const r = await fetch(API, {method:'POST', body:fd});
+    const j = await r.json();
+    if(j.code !== 0) throw new Error(j.message || '保存失败');
+    toast('✅ 场景已入库：'+j.data.id, 'ok');
+    // 通知父页面（iframe 场景）刷新资产库
+    if(window.parent && window.parent !== window){
+      window.parent.postMessage({type:'asset-saved', id:j.data.id}, '*');
+    }
+    setTimeout(()=>{ $('saveBtn').disabled=false; resetForm(); setStep(1); }, 1500);
+  }catch(e){
+    toast('保存失败: '+e.message, 'err');
+    $('saveBtn').disabled = false;
+  }
+};
+function resetForm(){
+  pendingFile=null; pendingUrl=''; $('fName').value=''; $('fTags').value='';
+  $('fScope').value='mine'; $('linkInput').value=''; $('fileInput').value='';
+  ['d_space','d_region','d_season','d_weather','d_style'].forEach(id=>$(id).value='');
+  $('uploadBox').classList.remove('has-img');
+  $('uploadInner').innerHTML = '<div class="icon">🖼</div><div class="main">上传场景图片</div><div class="sub">选择一张图片，上传后自动进入资料确认</div>';
+  $('confirmBox').style.display='none'; $('emptyBox').style.display='block';
+}
+
+/* 关闭 */
+function closePage(){
+  if(window.parent && window.parent !== window){
+    window.parent.postMessage({type:'asset-close'}, '*');
+  } else {
+    location.reload();
+  }
+}
+$('closeBtn').onclick = closePage;
+$('cancelBtn').onclick = closePage;
+$('cancelBtn2').onclick = closePage;
+</script>
+</body>
+</html>
