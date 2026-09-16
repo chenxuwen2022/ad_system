@@ -231,7 +231,15 @@ class OfoxGateway(BaseLLMClient):
         extra_params: dict[str, Any] | None,
         user_content: Any,
     ):
-        """OpenAI SSE 流式实现，yield 每个 delta 文本片段。"""
+        """OpenAI SSE 流式实现，yield 合并后的 delta 文本片段。
+
+        内置 micro-batching：把 20ms 时间窗口内的多个小 SSE chunk（常见于 OpenAI 模型
+        每个 token 就一个 chunk）合并成一个 yield，避免前端"一个字一个字蹦"。
+        对 Gemini 等本身 chunk 粒度就较大的模型无副作用（合并窗口内只有 1 个 chunk）。
+        """
+        _time = __import__("time")
+        _FLUSH_INTERVAL = 0.02  # 20ms → ~50fps，肉眼看不到延迟但不会一个字一个字蹦
+
         if not self.base_url:
             raise RuntimeError(
                 f"LLM 网关 base_url 未配置（model={self.model}）。"
@@ -271,9 +279,26 @@ class OfoxGateway(BaseLLMClient):
         last_exc: Exception | None = None
         for attempt in range(self.MAX_RETRIES + 1):
             _stream_started = False  # resp 已拿到（HTTP headers 已读完）= True
+
+            # ── micro-batching 缓冲区 ──
+            _content_buf = ""
+            _thinking_buf = ""
+            _last_flush_ts = _time.time()
+
+            async def _flush():
+                """把缓冲区里累积的 delta 一次性 yield 出去。"""
+                nonlocal _content_buf, _thinking_buf, _last_flush_ts
+                if _thinking_buf:
+                    yield {"type": "thinking", "text": _thinking_buf}
+                    _thinking_buf = ""
+                if _content_buf:
+                    yield {"type": "content", "text": _content_buf}
+                    _content_buf = ""
+                _last_flush_ts = _time.time()
+
             try:
                 async with httpx.AsyncClient(timeout=None, proxy=self.proxy_url) as client:
-                    _t0 = __import__("time").time()
+                    _t0 = _time.time()
                     print(f"[llm] → POST {self.base_url}/chat/completions model={self.model} stream=True ...", flush=True)
                     async with client.stream(
                         "POST",
@@ -283,7 +308,7 @@ class OfoxGateway(BaseLLMClient):
                     ) as resp:
                         resp.raise_for_status()
                         _stream_started = True  # 连接已就绪，标志切换后不再重试
-                        _t1 = __import__("time").time()
+                        _t1 = _time.time()
                         print(f"[llm] ← HTTP {resp.status_code}, 首字节到达 +{_t1 - _t0:.2f}s", flush=True)
                         _first_data_ts = None
                         async for raw_line in resp.aiter_lines():
@@ -296,7 +321,7 @@ class OfoxGateway(BaseLLMClient):
                             if data_str == "[DONE]":
                                 break
                             if _first_data_ts is None:
-                                _first_data_ts = __import__("time").time()
+                                _first_data_ts = _time.time()
                                 print(f"[llm] ← 第一个 SSE data 行到达 +{_first_data_ts - _t0:.2f}s (其中 HTTP headers={_t1 - _t0:.2f}s)", flush=True)
                             try:
                                 data = json.loads(data_str)
@@ -311,7 +336,7 @@ class OfoxGateway(BaseLLMClient):
                                 has_content = bool(delta_obj.get("content"))
                                 print(f"[llm-stream] keys={list(delta_obj.keys())} rd={has_rd} content={has_content}", flush=True)
 
-                            # 优先 yield 思考过程（让前端展示），再 yield 正式内容
+                            # ── 累积到缓冲区（不再每个 chunk 直接 yield）──
                             # ofox 的 thinking 通过 reasoning_details list 返回：
                             #   reasoning_details=[{'index': 0, 'type': 'reasoning.text', 'text': '...'}, ...]
                             #   最后一个 chunk 会是 {'type': 'reasoning.encrypted', 'signature': '...'} —— 跳过（加密不可读）
@@ -323,17 +348,27 @@ class OfoxGateway(BaseLLMClient):
                                     rd_type = rd_item.get("type", "")
                                     rd_text = rd_item.get("text", "")
                                     if rd_type == "reasoning.text" and rd_text:
-                                        yield {"type": "thinking", "text": rd_text}
+                                        _thinking_buf += rd_text
 
                             # 兼容：OpenAI 原生协议有时把 thinking 放在 reasoning_content 里
                             if not isinstance(rd_list, list):
                                 thinking = delta_obj.get("reasoning_content") or delta_obj.get("thinking")
                                 if thinking:
-                                    yield {"type": "thinking", "text": thinking}
+                                    _thinking_buf += thinking
 
                             content = delta_obj.get("content")
                             if content:
-                                yield {"type": "content", "text": content}
+                                _content_buf += content
+
+                            # ── 达到 flush 间隔就吐出去（micro-batching 核心逻辑）──
+                            _now = _time.time()
+                            if _now - _last_flush_ts >= _FLUSH_INTERVAL:
+                                async for item in _flush():
+                                    yield item
+
+                        # [DONE] 到达 → 把剩余缓冲区全吐出去
+                        async for item in _flush():
+                            yield item
                 return  # 流式正常结束（[DONE] 到达）
             except _RETRYABLE_NETWORK_ERRORS as e:
                 last_exc = e

@@ -39,6 +39,7 @@ from token_manager import get_token_mgr
 from wellflow.app.api.tasks import router as wf_tasks_router
 from wellflow.app.api.products import router as wf_products_router
 from wellflow.app.api.mannequins import router as wf_mannequins_router
+from wellflow.app.api.chat import router as wf_chat_router
 from wellflow.app.sse import router as wf_sse_router
 from wellflow.app.config import settings as wf_settings
 from wellflow.app.main import init_wellflow_runtime
@@ -80,6 +81,14 @@ app.include_router(scene_ai_router, prefix="/api/scene")
 app.include_router(wf_tasks_router, prefix="/api")
 app.include_router(wf_products_router, prefix="/api")
 app.include_router(wf_mannequins_router, prefix="/api")
+
+# WellFlow 通用图片上传（不绑定 task，供 SKU/模特/任意素材库先传后提）
+from wellflow.app.api.uploads import router as wf_uploads_router
+app.include_router(wf_uploads_router, prefix="/api")
+
+# WellFlow 对话入口（意图路由 —— 把自然语言映射到 LangGraph 节点）
+app.include_router(wf_chat_router, prefix="/api")
+
 app.include_router(wf_sse_router)
 _wf_upload_dir = Path(wf_settings.upload_dir).resolve()
 _wf_upload_dir.mkdir(parents=True, exist_ok=True)

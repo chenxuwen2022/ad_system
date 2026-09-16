@@ -97,6 +97,11 @@ AI生图（文生图 / 图生图）和商拍策划brief交付。
 V2版本在镜头规划中明确焦段与光圈参数，在光影设计中明确光源类型、
 光源方向与色温，方便摄影师直接落地执行。
 
+【核心目标】
+一次调用输出 **N 套风格各异、场景互补** 的商拍方案（默认 3 套），
+每套独立覆盖 12 维完整结构，三套之间在方案定位、视觉主题、
+场景设定、模特气质、光影风格上必须有显著差异，避免雷同。
+
 
 【二、核心约束（必须遵守）】
 
@@ -211,98 +216,109 @@ V2版本在镜头规划中明确焦段与光圈参数，在光影设计中明确
 
 【四、输出格式（严格遵守，字段不可增减）】
 
+根节点为对象，包含 schemes 数组，数组长度 = 方案数量（默认 3）。
+每个 scheme 内部结构完全相同，为 12 维 JSON 对象。
+
 {{
-  "positioning": {{
-    "scheme_position": "",
-    "visual_theme": "",
-    "visual_keywords": []
-  }},
-  "selling_points": {{
-    "attribute_mapping": [],
-    "core_selling_points": []
-  }},
-  "target_audience": {{
-    "age": "",
-    "gender": "",
-    "consumption_level": "",
-    "aesthetic_preference": "",
-    "profession_lifestyle": "",
-    "common_outfit_scenes": ""
-  }},
-  "scene": {{
-    "usage_scenes": "",
-    "shooting_environment": "",
-    "architecture_nature": "",
-    "space_material": "",
-    "background_elements": "",
-    "space_layers": "",
-    "atmosphere": ""
-  }},
-  "model": {{
-    "ethnicity": "",
-    "age": "",
-    "body_shape": "",
-    "height_proportion": "",
-    "facial_temperament": "",
-    "hairstyle": "",
-    "skin_color": "",
-    "makeup": "",
-    "overall_state": ""
-  }},
-  "styling": {{
-    "bottom": "",
-    "shoes": "",
-    "inner": "",
-    "outer": "",
-    "accessories": "",
-    "wearing_method": "",
-    "color_logic": ""
-  }},
-  "action_emotion": {{
-    "actions": [],
-    "emotion": ""
-  }},
-  "camera_plan": {{
-    "wide_shot": "",
-    "full_body": "",
-    "medium_shot": "",
-    "half_body": "",
-    "close_up": "",
-    "macro": "",
-    "front": "",
-    "side": "",
-    "back": "",
-    "dynamic": "",
-    "focal_length": "",
-    "aperture": ""
-  }},
-  "details_lighting_color": {{
-    "clothing_details": [],
-    "light_source_type": "",
-    "light_source_direction": "",
-    "color_temperature": "",
-    "light_hard_soft": "",
-    "rim_backlight_window": "",
-    "light_on_fabric": "",
-    "main_color": "",
-    "background_color": "",
-    "auxiliary_color": "",
-    "warm_cool": "",
-    "saturation": "",
-    "brightness": ""
-  }},
-  "restrictions": {{
-    "color_drift": "",
-    "logo_error": "",
-    "silhouette_change": "",
-    "material_plastic": "",
-    "over_pose": "",
-    "background_steal": "",
-    "additional_limits": []
-  }}
+  "schemes": [
+    {{
+      "scheme_index": 0,
+      "scheme_name": "",
+      "positioning": {{
+        "scheme_position": "",
+        "visual_theme": "",
+        "visual_keywords": []
+      }},
+      "selling_points": {{
+        "attribute_mapping": [],
+        "core_selling_points": []
+      }},
+      "target_audience": {{
+        "age": "",
+        "gender": "",
+        "consumption_level": "",
+        "aesthetic_preference": "",
+        "profession_lifestyle": "",
+        "common_outfit_scenes": ""
+      }},
+      "scene": {{
+        "usage_scenes": "",
+        "shooting_environment": "",
+        "architecture_nature": "",
+        "space_material": "",
+        "background_elements": "",
+        "space_layers": "",
+        "atmosphere": ""
+      }},
+      "model": {{
+        "ethnicity": "",
+        "age": "",
+        "body_shape": "",
+        "height_proportion": "",
+        "facial_temperament": "",
+        "hairstyle": "",
+        "skin_color": "",
+        "makeup": "",
+        "overall_state": ""
+      }},
+      "styling": {{
+        "bottom": "",
+        "shoes": "",
+        "inner": "",
+        "outer": "",
+        "accessories": "",
+        "wearing_method": "",
+        "color_logic": ""
+      }},
+      "action_emotion": {{
+        "actions": [],
+        "emotion": ""
+      }},
+      "camera_plan": {{
+        "wide_shot": "",
+        "full_body": "",
+        "medium_shot": "",
+        "half_body": "",
+        "close_up": "",
+        "macro": "",
+        "front": "",
+        "side": "",
+        "back": "",
+        "dynamic": "",
+        "focal_length": "",
+        "aperture": ""
+      }},
+      "details_lighting_color": {{
+        "clothing_details": [],
+        "light_source_type": "",
+        "light_source_direction": "",
+        "color_temperature": "",
+        "light_hard_soft": "",
+        "rim_backlight_window": "",
+        "light_on_fabric": "",
+        "main_color": "",
+        "background_color": "",
+        "auxiliary_color": "",
+        "warm_cool": "",
+        "saturation": "",
+        "brightness": ""
+      }},
+      "restrictions": {{
+        "color_drift": "",
+        "logo_error": "",
+        "silhouette_change": "",
+        "material_plastic": "",
+        "over_pose": "",
+        "background_steal": "",
+        "additional_limits": []
+      }}
+    }}
+  ]
 }}
 
 字段说明：
+- 根节点必须是对象，包含 schemes 数组，数组长度 = N（由调用方指定）
+- 每个 scheme 必须包含 scheme_index（从 0 开始）和 scheme_name（简短方案名）
 - attribute_mapping 为数组，每项格式为"属性→卖点→场景/光线/动作/镜头"
 - core_selling_points 为数组，控制在3-5个
 - camera_plan 中景别和角度字段填写百分比，如"20%"
@@ -311,6 +327,7 @@ V2版本在镜头规划中明确焦段与光圈参数，在光影设计中明确
 - light_source_type（光源类型）填写如"窗边自然光+反光板补光"
 - light_source_direction（光源方向）填写如"左侧45度侧光"
 - color_temperature（色温）填写具体色温值，如"5500K日光平衡"
+- 三套方案之间在方案定位、视觉主题、场景设定、模特气质、光影风格上必须显著不同
 - 所有字段必填，无内容时填"无"或"不适用"，不得留空
 - 字段名、层级、数量不可增减或重命名
 
@@ -448,13 +465,13 @@ GENERATE_IMAGE_PROMPT = """
 
 【四、输出格式（严格遵守，字段不可增减）】
 
-{
-  "project": {
+{{
+  "project": {{
     "type": "",
     "brand_tone": "",
     "usage": ""
-  },
-  "model": {
+  }},
+  "model": {{
     "gender": "",
     "age": "",
     "ethnicity": "",
@@ -462,8 +479,8 @@ GENERATE_IMAGE_PROMPT = """
     "face_features": "",
     "skin": "",
     "hair": ""
-  },
-  "clothing": {
+  }},
+  "clothing": {{
     "brand": "",
     "category": "",
     "color": "",
@@ -472,32 +489,32 @@ GENERATE_IMAGE_PROMPT = """
     "key_design": "",
     "structure_details": "",
     "craft_details": ""
-  },
-  "pose": {
+  }},
+  "pose": {{
     "body_angle": "",
     "head_direction": "",
     "hand_action": "",
     "weight_balance": "",
     "posture_type": ""
-  },
+  }},
   "emotion": "",
-  "scene": {
+  "scene": {{
     "location_type": "",
     "foreground": "",
     "midground": "",
     "background": "",
     "weather_time": "",
     "material": ""
-  },
-  "lighting": {
+  }},
+  "lighting": {{
     "time": "",
     "direction": "",
     "hard_soft": "",
     "color_temp": "",
     "contrast": "",
     "special_light": ""
-  },
-  "camera": {
+  }},
+  "camera": {{
     "camera_body": "",
     "lens": "",
     "focal_length": "",
@@ -505,15 +522,15 @@ GENERATE_IMAGE_PROMPT = """
     "iso": "",
     "angle": "",
     "depth_of_field": ""
-  },
-  "post_processing": {
+  }},
+  "post_processing": {{
     "sharpness": "",
     "film_grain": "",
     "color_tone": "",
     "contrast": "",
     "reference_style": ""
-  },
-  "negative_prompt": {
+  }},
+  "negative_prompt": {{
     "person": "",
     "skin": "",
     "hair": "",
@@ -522,8 +539,8 @@ GENERATE_IMAGE_PROMPT = """
     "visual_style": "",
     "scene": "",
     "output": ""
-  }
-}
+  }}
+}}
 
 字段说明：
 - 正向描述（project至post_processing）用于AI生图的Prompt输入

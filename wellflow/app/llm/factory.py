@@ -15,11 +15,19 @@ from wellflow.app.llm.base import BaseLLMClient
 ModelRole = Literal["vlm", "image", "text"]
 
 
-def _resolve_model(role: ModelRole) -> str:
-    """根据 role 拿到默认模型名，从 config.py Settings.llm_model_xxx 读取。
+def _resolve_model(role: ModelRole, *, node_name: str | None = None) -> str:
+    """根据 role + 可选 node_name 拿到模型名。
 
-    优先级：settings.llm_model_{role} → fallback 到 qwen-turbo（极端兜底）。
+    优先级：
+      1. node_name → settings.llm_model_{node_name}  （Node 级别，最精确）
+      2. role      → settings.llm_model_{role}       （Role 级别兜底）
+      3. "qwen-turbo"                                  （极端兜底）
     """
+    if node_name:
+        node_model = getattr(settings, f"llm_model_{node_name}", None)
+        if node_model:
+            print(f"[factory] 🎯 Node 级别模型: llm_model_{node_name} = {node_model}", flush=True)
+            return node_model
     return getattr(settings, f"llm_model_{role}", "qwen-turbo")
 
 
@@ -36,7 +44,12 @@ def _strip_provider(model: str) -> str:
     return model
 
 
-def get_llm_client(role: ModelRole, *, model_override: str | None = None) -> BaseLLMClient:
+def get_llm_client(
+    role: ModelRole,
+    *,
+    model_override: str | None = None,
+    node_name: str | None = None,
+) -> BaseLLMClient:
     """拿到指定角色的 LLM 客户端。
 
     路由规则（统一走 new-api 中转网关）：
@@ -51,11 +64,13 @@ def get_llm_client(role: ModelRole, *, model_override: str | None = None) -> Bas
     Args:
         role: 角色 —— "vlm" 多模态识别 / "image" 图像生成 / "text" 纯文本。
         model_override: 临时覆盖模型名——Node 3 从 state 读用户在前端选的 image_model 时用。
+        node_name: Node 名称（如 "node1" / "node2" / "node3"），优先从 config 读取
+            llm_model_{node_name} 常量。指定后会覆盖 role 级别的默认模型。
     """
     if not settings.newapi_api_key:
         raise RuntimeError("newapi_api_key 未配置，请在 .env 中设置 NEWAPI_API_KEY")
 
-    model = _strip_provider(model_override or _resolve_model(role))
+    model = _strip_provider(model_override or _resolve_model(role, node_name=node_name))
     newapi_base = settings.newapi_base_url
     newapi_key = settings.newapi_api_key
 
