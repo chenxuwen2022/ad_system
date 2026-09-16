@@ -58,3 +58,6 @@ static/**/*.jpeg
 static/**/*.webp
 static/**/*.gif
 static/**/*.bmp
+
+# 测试页面(仅本地,不提交/不推送)
+static/*.html

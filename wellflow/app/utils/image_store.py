@@ -95,6 +95,90 @@ def save_upload(
     return paths
 
 
+def save_asset_upload(
+    files: Sequence[tuple[str, bytes, str | None]],
+    upload_id: str | None = None,
+    *,
+    session_id: str | None = None,
+    filename_prefix: str = "i",
+) -> tuple[str, list[dict]]:
+    """把上传图片落盘，统一入口（通用素材库上传 + 模特 session 上传共用）。
+
+    两种目录策略（互斥，优先 session_id）：
+      - 传了 session_id → uploads/{session_id}/i0.jpg, i1.jpg ...（模特创建流程）
+      - 没传 session_id → uploads/assets/{upload_id}/i0.jpg ...（通用素材库，upload_id 自动生成）
+
+    Args:
+        files: [(original_filename, raw_bytes, content_type), ...]
+        upload_id: 没传 session_id 时用的目录 ID；不传则自动生成 UUID4 hex 前 8 位
+        session_id: 模特创建流程的 session ID；传了就存 uploads/{session_id}/
+        filename_prefix: 文件名前缀，默认 "i"（upload_id 模式）；模特模式传 "m" 也兼容
+
+    Returns:
+        (dir_id, images_info_list) —— dir_id 是实际使用的目录 ID（upload_id 或 session_id）
+    """
+    import uuid
+
+    base = _get_upload_dir()
+
+    if session_id:
+        # 模式 A：绑定 session（模特创建流程）
+        dir_id = session_id
+        target_dir = base / dir_id
+        storage_prefix = f"uploads/{dir_id}"
+    else:
+        # 模式 B：通用素材库
+        dir_id = upload_id or uuid.uuid4().hex[:8]
+        target_dir = base / "assets" / dir_id
+        storage_prefix = f"uploads/assets/{dir_id}"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    from wellflow.app.config import settings
+
+    images: list[dict] = []
+    for i, (orig_name, raw, content_type) in enumerate(files):
+        ext = mimetypes.guess_extension(content_type or "") if content_type else None
+        if not ext or ext == ".jpe":
+            ext = Path(orig_name).suffix or ".jpg"
+        ext = ext.lstrip(".")
+        ext = settings.image_ext_map.get(ext, ext)
+
+        filename = f"{filename_prefix}{i}.{ext}"
+        save_path = target_dir / filename
+        save_path.write_bytes(raw)
+
+        rel_path = f"{storage_prefix}/{filename}"
+        mime = content_type or mimetypes.guess_type(filename)[0] or "image/jpeg"
+        size = len(raw)
+
+        # 读取图片尺寸（Pillow 不可用时兜底 0x0）
+        w, h = 0, 0
+        try:
+            from PIL import Image as _PIL_Image
+            with _PIL_Image.open(io.BytesIO(raw)) as _im:
+                w, h = _im.size
+        except Exception:
+            pass
+
+        url = "/" + rel_path.lstrip("/")
+        images.append({
+            "index": i,
+            "original_name": orig_name,
+            "filename": filename,
+            "storage_uri": rel_path,
+            "url": url,
+            "mime": mime,
+            "size": size,
+            "width": w,
+            "height": h,
+        })
+        tag = "session" if session_id else "asset"
+        print(f"[image_store] 💾 {tag} {rel_path} ({size}B, {mime}, {w}x{h})", flush=True)
+
+    return dir_id, images
+
+
 def _pil_compress(raw: bytes, quality: int, max_side: int | None = None) -> tuple[bytes, str, int, int]:
     """PIL 处理单张图片 → (jpeg_bytes, 'image/jpeg', new_w, new_h)。
 

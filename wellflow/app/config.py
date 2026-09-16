@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     image_timeout: float = 180.0             # 生图超时（秒）——大 body 上传 + 生图处理比 VLM 慢得多
 
     # 模型名（固定分配，按需修改此处）
+    # 模特库/穿搭库交互端点用(与 master 一致)
+    llm_model_node3: str = "google/gemini-3.7-flash"   # auto-tag 打标 VLM
+    llm_model_text: str = "qwen/qwen-turbo"            # 纯文本 LLM
+
     llm_model_vlm: str = "google/gemini-3.7-flash"                 # Node 1 商品识别 + Node 2 商拍策划（多模态 VLM）
     llm_model_image: str = "openai/gpt-image-2"    # Node 3 图像生成
     llm_model_responses: str = "openai/gpt-5.4-mini"  # responses 端点的顶层 LLM（理解 prompt + 调用 image_generation tool）
