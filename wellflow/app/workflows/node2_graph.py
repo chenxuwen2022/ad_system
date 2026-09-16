@@ -45,9 +45,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     task_id = state.get("task_id", "")
 
     product_insight = node1.get("product_insight", "")
-    product_image_paths: list[str] = req.get("product_images") or []
     user_requirement: str = req.get("user_requirement", "")
-    model_image_paths: list[str] = node3.get("model_images") or []
 
     # 默认生成 3 套方案，可通过 request.scheme_count 覆盖
     scheme_count: int = int(req.get("scheme_count") or 3)
@@ -55,27 +53,13 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node2_plan_scheme"})
 
-    # 🔑 复用 Node1 已缓存的压缩结果，跳过重复 PIL
-    from wellflow.app.utils.image_store import paths_to_data_uris
+    # 🔑 Node1 已缓存商品图压缩结果（供 node3 复用，避免重复 PIL）
     cached = node1.get("compressed_images") or []
     if cached:
-        print(f"[node2] 🔁 复用 Node1 已压缩的 {len(cached)} 张商品图", flush=True)
-        product_images = cached
-    else:
-        product_images = await asyncio.to_thread(paths_to_data_uris, product_image_paths)
-        print(f"[node2] 🔨 Node1 无缓存，现场压缩 {len(product_image_paths)} 张商品图", flush=True)
-
-    # 模特图转 data URI（C1 阶段已落盘，state.node3.model_images 是文件路径）
-    if model_image_paths:
-        model_images = await asyncio.to_thread(paths_to_data_uris, model_image_paths)
-        print(f"[node2] 🧍 模特图 {len(model_image_paths)} 张已转 data URI", flush=True)
-    else:
-        model_images = None
+        print(f"[node2] 🔁 Node1 已有 {len(cached)} 张商品图缓存（node3 将复用）", flush=True)
 
     print(f"[node2] _plan_schemes 输入: scheme_count={scheme_count}, "
-          f"product_images={len(product_images)}(paths={len(product_image_paths)}), "
-          f"model_images={len(model_images) if model_images else 0}(paths={len(model_image_paths)}), "
-          f"user_requirement={'有' if user_requirement else '无'}", flush=True)
+          f"user_requirement={'有' if user_requirement else '无'} (不传图片给 VLM)", flush=True)
 
     # 根据 reasoning_effort 选流式/非流式
     from wellflow.app.config import settings
@@ -97,11 +81,9 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         print(f"[node2] 📌 reasoning_effort={effort} → 非流式 plan_schemes()", flush=True)
         result = await _ps.plan_schemes(
             product_insight=product_insight,
-            product_images=product_images,
             user_requirement=user_requirement,
             scheme_count=scheme_count,
             reasoning_effort=effort,
-            model_images=model_images,
         )
         content_chunk_index = 1
         raw_text = result.get("raw_text", "")
@@ -128,11 +110,9 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         print(f"[node2] 📌 reasoning_effort={effort} → 流式 stream_plan_schemes()", flush=True)
         async for item in _ps.stream_plan_schemes(
             product_insight=product_insight,
-            product_images=product_images,
             user_requirement=user_requirement,
             scheme_count=scheme_count,
             reasoning_effort=effort,
-            model_images=model_images,
         ):
             if not item:
                 continue

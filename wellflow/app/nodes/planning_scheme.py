@@ -67,58 +67,41 @@ def _extract_json(text: str) -> dict[str, Any]:
 async def stream_plan_schemes(
     *,
     product_insight: str,
-    product_images: list[str],
+    product_images: list[str] | None = None,
     user_requirement: str = "",
     scheme_count: int = 3,
     reasoning_effort: str | None = None,
     model_images: list[str] | None = None,
 ):
-    """流式 VLM 多模态生成 N 套风格迥异的商拍方案。"""
+    """流式生成 N 套风格迥异的商拍方案（仅基于商品识别报告文本，不传图片给 VLM）。"""
     from wellflow.app.config import settings
-
-    if not product_images:
-        raise ValueError("PlanningScheme 必须传入至少一张产品图")
 
     client = get_llm_client("vlm", node_name="node2")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
     system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
 
-    # user message：明确要求 N 套方案 + 显著差异
+    # user message：基于商品识别报告文本 + 用户需求
     user_text_parts = [f"【商品识别报告】\n{product_insight}"]
     if user_requirement:
         user_text_parts.append(f"【用户创作需求】\n{user_requirement}")
 
-    # 显式告诉 VLM 图片编号语义
-    n_prod = len(product_images)
-    n_model = len(model_images) if model_images else 0
-    ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
-    if n_prod:
-        ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
-    if n_model:
-        ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（此图为最终生图的人脸基准，设计方案时必须参考此人的年龄、性别、气质、体型）")
-    user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
-
     user_text_parts.append(
-        f"请结合以上识别报告、商品图片和模特参考图，输出 **{scheme_count} 套风格迥异、场景互补** 的商拍方案。\n"
+        f"请结合以上商品识别报告和用户创作需求，输出 **{scheme_count} 套风格迥异、场景互补** 的商拍方案。\n"
         f"三套方案在方案定位、视觉主题、场景设定、模特气质、光影风格上必须有显著差异，避免雷同。\n"
-        f"⚠️ 方案中的 target_audience（目标客群）、model_profile（模特画像）必须以参考图中的模特为准，"
-        f"特别是年龄、性别、气质等特征必须与模特图一致，不要自行推断。\n"
+        f"⚠️ 方案中的 target_audience（目标客群）请根据商品定位合理推断，"
+        f"model_profile（模特画像）请根据商品特性和目标客群设计合适的模特气质、年龄、性别。\n"
         f"输出格式严格按 System Prompt 中的 JSON schema，根节点为 {{\"schemes\": [...]}}，"
         f"schemes 数组长度 = {scheme_count}。"
     )
 
-    all_images = list(product_images)
-    if model_images:
-        all_images.extend(model_images)
-
     print(f"[planning_scheme] 🎬 流式调用 VLM: scheme_count={scheme_count}, "
-          f"product_images={len(product_images)}, model_images={n_model}, reasoning_effort={effort}",
+          f"reasoning_effort={effort} (不传图片)",
           flush=True)
 
     async for delta in client.stream_chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
-        image_uris=all_images,
+        image_uris=[],
         reasoning_effort=effort,
     ):
         if delta:
@@ -133,21 +116,18 @@ async def stream_plan_schemes(
 async def plan_schemes(
     *,
     product_insight: str,
-    product_images: list[str],
+    product_images: list[str] | None = None,
     user_requirement: str = "",
     scheme_count: int = 3,
     reasoning_effort: str | None = None,
     model_images: list[str] | None = None,
 ) -> dict[str, Any]:
-    """VLM 一次调用产出 N 套 12 维商拍方案。
+    """非流式生成 N 套商拍方案（仅基于商品识别报告文本，不传图片给 VLM）。
 
     Returns:
         {"schemes": [scheme1_dict, scheme2_dict, ...], "raw_text": str, "thinking_text": str}
     """
     from wellflow.app.config import settings
-
-    if not product_images:
-        raise ValueError("PlanningScheme 必须传入至少一张产品图")
 
     client = get_llm_client("vlm", node_name="node2")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
@@ -157,37 +137,23 @@ async def plan_schemes(
     if user_requirement:
         user_text_parts.append(f"【用户创作需求】\n{user_requirement}")
 
-    # 显式告诉 VLM 图片编号语义
-    n_prod = len(product_images)
-    n_model = len(model_images) if model_images else 0
-    ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
-    if n_prod:
-        ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
-    if n_model:
-        ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（此图为最终生图的人脸基准，设计方案时必须参考此人的年龄、性别、气质、体型）")
-    user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
-
     user_text_parts.append(
-        f"请结合以上识别报告、商品图片和模特参考图，输出 **{scheme_count} 套风格迥异、场景互补** 的商拍方案。\n"
+        f"请结合以上商品识别报告和用户创作需求，输出 **{scheme_count} 套风格迥异、场景互补** 的商拍方案。\n"
         f"三套方案在方案定位、视觉主题、场景设定、模特气质、光影风格上必须有显著差异，避免雷同。\n"
-        f"⚠️ 方案中的 target_audience（目标客群）、model_profile（模特画像）必须以参考图中的模特为准，"
-        f"特别是年龄、性别、气质等特征必须与模特图一致，不要自行推断。\n"
+        f"⚠️ 方案中的 target_audience（目标客群）请根据商品定位合理推断，"
+        f"model_profile（模特画像）请根据商品特性和目标客群设计合适的模特气质、年龄、性别。\n"
         f"输出格式严格按 System Prompt 中的 JSON schema，根节点为 {{\"schemes\": [...]}}，"
         f"schemes 数组长度 = {scheme_count}。"
     )
 
-    all_images = list(product_images)
-    if model_images:
-        all_images.extend(model_images)
-
     print(f"[planning_scheme] 调用 VLM: scheme_count={scheme_count}, "
-          f"product_images={len(product_images)}, model_images={n_model}, reasoning_effort={effort}",
+          f"reasoning_effort={effort} (不传图片)",
           flush=True)
 
     resp = await client.chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
-        image_uris=all_images,
+        image_uris=[],
         response_format={"type": "json_object"},
         reasoning_effort=effort,
     )

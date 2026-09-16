@@ -61,6 +61,25 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
+# 工具：模特图追加合并（C1→C2→C3 累计，超过 3 张取最新）
+# ---------------------------------------------------------------------------
+
+_MODEL_IMAGES_CAP = 3
+
+
+def _merge_model_images(existing: list[str] | None, new: list[str] | None) -> list[str]:
+    """追加合并新旧模特图路径，超过 cap 时保留最新的。"""
+    merged: list[str] = []
+    if existing:
+        merged.extend(existing)
+    if new:
+        merged.extend(new)
+    if len(merged) > _MODEL_IMAGES_CAP:
+        merged = merged[-_MODEL_IMAGES_CAP:]
+    return merged
+
+
+# ---------------------------------------------------------------------------
 # 构建父图
 # ---------------------------------------------------------------------------
 
@@ -237,7 +256,9 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
 
     model_images = interrupt_value.get("model_images")
     if model_images:
-        new_node3["model_images"] = model_images
+        new_node3["model_images"] = _merge_model_images(
+            new_node3.get("model_images"), model_images
+        )
 
     ratio = interrupt_value.get("ratio")
     if ratio:
@@ -340,7 +361,9 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         new_node3["image_model"] = image_model
     model_images = interrupt_value.get("model_images")
     if model_images:
-        new_node3["model_images"] = model_images
+        new_node3["model_images"] = _merge_model_images(
+            new_node3.get("model_images"), model_images
+        )
 
     return {"phase": "c2_select", "node2": new_node2, "node3": new_node3, "_redo_target": None}
 
@@ -489,7 +512,9 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         new_node3["image_model"] = image_model
     model_images = interrupt_value.get("model_images")
     if model_images:
-        new_node3["model_images"] = model_images
+        new_node3["model_images"] = _merge_model_images(
+            new_node3.get("model_images"), model_images
+        )
 
     return {"phase": "c3_confirm", "node3": new_node3, "_redo_target": None}
 

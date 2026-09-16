@@ -221,16 +221,13 @@ async def stream_generate_prompt(
     *,
     scheme: dict[str, Any],
     product_insight: str = "",
-    product_images: list[str],
+    product_images: list[str] | None = None,
     model_images: list[str] | None = None,
     user_requirement: str = "",
     reasoning_effort: str | None = None,
 ):
     """流式为单个方案生成最终 prompt（yield {"type": "thinking"|"content", "text": "..."}）。"""
     from wellflow.app.config import settings
-
-    if not product_images:
-        raise ValueError("PromptGeneration 必须传入至少一张产品图")
 
     client = get_llm_client("vlm", node_name="node3")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
@@ -250,23 +247,34 @@ async def stream_generate_prompt(
     if user_requirement:
         user_text_parts.append(f"【用户原始需求】\n{user_requirement}")
 
-    # 显式告诉 VLM 图片编号语义（多模态 image_uris 按此顺序传入）
+    product_images = product_images or []
+    model_images = model_images or []
+
+    # 显式告诉 VLM 图片编号语义（仅在有图时附加）
     n_prod = len(product_images)
-    n_model = len(model_images) if model_images else 0
-    ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
-    if n_prod:
-        ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
+    n_model = len(model_images)
+    if n_prod or n_model:
+        ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
+        if n_prod:
+            ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
+        if n_model:
+            ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（人脸、体型、气质）")
+        user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
+
+    # ⚠️ 有模特图时追加强制约束：确保 prompt 中的模特描述与参考图一致
     if n_model:
-        ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（人脸、体型、气质 —— 此图为生成结果的**人脸基准**，必须严格保持面部特征一致）")
-    user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
+        user_text_parts.append(
+            "【模特参考图约束】\n"
+            "参考图中的模特是最终生图的人脸/体型/气质基准，必须严格参照模特图的特征，"
+            "确保输出的 14 维 JSON 中 model 字段（性别、年龄、脸型、五官、肤色、发型、体型、气质）"
+            "与参考图中的模特高度一致，不要自行替换或臆造模特特征。"
+        )
 
     user_text_parts.append(
         f"请按 System Prompt 的 14 维结构输出 JSON。"
     )
 
-    all_images = list(product_images)
-    if model_images:
-        all_images.extend(model_images)
+    all_images = product_images + model_images
 
     async for delta in client.stream_chat_with_images(
         system=system_prompt,
@@ -287,7 +295,7 @@ async def generate_prompt_for_scheme(
     *,
     scheme: dict[str, Any],
     product_insight: str = "",
-    product_images: list[str],
+    product_images: list[str] | None = None,
     model_images: list[str] | None = None,
     user_requirement: str = "",
     reasoning_effort: str | None = None,
@@ -299,9 +307,6 @@ async def generate_prompt_for_scheme(
          "raw_text": str, "thinking_text": str, "scheme_index": int | None}
     """
     from wellflow.app.config import settings
-
-    if not product_images:
-        raise ValueError("PromptGeneration 必须传入至少一张产品图")
 
     client = get_llm_client("vlm", node_name="node3")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
@@ -320,24 +325,35 @@ async def generate_prompt_for_scheme(
     if user_requirement:
         user_text_parts.append(f"【用户原始需求】\n{user_requirement}")
 
-    # 显式告诉 VLM 图片编号语义（多模态 image_uris 按此顺序传入）
+    product_images = product_images or []
+    model_images = model_images or []
+
+    # 显式告诉 VLM 图片编号语义（仅在有图时附加）
     n_prod = len(product_images)
-    n_model = len(model_images) if model_images else 0
-    ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
-    if n_prod:
-        ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
+    n_model = len(model_images)
+    if n_prod or n_model:
+        ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
+        if n_prod:
+            ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
+        if n_model:
+            ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（人脸、体型、气质）")
+        user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
+
+    # ⚠️ 有模特图时追加强制约束：确保 prompt 中的模特描述与参考图一致
     if n_model:
-        ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（人脸、体型、气质 —— 此图为生成结果的**人脸基准**，必须严格保持面部特征一致）")
-    user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
+        user_text_parts.append(
+            "【模特参考图约束】\n"
+            "参考图中的模特是最终生图的人脸/体型/气质基准，必须严格参照模特图的特征，"
+            "确保输出的 14 维 JSON 中 model 字段（性别、年龄、脸型、五官、肤色、发型、体型、气质）"
+            "与参考图中的模特高度一致，不要自行替换或臆造模特特征。"
+        )
 
     user_text_parts.append("请按 System Prompt 的 14 维结构输出 JSON。")
 
-    all_images = list(product_images)
-    if model_images:
-        all_images.extend(model_images)
+    all_images = product_images + model_images
 
     print(f"[prompt_generation] 调用 VLM: scheme #{scheme_index}, "
-          f"product_images={len(product_images)}, model_images={len(model_images) if model_images else 0}, "
+          f"product_images={n_prod}, model_images={n_model}, "
           f"reasoning_effort={effort}",
           flush=True)
 

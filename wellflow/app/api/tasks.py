@@ -211,8 +211,12 @@ async def create_task(
     print(f"[create_task] 📁 图片落盘完成 ({time.time() - t0:.2f}s), paths={len(product_image_paths)}", flush=True)
 
     image_names = [f.filename for f in product_images]
+    # 生成简短 description 供前端历史列表展示
+    _desc = description.strip()[:30]
+    if not _desc:
+        _desc = " ".join(n.rsplit(".", 1)[0] for n in image_names[:2]) or "新商拍任务"
     request_json: dict[str, Any] = {
-        "description": description,
+        "description": _desc,
         "platform": platform,
         "image_type": image_type,
         "marketing_goal": marketing_goal,
@@ -445,8 +449,10 @@ async def resume_task(
                 resume_values["redo_target"] = redo_target or "node1"
                 print(f"[resume] C1 redo → {redo_target or 'node1'}", flush=True)
             else:
+                # C1 阶段无需传模特参考图，用户直接确认报告即可继续
                 resume_values["confirmed_report"] = confirmed_report
-                resume_values["model_images"] = model_image_paths
+                if model_image_paths:
+                    resume_values["model_images"] = model_image_paths
                 resume_values["ratio"] = ratio
                 if image_model:
                     resume_values["image_model"] = image_model

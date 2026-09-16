@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json as json_mod
+import re
 import uuid
 from typing import Any, AsyncGenerator
 
@@ -52,6 +53,68 @@ def _get_graph():
 def _langgraph_config(task_id: str):
     from langchain_core.runnables import RunnableConfig
     return RunnableConfig(configurable={"thread_id": task_id})
+
+
+# ---------------------------------------------------------------------------
+# 图片分类规则：images → (product_images, model_images)
+# ---------------------------------------------------------------------------
+
+# 第二层关键词：命中则覆盖上下文路由
+_PRODUCT_KEYWORDS = [
+    r"商品图", r"产品图", r"商品照片", r"换商品", r"换产品",
+    r"redo.*node1", r"重做.*商品", r"重新.*分析.*商品", r"重新分析商品",
+    r"换.*产品", r"产品.*换",
+]
+_MODEL_KEYWORDS = [
+    r"模特图", r"模特照片", r"参考图", r"模特参考",
+    r"人物", r"模特", r"穿搭", r"真人",
+]
+
+
+def _match_any(text: str, patterns: list[str]) -> bool:
+    return any(re.search(p, text) for p in patterns)
+
+
+def classify_images(
+    images: list[UploadFile],
+    *,
+    has_task: bool,
+    current_node: str | None,
+    message: str = "",
+) -> tuple[list[UploadFile], list[UploadFile]]:
+    """把统一的 images 列表分流为 (product_images, model_images)。
+
+    三层优先级：
+      1. message 关键词覆盖（命中 PRODUCT → 全部 product；命中 MODEL → 全部 model）
+      2. 上下文路由（无 task → product；有 task + c1/c2/c3 → model）
+      3. 兜底 → model_images
+
+    不做 VLM 视觉分类（v1），保持零延迟。
+    """
+    if not images:
+        return [], []
+
+    msg = message.strip()
+
+    # 第二层：关键词覆盖
+    if _match_any(msg, _PRODUCT_KEYWORDS):
+        print(f"[classify_images] 关键词覆盖 → product ({len(images)} 张)", flush=True)
+        return list(images), []
+    if _match_any(msg, _MODEL_KEYWORDS):
+        print(f"[classify_images] 关键词覆盖 → model ({len(images)} 张)", flush=True)
+        return [], list(images)
+
+    # 第一层：上下文路由
+    if not has_task:
+        print(f"[classify_images] 无任务 → product ({len(images)} 张)", flush=True)
+        return list(images), []
+    if current_node in ("c1", "c2", "c3", "c4"):
+        print(f"[classify_images] 上下文 c={current_node} → model ({len(images)} 张)", flush=True)
+        return [], list(images)
+
+    # 兜底
+    print(f"[classify_images] 兜底 → model ({len(images)} 张)", flush=True)
+    return [], list(images)
 
 
 async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
@@ -211,13 +274,10 @@ async def chat(
     platform: str = Form(default="taobao"),
     image_type: str = Form(default="ad"),
     marketing_goal: str = Form(default="acquisition"),
-    model_images: list[UploadFile] = File(default_factory=list),
-    product_images: list[UploadFile] = File(default_factory=list),
+    images: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
     message = message.strip()
-    # 入口不再硬拦：即使 message 空、只有 model_images，也让意图分类器处理
-    # 真正无意义的请求（message 空 + 无任何图片）会在分类器里判 chat_outside 走 SSE message 拒绝
 
     has_task = bool(task_id)
     t_id: str | None = None
@@ -244,12 +304,17 @@ async def chat(
         print(f"[chat] 上下文: task={t_id} node={current_node} completed={completed_mask}"
               f" model_images_in_state={len(existing_model_images)}", flush=True)
 
+    # 🔑 统一 images → 后端判断分流
+    product_images, model_images = classify_images(
+        images, has_task=has_task, current_node=current_node, message=message,
+    )
+
     intent_result = await classify(
         message,
         has_task=has_task,
         current_node=current_node,
         completed_mask=completed_mask,
-        has_images=len(product_images) > 0 or len(model_images) > 0,
+        has_images=len(images) > 0,
         product_description=message[:500],
     )
     intent = intent_result.get("intent", "chat_outside")
@@ -297,12 +362,14 @@ async def chat(
                 ):
                     yield ev
             elif intent in ("backward_to_c1", "backward_to_c2"):
-                async for ev in _handle_backward(intent, t_id or '', graph):
+                async for ev in _handle_backward(intent, t_id or '', graph,
+                                                  product_images=product_images):
                     yield ev
             else:
                 async for ev in _handle_resume(
                     intent, t_id or '', current_node, intent_result,
-                    message, model_images, existing_report, existing_prompts,
+                    message, model_images, product_images,
+                    existing_report, existing_prompts,
                     existing_model_images, graph,
                 ):
                     yield ev
@@ -343,8 +410,13 @@ async def _handle_start_task(
     product_image_paths = save_upload(task_id, raw_files, prefix="p")
     image_names = [f.filename for f in product_images]
 
+    # 生成简短 description 供前端历史列表展示
+    _desc = message.strip()[:30]
+    if not _desc:
+        _desc = " ".join(n.rsplit(".", 1)[0] for n in image_names[:2]) or "新商拍任务"
+
     request_json = {
-        "description": message,
+        "description": _desc,
         "platform": platform,
         "image_type": image_type,
         "marketing_goal": marketing_goal,
@@ -388,17 +460,40 @@ async def _handle_backward(
     intent: str,
     task_id: str,
     graph,
+    *,
+    product_images: list[UploadFile] | None = None,
 ) -> AsyncGenerator[str, None]:
+    from wellflow.app.utils.image_store import save_upload
+
     if intent == "backward_to_c1":
         goto_node = "c1_confirm"
         goto_clean = "c1"
-        clean_update = {"node2": {}, "node3": {}, "phase": "c1_confirm", "interrupt": None}
+        clean_update: dict[str, Any] = {
+            "node1": {}, "node2": {}, "node3": {},
+            "phase": "c1_confirm", "interrupt": None,
+        }
         step_num = 2
     else:
         goto_node = "c2_confirm"
         goto_clean = "c2"
-        clean_update = {"node3": {}, "phase": "c2_confirm", "interrupt": None}
+        clean_update: dict[str, Any] = {
+            "node3": {}, "phase": "c2_confirm", "interrupt": None,
+        }
         step_num = 4
+
+    # 如果用户上传了新商品图 → 落盘 + 更新 request.product_images
+    if product_images:
+        raw = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
+        new_paths = save_upload(task_id, raw, prefix="p")
+        # 读取旧 request 并 merge（保持 request 中其他字段不变）
+        graph_state = await _aget_graph_state(task_id)
+        old_request = (graph_state or {}).get("request", {}) if graph_state else {}
+        merged_request = {**old_request, "product_images": new_paths,
+                          "product_image_names": [f.filename for f in product_images],
+                          "image_count": len(product_images),
+                          "has_images": True}
+        clean_update["request"] = merged_request
+        print(f"[backward] 🔄 商品图已更新: {len(new_paths)} 张, intent={intent}", flush=True)
 
     q = await drain_and_subscribe(task_id)
     config = _langgraph_config(task_id)
@@ -432,6 +527,7 @@ async def _handle_resume(
     intent_result: dict[str, Any],
     message: str,
     model_images: list[UploadFile],
+    product_images: list[UploadFile] | None,
     existing_report: str,
     existing_prompts: list[str],
     existing_model_images: list[str],
@@ -451,21 +547,18 @@ async def _handle_resume(
         raw = [(f.filename or "model", await f.read(), f.content_type) for f in model_images]
         model_image_paths = save_upload(task_id, raw, prefix="m")
 
+    # 处理 product_images（仅在关键词覆盖时出现，比如 redo→node1 换商品图）
+    product_image_paths: list[str] = []
+    if product_images:
+        raw = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
+        product_image_paths = save_upload(task_id, raw, prefix="p")
+        print(f"[resume] 🔄 商品图已更新: {len(product_image_paths)} 张", flush=True)
+
     node = current_node
     resume_values: dict[str, Any] = {"node": node}
 
     if node == "c1":
-        # ---- 模特参考图必填校验 ----
-        # 用户意图是 confirm_current / edit_and_confirm_c1（即要走下一步），
-        # 但本次请求没传模特图，且 state 里也没有之前上传的 → 拦截提示
-        if intent in ("confirm_current", "edit_and_confirm_c1"):
-            if not model_image_paths and not existing_model_images:
-                print(f"[chat] 🚫 c1 拦截: intent={intent} 无模特参考图", flush=True)
-                yield _sse("message", {
-                    "text": "请上传至少 1 张模特参考图后再继续。",
-                })
-                yield _sse("done", {"phase": "done"})
-                return
+        # C1 阶段无需传图，用户直接确认/编辑报告即可继续
 
         if intent == "edit_and_confirm_c1":
             resume_values["confirmed_report"] = message
@@ -516,7 +609,20 @@ async def _handle_resume(
     await asyncio.to_thread(_clear_interrupt)
 
     config = _langgraph_config(task_id)
-    cmd = Command(resume=resume_values)
+
+    # 组装 Command：resume 是传给 interrupt 的值，update 是直接更新 state 的字段
+    cmd_kwargs: dict[str, Any] = {"resume": resume_values}
+    if product_image_paths:
+        # 读取旧 request 并 merge（保持其他字段不变）
+        graph_state = await _aget_graph_state(task_id)
+        old_request = (graph_state or {}).get("request", {}) if graph_state else {}
+        merged_request = {**old_request, "product_images": product_image_paths,
+                          "product_image_names": [f.filename for f in (product_images or [])],
+                          "image_count": len(product_image_paths),
+                          "has_images": True}
+        cmd_kwargs["update"] = {"request": merged_request}
+
+    cmd = Command(**cmd_kwargs)
 
     asyncio.create_task(_start_graph(task_id, graph, config, command=cmd))
 
