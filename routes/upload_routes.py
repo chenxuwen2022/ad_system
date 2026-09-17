@@ -1203,7 +1203,9 @@ async function loadMaterialDetail(){
         const res = await resp.json();
         if(!res.success){ box.innerHTML = "<p style='color:red'>"+(res.error||"查询失败")+"</p>"; return; }
         const s = res.summary, daily = res.daily || [], pv = res.preview || {};
-        let html = "<div class='preview-box'>";
+        // 同一素材 · 各店铺对比：放在“该商品所有素材投放数据”（商品聚合卡）正下方
+        let html = "<div id='multiShopBox'><p class='spin' style='margin:0 0 12px'>正在加载同一素材 · 各店铺对比…</p></div>";
+        html += "<div class='preview-box'>";
         if(pv.kind === "video" && pv.url){
             html += `<video src="${pv.url}" poster="${pv.poster||''}" controls></video>`;
         }else if(pv.kind === "image" && pv.url){
@@ -1229,8 +1231,6 @@ async function loadMaterialDetail(){
             html += kpi("投放天数", s.active_days+"天");
             html += kpi("近7天趋势", s.trend);
             html += "</div></details>";
-            // 同一素材 · 各店铺对比：紧跟素材投放数据之后
-            html += "<div id='multiShopBox'><p class='spin' style='margin:14px 0 0'>正在加载同一素材 · 各店铺对比…</p></div>";
         }
         if(daily.length){
             const maxC = Math.max(...daily.map(d=>d.cost), 1);
