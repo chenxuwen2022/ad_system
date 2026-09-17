@@ -60,3 +60,6 @@ static/scene_ai/
 *.mkv
 *.webm
 static/assets/
+static/outfit_ai/
+assets_data/*.bak_*
+static/*.html
