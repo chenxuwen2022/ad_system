@@ -861,11 +861,13 @@ async function loadMultiShop(mid, aid){
         const okShops = shops.filter(s=>s.ok);
         if(okShops.length > 1){
             h += "<h4 style='font-size:14px;margin:14px 0 8px'>同一素材 · 各店铺对比</h4>";
-            h += "<div style='max-height:320px;overflow-y:auto;border:1px solid #e7edf6;border-radius:10px'><table class='data' style='margin:0;width:100%;font-size:12.5px'><tr><th>店铺</th><th>消耗</th><th>净成交金额</th><th>总成交金额</th><th>ROI</th><th>环比</th><th>同比</th></tr>";
+            h += "<div style='max-height:320px;overflow-y:auto;border:1px solid #e7edf6;border-radius:10px'><table class='data' style='margin:0;width:100%;font-size:12.5px'><tr><th>店铺</th><th>素材ID</th><th>素材名称</th><th>消耗</th><th>净成交金额</th><th>总成交金额</th><th>ROI</th><th>环比</th><th>同比</th></tr>";
             okShops.forEach(s=>{
                 const hl = (s.advertiser_id === String(aid));
                 h += "<tr" + (hl ? " style='background:#eef4ff;font-weight:700'" : "") + ">";
                 h += "<td>" + esc(s.name) + (hl ? "（当前）" : "") + "</td>";
+                h += "<td style='font-family:monospace;font-size:11px'>" + esc(s.material_id || "") + "</td>";
+                h += "<td style='max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='" + esc(s.素材名称 || "") + "'>" + esc(s.素材名称 || "—") + "</td>";
                 h += "<td>" + fmtMoney(s.消耗) + "</td>";
                 h += "<td>" + fmtMoney(s.净成交金额) + "</td>";
                 h += "<td>" + fmtMoney(s.成交金额) + "</td>";

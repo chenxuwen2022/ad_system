@@ -325,6 +325,7 @@ async def material_multi_shop(material_id: str, advertiser_id: str = ""):
             s = detail.get("summary", {})
             row = {
                 "advertiser_id": str(a["advertiser_id"]), "name": a.get("name") or str(a["advertiser_id"]),
+                "material_id": material_id, "素材名称": s.get("name", ""),
                 "ok": True,
                 "消耗": s.get("消耗", 0), "成交金额": s.get("成交金额", 0),
                 "净成交金额": s.get("净成交金额", 0), "支付ROI": s.get("支付ROI", 0),
