@@ -1090,15 +1090,15 @@ function renderAiVisual(text){
     let cur = null;
     lines.forEach(line=>{
         // 兼容多种章节写法：**一、xxx** / ## xxx / 1. xxx / 一、xxx
-        let rl = line.replace(/^\*{1,2}/, "").replace(/\*{1,2}$/, "").trim();
+        let rl = line.replace(/^\\*{1,2}/, "").replace(/\\*{1,2}$/, "").trim();
         // 章节仅认中文序号或 markdown 标题；数字编号条目（1. xxx）归入上一章节的卡片
-        const m = rl.match(/^(第?[一二三四五六七八九十百]+)[、.．:：)）]\s*(.+)$/)
-               || rl.match(/^#{1,6}\s*(.+)$/);
+        const m = rl.match(/^(第?[一二三四五六七八九十百]+)[、.．:：)）]\\s*(.+)$/)
+               || rl.match(/^#{1,6}\\s*(.+)$/);
         if(m){
             let title = (m[2] || m[1] || "").trim();
-            const cm = title.match(/^([^：:]{1,10})[：:]\s*(.+)$/);
+            const cm = title.match(/^([^：:]{1,10})[：:]\\s*(.+)$/);
             if(cm){ title = cm[1].trim(); }
-            else{ title = title.replace(/[：:]\s*$/, ""); }
+            else{ title = title.replace(/[：:]\\s*$/, ""); }
             cur = {title: title, items: []};
             secs.push(cur);
             if(cm && cm[2].trim()){ cur.items.push(cm[2].trim()); }
@@ -1117,9 +1117,9 @@ function renderAiVisual(text){
         html += `<div class="viz-sec"><span class="viz-sec-tag">${esc(sec.title)}</span></div>`;
         const cards = [];
         sec.items.forEach(line=>{
-            const num = line.match(/^(\d+)[、.．:：)）]\s*(.+)$/);
-            const circle = line.match(/^([①②③④⑤⑥⑦⑧⑨⑩])\s*(.+)$/);
-            const bold = line.match(/^\*\*(.+?)\*\*$/);
+            const num = line.match(/^(\\d+)[、.．:：)）]\\s*(.+)$/);
+            const circle = line.match(/^([①②③④⑤⑥⑦⑧⑨⑩])\\s*(.+)$/);
+            const bold = line.match(/^\\*\\*(.+?)\\*\\*$/);
             if(num){ cards.push({t: num[2].trim()}); }
             else if(circle){ cards.push({t: circle[2].trim()}); }
             else if(bold){ cards.push({t: bold[1].trim()}); }
