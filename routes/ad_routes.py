@@ -29,6 +29,18 @@ class MaterialTagBody(BaseModel):
     id: Optional[int] = None  # 编辑时传数据库主键，用于精确更新
 
 
+class AiContextBody(BaseModel):
+    advertiser_id: str = ""
+    links: list = []          # 竞品链接列表
+    market_data: str = ""     # 行业市场数据文本
+
+
+def _ai_context_path(aid):
+    d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"ai_context_{aid}.json")
+
+
 def _resolve_advertiser_id(req_id, accounts):
     """确定投放使用的广告主ID：请求指定 > 配置文件默认 > 唯一账户"""
     ids = [str(a.get("advertiser_id")) for a in accounts]
@@ -258,6 +270,40 @@ async def material_detail(material_id: str, advertiser_id: str = ""):
         svc = DouYinAdService(advertiser_id=aid)
         data = svc.get_material_detail(material_id)
         return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/api/ai_context")
+async def save_ai_context(body: AiContextBody):
+    """保存 AI 分析上下文：竞品链接列表 + 行业市场数据（按广告主分文件存储）。"""
+    import json
+    aid = str(body.advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID"))
+    links = [str(x).strip() for x in (body.links or []) if str(x).strip()]
+    market = (body.market_data or "").strip()
+    try:
+        with open(_ai_context_path(aid), "w", encoding="utf-8") as f:
+            json.dump({"links": links, "market_data": market,
+                       "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                      f, ensure_ascii=False, indent=2)
+        return {"success": True, "links": links, "market_data_len": len(market)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/ai_context")
+async def get_ai_context(advertiser_id: str = ""):
+    """读取已保存的 AI 分析上下文。"""
+    import json
+    aid = str(advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID"))
+    path = _ai_context_path(aid)
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            return {"success": True, "links": d.get("links", []),
+                    "market_data": d.get("market_data", ""), "updated": d.get("updated", "")}
+        return {"success": True, "links": [], "market_data": "", "updated": ""}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

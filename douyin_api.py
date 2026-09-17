@@ -114,6 +114,20 @@ _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 
 
+def _load_ai_context(advertiser_id):
+    """读取该广告主保存的 AI 分析上下文（竞品链接 + 行业市场数据），无则返回空。"""
+    import json as _json, os as _os
+    try:
+        _d = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data")
+        _p = _os.path.join(_d, f"ai_context_{advertiser_id}.json")
+        if _os.path.isfile(_p):
+            with open(_p, encoding="utf-8") as _f:
+                return _json.load(_f)
+    except Exception:
+        pass
+    return {"links": [], "market_data": "", "updated": ""}
+
+
 def _cache_get(key):
     item = _CACHE.get(key)
     if not item:
@@ -1241,8 +1255,9 @@ class DouYinAdService:
         except Exception:
             pass
 
-        # 4. DeepSeek 单素材点评（缓存10分钟，避免重复调用花钱）
-        ai_key = ("ai", str(self.advertiser_id), str(material_id))
+        # 4. DeepSeek 单素材点评（缓存10分钟，避免重复调用花钱；竞品/行业上下文更新后自动重新分析）
+        _ctx = _load_ai_context(self.advertiser_id)
+        ai_key = ("ai", str(self.advertiser_id), str(material_id), _ctx.get("updated", ""))
         ai_text = _cache_get(ai_key)
         if ai_text is None:
             daily_text = "\n".join(
@@ -1262,6 +1277,13 @@ class DouYinAdService:
                 f"投放时间：累计{active_days}天, 首发{first_day}~{last_day}, 峰值{peak['date'] if peak else ''}消耗{peak['cost'] if peak else 0}元, 近7天趋势{trend_dir}(近7天{recent7_cost}元 vs 前7天{prev7_cost}元)\n"
                 f"逐日曲线(近30天):\n{daily_text or '（无逐日数据）'}"
             )
+            if _ctx.get("links") or _ctx.get("market_data"):
+                prompt += "\n\n【额外参考资料：竞品与行业市场】\n"
+                if _ctx.get("links"):
+                    prompt += "竞品链接：\n" + "\n".join(_ctx["links"]) + "\n"
+                if _ctx.get("market_data"):
+                    prompt += "行业市场数据：\n" + _ctx["market_data"][:3000] + "\n"
+                prompt += "请结合这些参考资料，输出更有针对性的点评与修改建议（与竞品对比、结合行业水平判断），并明确标注哪些结论来自参考资料。"
             api_key = DOUYIN_CONFIG.get("DEEPSEEK_API_KEY", "")
             base = DOUYIN_CONFIG.get("DEEPSEEK_BASE", "https://api.deepseek.com")
             try:

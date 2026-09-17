@@ -416,6 +416,16 @@ HTML_PAGE = """
     </div>
 </div>
 
+<div class="modal-mask" id="aiCtxModal" onclick="if(event.target===this)closeAiCtxModal()">
+    <div class="modal modal-launch" style="max-width:580px">
+        <div class="lm-head">
+            <div class="lm-title" id="aiCtxTitle">竞品链接</div>
+            <button class="lm-close" onclick="closeAiCtxModal()" title="关闭">×</button>
+        </div>
+        <div class="lm-body" id="aiCtxBody"></div>
+    </div>
+</div>
+
 <script>
 let advertiserAccounts = [];
 
@@ -728,6 +738,107 @@ async function loadPopMarks(){
 function closeLaunchModal(){
     document.getElementById("launchModal").classList.remove("show");
 }
+
+// ===== AI 分析上下文：竞品链接 + 行业市场数据（保存到后台，分析时拼入提示词） =====
+let aiCtxData = {links: [], market_data: "", updated: ""};
+let aiCtxMode = "links";
+
+async function loadAiCtx(){
+    const aid = document.getElementById("matAdvertiser").value;
+    try{
+        const r = await fetch("/api/ai_context?advertiser_id=" + encodeURIComponent(aid));
+        const j = await r.json();
+        if(j.success){
+            aiCtxData = {links: j.links || [], market_data: j.market_data || "", updated: j.updated || ""};
+        }
+    }catch(e){}
+    updateAiCtxBadge();
+}
+function updateAiCtxBadge(){
+    const b = document.getElementById("aiCtxBadge");
+    if(!b) return;
+    const n = (aiCtxData.links || []).length + (aiCtxData.market_data ? 1 : 0);
+    b.textContent = n
+        ? "已加载：竞品 " + (aiCtxData.links||[]).length + " 条" + (aiCtxData.market_data ? " · 行业数据 1 份" : "")
+        : "未加载参考资料";
+    b.style.color = n ? "#16a34a" : "#9aa7ba";
+}
+function openAiCtxModal(mode){
+    aiCtxMode = mode;
+    document.getElementById("aiCtxTitle").textContent = mode === "links" ? "竞品链接" : "行业市场数据";
+    const body = document.getElementById("aiCtxBody");
+    if(mode === "links"){
+        body.innerHTML = `
+            <div class="lm-field">
+                <div class="lm-label">竞品链接 <span class="lm-hint">每行一条，供 AI 对比分析</span></div>
+                <textarea id="aiCtxLinksInput" rows="7" style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #e7edf6;border-radius:10px;font-size:13px;line-height:1.8;resize:vertical" placeholder="https://xxx.douyin.com/...\\nhttps://xxx.taobao.com/..."></textarea>
+            </div>
+            <div style="font-size:12px;color:#8a97ab" id="aiCtxLinksSaved">已保存：0 条</div>
+            <div class="lm-actions">
+                <button class="ghost" onclick="clearAiCtx()">清空</button>
+                <button class="lm-launch" onclick="saveAiCtx()">保存</button>
+            </div>`;
+        document.getElementById("aiCtxLinksInput").value = (aiCtxData.links || []).join("\\n");
+        document.getElementById("aiCtxLinksSaved").textContent = "已保存：" + (aiCtxData.links || []).length + " 条";
+    }else{
+        body.innerHTML = `
+            <div class="lm-field">
+                <div class="lm-label">行业市场数据 <span class="lm-hint">粘贴文本或上传 .txt/.csv 文件（\u226450KB）</span></div>
+                <textarea id="aiCtxMarketInput" rows="7" style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #e7edf6;border-radius:10px;font-size:13px;line-height:1.8;resize:vertical" placeholder="如：行业平均 CTR/CVR、大盘消耗趋势、竞对投放策略…"></textarea>
+                <div style="margin-top:8px"><input type="file" id="aiCtxMarketFile" accept=".txt,.csv" onchange="readAiCtxFile(this)"></div>
+            </div>
+            <div style="font-size:12px;color:#8a97ab" id="aiCtxMarketSaved">已保存：${aiCtxData.market_data ? (aiCtxData.market_data.length + " 字") : "0 字"}${aiCtxData.updated ? "（更新于 " + aiCtxData.updated + "）" : ""}</div>
+            <div class="lm-actions">
+                <button class="ghost" onclick="clearAiCtx()">清空</button>
+                <button class="lm-launch" onclick="saveAiCtx()">保存</button>
+            </div>`;
+        document.getElementById("aiCtxMarketInput").value = aiCtxData.market_data || "";
+    }
+    document.getElementById("aiCtxModal").classList.add("show");
+}
+function readAiCtxFile(inp){
+    const f = inp.files && inp.files[0];
+    if(!f) return;
+    if(f.size > 51200){ alert("文件过大，请控制在 50KB 以内"); inp.value = ""; return; }
+    const rd = new FileReader();
+    rd.onload = e => { document.getElementById("aiCtxMarketInput").value = e.target.result; };
+    rd.readAsText(f, "utf-8");
+}
+async function saveAiCtx(){
+    const aid = document.getElementById("matAdvertiser").value;
+    if(aiCtxMode === "links"){
+        const links = document.getElementById("aiCtxLinksInput").value.split(/\\n|,|;|；/).map(s=>s.trim()).filter(s=>s);
+        aiCtxData.links = links;
+    }else{
+        aiCtxData.market_data = document.getElementById("aiCtxMarketInput").value.trim();
+    }
+    try{
+        const r = await fetch("/api/ai_context", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({advertiser_id: aid, links: aiCtxData.links || [], market_data: aiCtxData.market_data || ""})
+        });
+        const j = await r.json();
+        if(j.success){
+            aiCtxData.updated = new Date().toLocaleString("zh-CN");
+            updateAiCtxBadge();
+            alert("已保存。重新点击「深度分析」将结合参考资料输出更针对性的建议。");
+            closeAiCtxModal();
+        }else{
+            alert("保存失败：" + (j.error || "未知错误"));
+        }
+    }catch(e){
+        alert("保存失败：" + e);
+    }
+}
+function clearAiCtx(){
+    if(!confirm("确定清空已保存的" + (aiCtxMode === "links" ? "竞品链接" : "行业数据") + "？")) return;
+    if(aiCtxMode === "links"){ aiCtxData.links = []; }
+    else{ aiCtxData.market_data = ""; }
+    openAiCtxModal(aiCtxMode);
+}
+function closeAiCtxModal(){
+    document.getElementById("aiCtxModal").classList.remove("show");
+}
 function onPopAdvertiserChange(){
     loadPopProducts();
     loadPopPlans();
@@ -1005,9 +1116,14 @@ async function loadMaterialDetail(){
             });
             html += "</table></div></details>";
         }
-        html += "<div class='ai-head'>AI 点评与修改建议</div>";
+        html += "<div class='ai-head' style='justify-content:space-between'>AI 点评与修改建议";
+        html += "<span style='display:flex;align-items:center;gap:8px;font-weight:400'>";
+        html += "<button class='ghost' style='font-weight:400' onclick='openAiCtxModal(\\"links\\")'>竞品链接</button>";
+        html += "<button class='ghost' style='font-weight:400' onclick='openAiCtxModal(\\"market\\")'>行业数据</button>";
+        html += "<span id='aiCtxBadge' style='font-size:12px;color:#8a97ab'></span></span></div>";
         html += "<div class='ai-box'>" + renderAiViz(res.ai, s) + "</div>";
         box.innerHTML = html;
+        loadAiCtx();
     }catch(e){
         box.innerHTML = "<p style='color:#e02424'>请求失败："+e+"</p>";
     }
