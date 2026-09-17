@@ -5,10 +5,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     env_file:
-      - ../../.env
+      - .env
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: wellflow
     ports:
       - "15432:5432"
@@ -22,19 +21,19 @@ services:
 
   app:
     build:
-      context: ../..
-      dockerfile: wellflow/deploy/Dockerfile
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     env_file:
-      - ../../.env
+      - .env
     depends_on:
       db:
         condition: service_healthy
     environment:
-      # 容器内数据库主机名是 service 名 db，不是 localhost
+      # 容器内数据库主机名是 service 名 db（不是 localhost）
+      # .env 里的 DATABASE_URL 是本地开发用 @localhost 的，需要覆盖
       DATABASE_URL: postgresql+psycopg2://postgres:${POSTGRES_PASSWORD}@db:5432/wellflow
       DATABASE_URL_ASYNC: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD}@db:5432/wellflow
-      NEWAPI_API_KEY: ${NEWAPI_API_KEY}
       APP_ENV: production
       # 服务器上没有本地 127.0.0.1:7890 代理，置空禁用（否则 Node1 调研工具会连不上）
       HTTP_PROXY_URL: ""
