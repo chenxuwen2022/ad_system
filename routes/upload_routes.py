@@ -1229,6 +1229,8 @@ async function loadMaterialDetail(){
             html += kpi("投放天数", s.active_days+"天");
             html += kpi("近7天趋势", s.trend);
             html += "</div></details>";
+            // 同一素材 · 各店铺对比：紧跟素材投放数据之后
+            html += "<div id='multiShopBox'><p class='spin' style='margin:14px 0 0'>正在加载同一素材 · 各店铺对比…</p></div>";
         }
         if(daily.length){
             const maxC = Math.max(...daily.map(d=>d.cost), 1);
@@ -1246,7 +1248,6 @@ async function loadMaterialDetail(){
             });
             html += "</table></div></details>";
         }
-        html += "<div id='multiShopBox'><p class='spin' style='margin:14px 0 0'>正在加载跨店铺对比与素材集合数据…</p></div>";
         html += "<div class='ai-head' style='justify-content:space-between'>AI 点评与修改建议";
         html += "<span style='display:flex;align-items:center;gap:8px;font-weight:400'>";
         html += "<button class='ghost' style='font-weight:400' onclick='openAiCtxModal(\\"links\\")'>竞品链接</button>";
