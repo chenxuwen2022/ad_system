@@ -25,16 +25,38 @@ def persist_phase(task_id: str, phase: str, node_name: str) -> None:
 
 
 def persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str) -> None:
-    """graph 触发 interrupt 时存 interrupt_json + 更新 phase + 写 graph_interrupt 事件。"""
+    """graph 触发 interrupt 时存 interrupt_json + 更新 phase + 写 graph_interrupt 事件。
+
+    **同时往 task_event 追加一条带完整产物的事件**（payload_json 里放 report/schemes/prompts 等），
+    这样 GET /api/conversations/{id}/timeline 能拿到每一步的工作流产物历史，
+    而不是只看 interrupt_json 单快照（backward 重跑会被覆盖）。
+    """
     try:
         with session_scope() as db:
             repo = TaskRepo(db)
             repo.save_interrupt(task_id, interrupt_value)
             repo.update_phase(task_id, phase)
+
+            # 写事件：event_type = graph_interrupt_{node}
+            node = interrupt_value.get("node") or "unknown"
+            event_type = f"graph_interrupt_{node}"
+
+            # 按 node 类型提取要持久化的产物字段（去掉 hint/schema 这种非产物字段）
+            payload_fields = {
+                "c1": ["report"],
+                "c2": ["schemes", "scheme_raw", "generate_prompts"],
+                "c3": ["generate_prompts", "prompts_detail", "prompt_raw"],
+                "c4": ["outputs"],
+            }.get(node, [])
+            payload = {k: v for k, v in interrupt_value.items() if k in payload_fields}
+            # 总是带上 phase + hint（恢复时有用）
+            payload.setdefault("phase", phase)
+            payload.setdefault("hint", interrupt_value.get("hint", ""))
+
             repo.add_event(
-                task_id, "graph_interrupt",
+                task_id, event_type,
                 phase=phase,
-                payload_json={"node": interrupt_value.get("node")},
+                payload_json=payload,
             )
     except Exception as e:
         print(f"[graph] interrupt persist error: {e}", flush=True)
@@ -53,7 +75,11 @@ def persist_error(task_id: str, code: str, message: str, source: str) -> None:
 
 
 def persist_outputs(task_id: str, node4: dict[str, Any]) -> None:
-    """确认结束（done）后：把 node4.outputs 的生图成品落盘 + 写 task_image 表。"""
+    """确认结束（done）后：把 node4.outputs 的生图成品落盘 + 写 task_image 表。
+
+    **同时往 task_event 追加一条 workflow_done 事件**，存本次生图的摘要
+    （prompt 列表 + 图片 URL 列表），timeline API 能把完整的生图历史串起来。
+    """
     outputs = node4.get("outputs") or []
     if not outputs:
         print(f"[graph] task={task_id} done 但 outputs 为空，跳过成品落库", flush=True)
@@ -74,10 +100,24 @@ def persist_outputs(task_id: str, node4: dict[str, Any]) -> None:
             "variant_index": o.get("variant_index"),
         })
 
+    # 给 timeline 用的摘要（不重复存原始图片 URL——那在 task_image 表里有）
+    summary_payload = {
+        "output_count": len(outputs),
+        "prompts": [o.get("prompt") for o in outputs if o.get("prompt")],
+        "image_paths": [img["storage_uri"] for img in images],
+        "phase": "done",
+    }
+
     try:
         with session_scope() as db:
             repo = TaskRepo(db)
             ids = repo.save_images(task_id, images)
-            print(f"[graph] task={task_id} 成品落库 {len(ids)} 张", flush=True)
+            # 追加 workflow_done 事件
+            repo.add_event(
+                task_id, "workflow_done",
+                phase="done",
+                payload_json=summary_payload,
+            )
+            print(f"[graph] task={task_id} 成品落库 {len(ids)} 张 + workflow_done 事件", flush=True)
     except Exception as e:
         print(f"[graph] output persist error: {e}", flush=True)

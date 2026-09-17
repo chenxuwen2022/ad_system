@@ -74,16 +74,20 @@ def list_conversations(
             )
         ).scalar() or 0
 
-        # 最后一条消息预览（取 session_index 最大的一条）
+        # 最后一条用户消息预览：优先取 role=user 的 session_index 最大那条，
+        # 确保预览稳定（assistant 的 resume_ack/error 等系统消息不应抢占 preview）
         preview: str | None = None
-        latest = db.execute(
+        latest_user = db.execute(
             select(ChatMessage)
-            .where(ChatMessage.conversation_id == c.conversation_id)
+            .where(
+                ChatMessage.conversation_id == c.conversation_id,
+                ChatMessage.role == "user",
+            )
             .order_by(desc(ChatMessage.session_index))
             .limit(1)
         ).scalar_one_or_none()
-        if latest and latest.text:
-            preview = latest.text[:80]
+        if latest_user and latest_user.text:
+            preview = latest_user.text[:80]
 
         list_items.append(ConversationListItem(
             conversation_id=c.conversation_id,
@@ -172,6 +176,92 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
         created_at=c.created_at.isoformat(),
         updated_at=c.updated_at.isoformat(),
     ))
+
+
+# ---------------------------------------------------------------------------
+# Timeline —— 混合 chat_message + task_event 的完整时间线
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/{conversation_id}/timeline",
+    response_model=StandardResponse[dict[str, Any]],
+    summary="查询会话时间线（对话消息 + 每个 task 的工作流事件）",
+)
+def get_timeline(conversation_id: str, db: Session = Depends(get_db)):
+    """返回 conversation 内所有 task 的工作流事件 + 全部 chat_message，
+    按 created_at 合并成一条时间线。
+
+    前端可以完整恢复：用户消息 → Node1 报告 → C1 确认 → Node2 方案 → ... → 生图完成。
+    无论用户做了多少次 backward 重跑，每一步 interrupt 的完整产物都会保留。
+
+    timeline items 的 type 字段区分来源：
+      - "chat"          → ChatMessage（对话文本）
+      - "graph_interrupt_c1/c2/c3/c4" → TaskEvent interrupt 产物（report/schemes/prompts）
+      - "phase_change"  → 节点完成 phase 变更
+      - "workflow_done" → 整个生图完成
+      - "workflow_error" → 节点报错
+    """
+    from wellflow.app.repositories.task_repo import TaskRepo, ChatMessageRepo
+
+    conv_repo = ConversationRepo(db)
+    c = conv_repo.resolve(conversation_id)
+    if not c:
+        raise HTTPException(404, f"conversation {conversation_id} 不存在")
+
+    task_repo = TaskRepo(db)
+    chat_repo = ChatMessageRepo(db)
+
+    # 1. 拉 conversation 下所有 task
+    tasks = task_repo.list_tasks_by_conversation(conversation_id)
+    task_ids = [t.task_id for t in tasks]
+
+    # 2. 拉所有 task_event
+    events = task_repo.list_events_by_tasks(task_ids) if task_ids else []
+
+    # 3. 拉所有 chat_message
+    chats = chat_repo.list_by_conversation(conversation_id)
+
+    # 4. 拼 timeline（统一结构，按时间升序）
+    timeline: list[dict[str, Any]] = []
+
+    for ch in chats:
+        timeline.append({
+            "kind": "chat",
+            "task_id": ch.task_id,
+            "role": ch.role,
+            "text": ch.text or "",
+            "intent": ch.intent,
+            "session_index": ch.session_index,
+            "created_at": ch.created_at.isoformat() if ch.created_at else None,
+        })
+
+    for ev in events:
+        timeline.append({
+            "kind": "event",
+            "event_id": ev.event_id,
+            "task_id": ev.task_id,
+            "event_type": ev.event_type,  # graph_interrupt_c1 / phase_change / workflow_done ...
+            "phase": ev.phase,
+            "payload": ev.payload_json or {},
+            "cost_usd": ev.cost_usd,
+            "created_at": ev.created_at.isoformat() if ev.created_at else None,
+        })
+
+    # 5. 按 created_at 升序排（chat 没 created_at 的退到最后）
+    def _sort_key(item: dict[str, Any]) -> tuple:
+        ts = item.get("created_at") or "9999-99-99"
+        idx = item.get("session_index") or 0
+        return (ts, idx)
+
+    timeline.sort(key=_sort_key)
+
+    return ok({
+        "conversation_id": conversation_id,
+        "task_ids": task_ids,
+        "timeline": timeline,
+        "total": len(timeline),
+    })
 
 
 # ---------------------------------------------------------------------------

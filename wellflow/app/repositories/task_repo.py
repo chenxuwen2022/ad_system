@@ -10,7 +10,7 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.orm import Session
 
 from wellflow.app.models.task_models import (
-    Task, TaskEvent, TaskErrorLog, TaskImage,
+    Task, TaskEvent, TaskErrorLog, TaskImage, ChatMessage,
 )
 
 
@@ -199,3 +199,43 @@ class TaskRepo:
         self.db.delete(task)
         self.db.commit()
         return True
+
+    # ------------------------------------------------------------------
+    # Conversation 维度查询（timeline / history 恢复用）
+    # ------------------------------------------------------------------
+
+    def list_tasks_by_conversation(self, conversation_id: str) -> list[Task]:
+        """conversation 下全部 task，按 created_at 升序。"""
+        stmt = (
+            select(Task)
+            .where(Task.conversation_id == conversation_id)
+            .order_by(Task.created_at)
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
+    def list_events_by_tasks(self, task_ids: list[str]) -> list[TaskEvent]:
+        """task 集合的全部 TaskEvent，按 created_at 升序。"""
+        if not task_ids:
+            return []
+        stmt = (
+            select(TaskEvent)
+            .where(TaskEvent.task_id.in_(task_ids))
+            .order_by(TaskEvent.created_at)
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
+
+class ChatMessageRepo:
+    """Conversation 下的对话消息查询。"""
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    def list_by_conversation(self, conversation_id: str) -> list[ChatMessage]:
+        """conversation 下全部消息，按 session_index 优先、created_at 兜底升序。"""
+        stmt = (
+            select(ChatMessage)
+            .where(ChatMessage.conversation_id == conversation_id)
+            .order_by(ChatMessage.session_index, ChatMessage.created_at)
+        )
+        return list(self.db.execute(stmt).scalars().all())

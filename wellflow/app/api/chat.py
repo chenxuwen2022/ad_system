@@ -299,7 +299,22 @@ async def chat(
     images: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
-    message = message.strip()
+    # ────────────────────────────────────── UTF-8 容错 ──────────────────────────────────────
+    # macOS curl / 部分客户端用 latin-1 解 Form（Content-Type 无 charset），
+    # 中文字节会被当成 latin-1 字符 → "重来第一步" 变成乱码。
+    # 这里做一次纠正：如果 str 里含非 ASCII 且 encode('latin-1').decode('utf-8') 能成功，
+    # 说明它是 UTF-8 bytes 被 latin-1 解过，就纠正回来。
+    def _fix_utf8(s: str) -> str:
+        try:
+            if s and any(ord(c) > 127 for c in s):
+                fixed = s.encode("latin-1").decode("utf-8")
+                print(f"[chat] ✅ 纠正 latin-1→utf-8: {s!r} → {fixed!r}", flush=True)
+                return fixed
+        except (UnicodeEncodeError, UnicodeDecodeError):
+            pass
+        return s
+
+    message = _fix_utf8(message).strip()
 
     has_task = bool(task_id)
     t_id: str | None = None
@@ -367,6 +382,18 @@ async def chat(
     print(f"[chat] 意图={intent} reason={intent_result.get('reasoning', '')[:60]}", flush=True)
 
     # ------------------------------------------------------------------
+    # 🛡️ start_task 守卫：已有任务时绝不允许开新任务跑 Node1。
+    # LLM 兜底分类可能把 "继续" 这类短确认误判成 start_task（尤其 current_node
+    # 丢失时），若直接 _handle_start_task 会抛弃当前任务从头跑 → 强制降级为
+    # confirm_current 走 resume（current_node 缺失时 _handle_resume 有兜底提示）。
+    # ------------------------------------------------------------------
+    if intent == "start_task" and has_task:
+        print(f"[chat] 🛡️ 已有 task={t_id}，start_task 降级 → confirm_current", flush=True)
+        intent = "confirm_current"
+        intent_result["intent"] = "confirm_current"
+        intent_result["reasoning"] = f"守卫: has_task=True 时拦截 start_task（原 reasoning: {intent_result.get('reasoning', '')}）"
+
+    # ------------------------------------------------------------------
     # Conversation 关联 + user chat_message 持久化（在 event_generator 之外同步做）
     # 新建 conversation（首次）或复用已解析的 resolved_conv_id
     # ------------------------------------------------------------------
@@ -430,27 +457,75 @@ async def chat(
             return
         try:
             def _sync_write():
-                from wellflow.app.repositories.conversation_repo import ChatMessageRepo as _CMR, ConversationRepo as _CR
+                from wellflow.app.repositories.conversation_repo import (
+                    ChatMessageRepo,
+                    ConversationRepo,
+                )
                 with session_scope() as sdb:
-                    _cmr = _CMR(sdb)
-                    _cmr.create(
+                    ChatMessageRepo(sdb).create(
                         conversation_id=conv_id_for_this_turn,
                         role="assistant",
                         text=text,
-                        intent=intent,
                         task_id=task_id_,
                     )
-                    _cr(sdb).touch(conv_id_for_this_turn)
+                    ConversationRepo(sdb).touch(conv_id_for_this_turn)
             await asyncio.to_thread(_sync_write)
         except Exception as exc:
             print(f"[chat] ⚠️ assistant message 持久化失败: {exc}", flush=True)
 
+    async def _persist_sse_text(raw_sse: str, *, known_task_id: str | None = None) -> None:
+        """从 SSE chunk 里抽取 assistant 文本并持久化（幂等：有文本才写）。
+
+        识别的事件类型：
+          - event: message       → data.text
+          - event: resume_ack    → data.message
+          - event: error         → data.message / data.error
+        """
+        try:
+            lines = raw_sse.splitlines()
+            ev_type = next(
+                (ln[7:].strip() for ln in lines if ln.startswith("event:")),
+                "",
+            )
+            data_line = next(
+                (ln[5:].strip() for ln in lines if ln.startswith("data:")),
+                "",
+            )
+            if not ev_type or not data_line:
+                return
+            data = json_mod.loads(data_line)
+        except Exception:
+            return
+        text = ""
+        if ev_type == "message":
+            text = str(data.get("text") or "").strip()
+        elif ev_type == "resume_ack":
+            text = str(data.get("message") or "").strip()
+        elif ev_type == "error":
+            text = str(data.get("message") or data.get("error") or "").strip()
+        if text:
+            await _persist_assistant_msg(text, known_task_id)
+
+    async def _stream_with_persist(
+        generator: AsyncGenerator[str, None],
+        *,
+        task_id_getter,
+    ) -> AsyncGenerator[str, None]:
+        """包一层：每 yield 一个 SSE chunk 前，自动持久化有文本的 assistant 回复。
+
+        task_id_getter 是一个 callable，每次被调用时返回当前最新的 task_id（或 None），
+        解决 start_task 时 task_id 在 handler 内部才生成的时序问题。
+        """
+        async for chunk in generator:
+            await _persist_sse_text(chunk, known_task_id=task_id_getter())
+            yield chunk
+
     async def event_generator() -> AsyncGenerator[str, None]:
+        # early-return 分支：手动 persist 每个有文本的 yield
         if intent == "chat_outside":
-            await _persist_assistant_msg("暂不支持与生图无关的对话。")
-            yield _sse("message", {
-                "text": "暂不支持与生图无关的对话。",
-            })
+            chunk = _sse("message", {"text": "暂不支持与生图无关的对话。"})
+            await _persist_sse_text(chunk, known_task_id=t_id)
+            yield chunk
             yield _sse("done", {"phase": "done"})
             return
 
@@ -470,8 +545,9 @@ async def chat(
                 msg = reasoning
             elif not msg:
                 msg = "不支持跳过工作流中的步骤。"
-            await _persist_assistant_msg(msg)
-            yield _sse("message", {"text": msg})
+            chunk = _sse("message", {"text": msg})
+            await _persist_sse_text(chunk, known_task_id=t_id)
+            yield chunk
             yield _sse("done", {"phase": "done"})
             return
 
@@ -480,10 +556,9 @@ async def chat(
         # ------------------------------------------------------------------
         if has_task and t_id and intent != "start_task" and is_running(t_id):
             print(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={intent}", flush=True)
-            await _persist_assistant_msg("任务正在执行中，请等待当前操作完成后再试。")
-            yield _sse("message", {
-                "text": "任务正在执行中，请等待当前操作完成后再试。",
-            })
+            chunk = _sse("message", {"text": "任务正在执行中，请等待当前操作完成后再试。"})
+            await _persist_sse_text(chunk, known_task_id=t_id)
+            yield chunk
             yield _sse("done", {"phase": "done"})
             return
 
@@ -495,23 +570,48 @@ async def chat(
             return
 
         try:
+            # _pipe 包装：让 _stream_with_persist 每次都能拿到最新 t_id（通过 getter），
+            # 同时 start_task 时从 task_created 事件里抓到 handler 内部生成的 task_id
+            async def _pipe(generator):
+                nonlocal t_id
+                async for ev in _stream_with_persist(generator, task_id_getter=lambda: t_id):
+                    if not t_id:
+                        try:
+                            lines = ev.splitlines()
+                            ev_type = next(
+                                (ln[7:].strip() for ln in lines if ln.startswith("event:")),
+                                "",
+                            )
+                            data_line = next(
+                                (ln[5:].strip() for ln in lines if ln.startswith("data:")),
+                                "",
+                            )
+                            if ev_type == "task_created" and data_line:
+                                _data = json_mod.loads(data_line)
+                                _tid = str(_data.get("task_id") or "")
+                                if _tid:
+                                    t_id = _tid
+                        except Exception:
+                            pass
+                    yield ev
+
             if intent == "start_task":
-                async for ev in _handle_start_task(
+                async for ev in _pipe(_handle_start_task(
                     message, product_images, platform, image_type, marketing_goal, graph,
                     conversation_id=conv_id_for_this_turn,
-                ):
+                )):
                     yield ev
             elif intent in ("backward_to_c1", "backward_to_c2", "backward_to_c3"):
-                async for ev in _handle_backward(intent, t_id or '', graph,
-                                                  product_images=product_images):
+                async for ev in _pipe(_handle_backward(intent, t_id or '', graph,
+                                                       product_images=product_images)):
                     yield ev
             else:
-                async for ev in _handle_resume(
+                async for ev in _pipe(_handle_resume(
                     intent, t_id or '', current_node, intent_result,
                     message, model_images, product_images,
                     existing_report, existing_prompts,
                     existing_model_images, graph,
-                ):
+                )):
                     yield ev
         except Exception as exc:
             import traceback as _tb2
@@ -661,23 +761,13 @@ async def _handle_backward(
     q = await drain_and_subscribe(task_id)
     config = _langgraph_config(task_id)
 
-    # 🔑 LangGraph 的 Command(goto=interrupt_node) 本质是"跳过下一次执行 + update state"，
-    # 而 Command(goto=execution_node) 只 update state，不自动跳过 checkpoint 的执行位置。
-    # 所以必须先显式更新 state（清掉旧 node 产物 + 把 next 指针拉到目标节点之前），
-    # 再用 Command(goto=...) 确保方向正确。
-    # update_state 先跑，Command(goto=...) 后跑，同一轮 astream 会先应用 update，
-    # 然后从 goto_node 开始执行。
-    try:
-        await graph.aupdate_state(
-            config,
-            clean_update,
-            as_node="__input__",
-        )
-        print(f"[backward] ✅ update_state 完成 task={task_id} goto={goto_node}", flush=True)
-    except Exception as exc:
-        print(f"[backward] ⚠️ update_state 失败，继续走 Command(task={task_id}): {exc}", flush=True)
-
-    cmd = Command(goto=goto_node)
+    # 🔑 LangGraph 1.2.x 的 Command 原生支持 update + goto 原子提交。
+    # 旧写法：先 aupdate_state(clean_update) 再 Command(goto=...)，在 LangGraph 1.2 里
+    # 会把两次写入折叠到同一 superstep，LastValue channel 收到 2 个值直接炸 InvalidUpdateError。
+    # 新写法：Command(update=clean_update, goto=goto_node) —— update 和 goto 在同一条
+    # Command 里原子落地，子图节点的输出写入落到下一个 superstep，完美避免双写冲突。
+    cmd = Command(update=clean_update, goto=goto_node)
+    print(f"[backward] 🎯 Command(update=..., goto={goto_node}) task={task_id} keys={list(clean_update.keys())}", flush=True)
 
     def _clear_interrupt():
         try:

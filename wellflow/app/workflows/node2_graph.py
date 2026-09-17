@@ -88,22 +88,21 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         )
         content_chunk_index = 1
         raw_text = result.get("raw_text", "")
-        thinking_text = result.get("thinking_text")
-        thinking_text_final = thinking_text or None
+        # Node2 不向前端推送 thinking（effort=none 时模型也不该返回）
+        thinking_text = None
 
         # 🔍 非流式路径诊断
         print(f"[node2] 🔍 非流式 raw_text 前 500 字: {raw_text[:500]}", flush=True)
         print(f"[node2] 🔍 非流式 result keys={list(result.keys())}, "
               f"schemes count={len(result.get('schemes', []))}", flush=True)
 
-        if task_id and thinking_text:
-            publish(task_id, "thinking_chunk", {"chunk": thinking_text, "index": 1, "node": "node2"})
+        # Node2 设计上不向前端展示思考过程，跳过 thinking_chunk publish
         if task_id:
             publish(task_id, "scheme_chunk", {"chunk": raw_text, "index": 1, "node": "node2"})
             publish(task_id, "scheme_chunk_done", {
                 "total_chunks": 1,
-                "thinking_total_chunks": 1 if thinking_text else 0,
-                "thinking_text": thinking_text,
+                "thinking_total_chunks": 0,  # 明确 0，前端不会收到 thinking
+                "thinking_text": None,
                 "node": "node2",
                 "scheme_count": len(result.get("schemes", [])),
             })
@@ -129,12 +128,14 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
                 continue
 
             if item_type == "thinking":
-                if first_think_ts is None:
-                    first_think_ts = time.time()
-                    print(f"[node2] 💭 首 thinking token TTFB={first_think_ts - t0:.2f}s", flush=True)
+                # Node2 设计上不向前端展示思考过程（reasoning_effort=none/关闭推理）
+                # 这里继续累积内部日志但不再 publish 到 SSE，前端不会收到 thinking_chunk 事件
                 think_parts.append(text)
                 think_chunk_index += 1
-                publish(task_id, "thinking_chunk", {"chunk": text, "index": think_chunk_index, "node": "node2"})
+                if first_think_ts is None:
+                    first_think_ts = time.time()
+                    print(f"[node2] 💭 thinking token TTFB={first_think_ts - t0:.2f}s "
+                          f"(reasoning 已关闭但模型仍返回了 thinking)", flush=True)
             else:
                 if first_content_ts is None:
                     first_content_ts = time.time()
@@ -182,8 +183,8 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "scheme_chunk_done", {
             "total_chunks": content_chunk_index,
-            "thinking_total_chunks": think_chunk_index,
-            "thinking_text": "".join(think_parts) if think_parts else None,
+            "thinking_total_chunks": 0,  # Node2 不向前端推送 thinking
+            "thinking_text": None,
             "node": "node2",
             "scheme_count": len(result.get("schemes", [])),
         })
@@ -192,11 +193,13 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     raw_text = result.get("raw_text", "")
 
     # 用全新 dict 返回，避免 merge 丢失
+    # Node2 设计上不向前端展示思考过程，即使模型意外返回 thinking 也只保留在本地内存
+    # 写 "" 而非 None 是为了 JSON 序列化；前端 restore 时字符串 "" 会被 string(x) || undefined 吃掉
     new_node2: dict[str, Any] = {
         "schemes": schemes,
         "scheme_raw": raw_text,
         "selected_scheme_indices": [],  # C2 interrupt 后写入
-        "thinking_text": thinking_text_final or "",
+        "thinking_text": "",
     }
 
     output = {"phase": "node2_plan_scheme", "node2": new_node2}
