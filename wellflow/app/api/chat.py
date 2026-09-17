@@ -296,6 +296,8 @@ async def chat(
     platform: str = Form(default="taobao"),
     image_type: str = Form(default="ad"),
     marketing_goal: str = Form(default="acquisition"),
+    # c2 界面 checkbox 选中的方案索引（逗号分隔，如 "0,2"），前端输入框发消息时带上
+    selected_scheme_indices: str | None = Form(default=None),
     images: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
@@ -321,7 +323,7 @@ async def chat(
     current_node: str | None = None
     completed_mask = [False] * 6
     existing_report = ""
-    existing_prompts: list[str] = []
+    existing_schemes: list = []
     existing_model_images: list[str] = []
 
     # conversation 关联解析：
@@ -359,7 +361,9 @@ async def chat(
         if graph_state:
             completed_mask = compute_completed_mask(graph_state, current_node)
             existing_report = str(graph_state.get("node1", {}).get("product_insight", "") or "")
-            existing_prompts = list(graph_state.get("node2", {}).get("generate_prompts", []) or [])
+            # c2 的可选项是 schemes（方案），不是 prompts —— 历史上误读 node2.generate_prompts
+            # （该字段属于 node3），导致 existing_schemes 永远为空，"默认全选"退化成"全不选"
+            existing_schemes = list(graph_state.get("node2", {}).get("schemes", []) or [])
             existing_model_images = list(graph_state.get("node3", {}).get("model_images", []) or [])
         print(f"[chat] 上下文: task={t_id} node={current_node} completed={completed_mask}"
               f" model_images_in_state={len(existing_model_images)}"
@@ -609,7 +613,7 @@ async def chat(
                 async for ev in _pipe(_handle_resume(
                     intent, t_id or '', current_node, intent_result,
                     message, model_images, product_images,
-                    existing_report, existing_prompts,
+                    existing_report, existing_schemes,
                     existing_model_images, graph,
                 )):
                     yield ev
@@ -799,7 +803,7 @@ async def _handle_resume(
     model_images: list[UploadFile],
     product_images: list[UploadFile] | None,
     existing_report: str,
-    existing_prompts: list[str],
+    existing_schemes: list,
     existing_model_images: list[str],
     graph,
 ) -> AsyncGenerator[str, None]:
@@ -840,22 +844,30 @@ async def _handle_resume(
         resume_values.setdefault("count", 3)
 
     elif node == "c2":
-        selected = intent_result.get("selected_indices")
-        if selected == "all":
-            resume_values["selected_prompt_indices"] = list(range(len(existing_prompts)))
-        elif isinstance(selected, list):
-            indices: list[int] = []
-            for x in selected:
-                try:
-                    idx = int(x) if isinstance(x, str) else int(x)
-                    if 0 <= idx < len(existing_prompts):
-                        indices.append(idx)
-                except (ValueError, TypeError):
-                    pass
-            if indices:
-                resume_values["selected_prompt_indices"] = indices
-        if "selected_prompt_indices" not in resume_values:
-            resume_values["selected_prompt_indices"] = list(range(len(existing_prompts)))
+        # 选中项优先级：前端 checkbox 显式传的 > 意图从消息文本解析的 > 默认全选。
+        # 字段名必须是 selected_scheme_indices（_c2_select_scheme 读这个名字），
+        # 历史上误写成 selected_prompt_indices 导致 resume 值永远被忽略。
+        indices: list[int] = []
+        if selected_scheme_indices:
+            for part in selected_scheme_indices.split(","):
+                part = part.strip()
+                if part.isdigit():
+                    indices.append(int(part))
+        if not indices:
+            selected = intent_result.get("selected_indices")
+            if selected == "all":
+                indices = list(range(len(existing_schemes)))
+            elif isinstance(selected, list):
+                for x in selected:
+                    try:
+                        idx = int(x)
+                        if 0 <= idx < len(existing_schemes):
+                            indices.append(idx)
+                    except (ValueError, TypeError):
+                        pass
+        if not indices:
+            indices = list(range(len(existing_schemes)))
+        resume_values["selected_scheme_indices"] = indices
         if model_image_paths:
             resume_values["model_images"] = model_image_paths
 
