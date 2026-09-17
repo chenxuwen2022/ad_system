@@ -471,6 +471,7 @@ async function loadAdvertiserSelects(){
     });
     if(hasAccounts){
         loadMaterialList();
+        loadProducts();
     }else{
         document.getElementById("materialSelect").innerHTML = "<option>请先添加广告主账户</option>";
         document.getElementById("matDetail").innerHTML = "";
