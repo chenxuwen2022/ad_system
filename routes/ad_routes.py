@@ -441,29 +441,28 @@ async def get_report(advertiser_id: str, creative_id: str):
 
 @router.get("/api/products")
 async def list_products(advertiser_id: str = "", refresh: bool = False):
-    """返回可投商品，并标注每个商品当前已挂的素材数/在投计划。可指定 advertiser_id 查询对应账户的商品。
+    """返回可投商品，并标注每个商品当前已关联的素材数。可指定 advertiser_id 查询对应账户的商品。
     refresh=true 时强制绕过缓存，从千川重新拉取（约10-30秒）。"""
     try:
         aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
         svc = DouYinAdService(advertiser_id=aid)
-        # 商品列表与素材统计并行拉取（避免串行累加耗时）
+        # 商品列表与商品素材映射并行拉取（避免串行累加耗时）
         def _load_products():
             return svc.get_available_products(force=refresh)
 
-        def _load_stats():
-            return svc.get_product_material_stats(force=refresh)
+        def _load_pmap():
+            return svc.get_products_material_map(force=refresh)
 
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=2) as ex:
             f1 = ex.submit(_load_products)
-            f2 = ex.submit(_load_stats)
+            f2 = ex.submit(_load_pmap)
             products = f1.result()
-            stats = f2.result()
+            pmap = f2.result()
         for p in products:
-            st = stats.get(p["id"], {})
-            p["material_count"] = st.get("material_count", 0)
-            p["plan_id"] = st.get("plan_id", "")
-            p["plan_status"] = st.get("status", "")
+            mids = pmap.get(str(p["id"]), [])
+            p["material_count"] = len(mids)
+            p["has_materials"] = len(mids) > 0
         return {"success": True, "data": products}
     except Exception as e:
         return {"success": False, "error": str(e)}

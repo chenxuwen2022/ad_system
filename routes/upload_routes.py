@@ -1124,15 +1124,23 @@ async function loadProducts(){
         const res = await (await fetch("/api/products" + (aid ? ("?advertiser_id="+encodeURIComponent(aid)) : ""))).json();
         productOptions = (res.success && res.data) ? res.data : [];
         sel.innerHTML = "";
+        // 只显示有素材的商品（千川商品→素材仅存在于计划挂载关系，未投放过素材的商品无法查到素材）
+        const hasMat = productOptions.filter(p=>p.has_materials);
         const all = document.createElement("option");
         all.value = ""; all.textContent = "全部商品（素材为全部）";
         sel.appendChild(all);
-        productOptions.forEach(p=>{
+        hasMat.forEach(p=>{
             const o = document.createElement("option");
             o.value = p.id;
-            o.textContent = p.name + (p.material_count ? `（${p.material_count}素材）` : "");
+            o.textContent = p.name + `（${p.material_count}素材）`;
             sel.appendChild(o);
         });
+        if(hasMat.length < productOptions.length){
+            const tip = document.createElement("option");
+            tip.value = ""; tip.disabled = true;
+            tip.textContent = `共${hasMat.length}个商品有投放素材（另有${productOptions.length - hasMat.length}个商品暂无投放素材）`;
+            sel.appendChild(tip);
+        }
     }catch(e){
         sel.innerHTML = "<option value=''>商品加载失败</option>";
     }
@@ -1157,6 +1165,9 @@ async function loadMaterialsByProduct(pid){
         const res = await (await fetch("/api/materials_by_product?advertiser_id=" + encodeURIComponent(aid) + "&product_id=" + encodeURIComponent(pid))).json();
         if(!res.success){ sel.innerHTML = "<option>加载失败：" + (res.error||"") + "</option>"; aggBox.innerHTML = ""; return; }
         const items = res.data || [];
+        if(!items.length){
+            aggBox.innerHTML = "<div class='muted' style='margin:8px 0 0'>该商品暂无关联的投放素材（千川中商品与素材通过投放计划关联，该商品近90天未投放过素材）。</div>";
+        }
         materialOptions = items;
         renderMaterialOptions();
         const agg = res.agg;
