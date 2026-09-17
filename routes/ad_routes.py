@@ -8,7 +8,7 @@ from douyin_api import DouYinAdService
 from file_service import delete_media_file
 from token_manager import get_token_mgr
 from config import DOUYIN_CONFIG
-from db import SessionLocal, AdvertiserDB, MaterialTagDB, MaterialMarkDB
+from db import SessionLocal, AdvertiserDB, MaterialTagDB, MaterialMarkDB, MaterialLaunchDB
 
 router = APIRouter()
 
@@ -79,6 +79,24 @@ def _save_material_marks(file_path: str, tags):
         db.close()
 
 
+def _save_launch_record(file_path: str, status: str, mode: str,
+                        plan_id: str = "", plan_name: str = "",
+                        product_id: str = "", detail: str = ""):
+    """记录一次素材投放历史，用于素材库展示投放状态"""
+    if not file_path:
+        return
+    db = SessionLocal()
+    try:
+        db.add(MaterialLaunchDB(
+            file_path=file_path, status=status, mode=mode,
+            plan_id=plan_id or "", plan_name=plan_name or "",
+            product_id=product_id or "", detail=(detail or "")[:300],
+        ))
+        db.commit()
+    finally:
+        db.close()
+
+
 @router.get("/api/advertisers")
 async def get_advertisers():
     """用库里的token实时查询已授权的广告主账户列表"""
@@ -135,6 +153,10 @@ async def ad_launch(req: AdLaunchRequest):
                 f"⑧ 素材标记：{('、'.join(req.tags) + '（已保存到素材标记）') if req.tags else '未选择标签'}",
             ]
             _save_material_marks(f_path, req.tags)
+            _save_launch_record(f_path, "success", "test",
+                                plan_id=req.plan_id or "", plan_name=plan_ref,
+                                product_id=chosen_pid or "",
+                                detail="测试模式模拟投放")
             return {
                 "success": True,
                 "test_mode": True,
@@ -185,7 +207,14 @@ async def ad_launch(req: AdLaunchRequest):
             )
         if result.success:
             _save_material_marks(req.local_file_path, req.tags)
+            _save_launch_record(req.local_file_path, "success", "real",
+                                plan_id=req.plan_id, product_id=",".join(req.product_ids or []),
+                                detail="已追加到投放计划")
             delete_media_file(req.local_file_path)
+        else:
+            _save_launch_record(req.local_file_path, "fail", "real",
+                                plan_id=req.plan_id or "", product_id=",".join(req.product_ids or []),
+                                detail=result.error_msg or "投放失败")
         return result
 
     elif req.platform in ["jd", "taobao"]:
@@ -442,5 +471,36 @@ async def get_material_marks(file_path: str = ""):
         return {"success": True, "data": [
             {"file_path": r.file_path, "tags": [t for t in r.tags.split(",") if t]} for r in rows
         ]}
+    finally:
+        db.close()
+
+
+@router.get("/api/material_launch_status")
+async def get_material_launch_status():
+    """返回全部素材的投放状态汇总：{file_path: {status, mode, count, time, plan_name, product_id, detail}}
+    status 取该素材最近一次投放结果（success/fail），mode 区分真实/测试。"""
+    from collections import defaultdict
+    db = SessionLocal()
+    try:
+        rows = db.query(MaterialLaunchDB).order_by(MaterialLaunchDB.id.desc()).all()
+        latest = {}
+        counts = defaultdict(int)
+        for r in rows:
+            counts[r.file_path] += 1
+            if r.file_path not in latest:
+                latest[r.file_path] = r
+        out = {}
+        for path, r in latest.items():
+            out[path] = {
+                "status": r.status,
+                "mode": r.mode,
+                "count": counts[path],
+                "time": r.create_time.strftime("%m-%d %H:%M") if r.create_time else "",
+                "plan_id": r.plan_id,
+                "plan_name": r.plan_name,
+                "product_id": r.product_id,
+                "detail": r.detail,
+            }
+        return {"success": True, "data": out}
     finally:
         db.close()

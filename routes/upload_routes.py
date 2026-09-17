@@ -216,6 +216,12 @@ HTML_PAGE = """
         .mat-check:hover { border-color:#1f6feb; }
         .mat-check.on { background:#1f6feb; border-color:#1f6feb; }
         .mat-card.sel { border-color:#1f6feb; box-shadow:0 0 0 2px rgba(31,111,235,.15); }
+        .launch-badge { position:absolute; top:36px; right:8px; z-index:2; font-size:11px;
+            padding:2px 8px; border-radius:10px; background:rgba(255,255,255,.94);
+            border:1px solid #e0e6ef; color:#8a97ab; cursor:default; line-height:1.5; }
+        .launch-badge.ok { color:#1a7f37; border-color:#c9ecd4; background:rgba(240,250,243,.94); }
+        .launch-badge.test { color:#b26a00; border-color:#f2d9a6; background:rgba(255,248,235,.94); }
+        .launch-badge.fail { color:#c0392b; border-color:#f3cccc; background:rgba(253,242,242,.94); }
         .lib-tabs { display:flex; align-items:center; gap:10px; }
         .batch-btn { margin-left:auto; }
         .lm-batch-summary { font-size:15px; font-weight:700; margin-bottom:10px; }
@@ -448,6 +454,7 @@ async function loadLocalMaterials(){
     const box = document.getElementById("localMaterialBox");
     box.innerHTML = "<p class='spin'>遍历目录中…</p>";
     try{
+        await loadLaunchStatus();
         const resp = await fetch("/api/local_materials");
         const res = await resp.json();
         if(!res.success){ box.innerHTML = "<p style='color:red'>"+(res.error||"加载失败")+"</p>"; return; }
@@ -530,9 +537,11 @@ function renderMaterialGrid(box, items, urlPrefix){
         }
         const tag = it.type === "video" ? "<span style='color:#c96442'>视频</span>" : "<span style='color:#3370ff'>图片</span>";
         const timeTxt = fmtTime(it.mtime);
+        const badge = launchBadge(it);
         card.innerHTML =
             `<span class="mat-check${sel ? " on" : ""}" title="勾选后批量投放"
                   onclick='event.stopPropagation();toggleMaterial(${JSON.stringify({path:it.path,name:it.name,type:it.type})})'>${sel ? "✓" : ""}</span>` +
+            (badge ? `<span class="launch-badge ${badge.cls}" title="${badge.tip}">${badge.text}</span>` : "") +
             mediaHtml +
             `<div style="padding:8px 10px;flex:1;display:flex;flex-direction:column;gap:4px">
                 <div style="font-size:13px;word-break:break-all" title="${esc(it.name)}">${esc(it.name)}</div>
@@ -547,6 +556,26 @@ function renderMaterialGrid(box, items, urlPrefix){
 }
 function renderLocalMaterials(items){
     renderMaterialGrid(document.getElementById("localMaterialBox"), items, "/api/local_media/");
+}
+// 素材投放状态徽标：未投放返回空；否则按最近一次结果显示
+function launchBadge(it){
+    const st = launchStatusMap[it.path];
+    if(!st){ return ""; }
+    const cnt = st.count > 1 ? " " + st.count + "次" : "";
+    const t = st.time ? " · " + st.time : "";
+    let cls, text;
+    if(st.status === "fail"){
+        cls = "fail"; text = "投放失败" + (st.mode === "test" ? "（测试）" : "") + t;
+    }else if(st.mode === "test"){
+        cls = "test"; text = "测试投放" + cnt + t;
+    }else{
+        cls = "ok"; text = "已投放" + cnt + t;
+    }
+    const tip = "最近投放：" + (st.time || "—") +
+        (st.plan_name ? "，计划：" + st.plan_name : "") +
+        (st.product_id ? "，商品：" + st.product_id : "") +
+        (st.detail ? "，" + st.detail : "");
+    return {cls: cls, text: text, tip: tip};
 }
 // ===== 素材勾选（跨本地/上传库）与批量投放入口 =====
 function toggleMaterial(it){
@@ -581,6 +610,7 @@ async function loadUploadedMaterials(){
     const box = document.getElementById("uploadedMaterialBox");
     box.innerHTML = "<p class='spin'>加载中…</p>";
     try{
+        await loadLaunchStatus();
         const res = await (await fetch("/api/uploaded_materials")).json();
         if(!res.success){ box.innerHTML = "<p style='color:#e02424'>"+(res.error||"加载失败")+"</p>"; return; }
         renderMaterialGrid(box, res.data || [], "/api/uploaded_media/");
@@ -592,6 +622,13 @@ async function loadUploadedMaterials(){
 // ===== 弹窗：选择商品并投放 =====
 let popLocalFilePath = "";
 let popLocalFilePaths = []; // 批量投放：本次选中的全部素材 [{path,name,type}]
+let launchStatusMap = {};   // 素材投放状态：{file_path: {status,mode,count,time,...}}
+async function loadLaunchStatus(){
+    try{
+        const res = await (await fetch("/api/material_launch_status")).json();
+        launchStatusMap = (res.success && res.data) ? res.data : {};
+    }catch(e){ launchStatusMap = {}; }
+}
 let selectedMaterials = []; // 素材库中已勾选的素材（跨本地/上传两个库）
 let popTagList = [];        // 标签设置里的全部标签
 let popSelectedTags = [];   // 本次投放选中的标签（多选）
@@ -828,6 +865,11 @@ async function popLaunchAd(){
     lr.innerHTML = html;
     lr.scrollIntoView({block:"nearest"});
     setBusy(btn, false);
+    // 投放完成后刷新素材库中的投放状态徽标
+    await loadLaunchStatus();
+    const localTab = document.getElementById("tabLocal");
+    if(localTab && localTab.classList.contains("on")){ loadLocalMaterials(); }
+    else{ loadUploadedMaterials(); }
 }
 
 // ===== 单素材深度分析 =====
