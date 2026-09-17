@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/api/assets", tags=["资产库"])
 
-BASE_DIR = Path(__file__).resolve().parent.parent  # 项目根目录
+BASE_DIR = Path(__file__).resolve().parents[2]  # 项目根目录（static/assets_data 两系统共用）
 DATA_DIR = BASE_DIR / "assets_data"
 DATA_FILE = DATA_DIR / "library.json"
 IMG_DIR = BASE_DIR / "static" / "assets"

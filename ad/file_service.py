@@ -1,6 +1,6 @@
 import os
 import shutil
-from config import MEDIA_STORAGE_PATH
+from ad.config import MEDIA_STORAGE_PATH
 
 
 def save_upload_file(file_obj, filename: str) -> str:
