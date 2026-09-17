@@ -69,3 +69,5 @@ _p*.py
 _page.js
 
 data/cache/
+
+**/data/cache/

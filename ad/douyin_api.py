@@ -8,10 +8,10 @@ import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 import requests
-from models import AdLaunchResult, AdReportItem
+from ad.models import AdLaunchResult, AdReportItem
 
-from token_manager import get_token_mgr
-from config import DOUYIN_CONFIG, BASE_DIR
+from ad.token_manager import get_token_mgr
+from ad.config import DOUYIN_CONFIG, BASE_DIR
 
 
 # 千川素材报表（qianchuan/report/uni_promotion/data/get）指标字段 → 中文名。
@@ -118,7 +118,7 @@ def _load_ai_context(advertiser_id):
     """读取该广告主保存的 AI 分析上下文（竞品链接 + 行业市场数据），无则返回空。"""
     import json as _json, os as _os
     try:
-        _d = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data")
+        _d = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "data")
         _p = _os.path.join(_d, f"ai_context_{advertiser_id}.json")
         if _os.path.isfile(_p):
             with open(_p, encoding="utf-8") as _f:

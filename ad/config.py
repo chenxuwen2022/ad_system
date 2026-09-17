@@ -1,12 +1,14 @@
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# 兼容部署：优先读 ad/.env，找不到则读项目根 .env（老部署位置）
+_ROOT_ENV = os.path.join(os.path.dirname(BASE_DIR), ".env")
 MEDIA_STORAGE_PATH = os.path.join(BASE_DIR, "media_storage")
 os.makedirs(MEDIA_STORAGE_PATH, exist_ok=True)
 
 # 加载本地 .env（仅本地生效，已被 .gitignore 排除，不会进入代码仓库）
 # 用于提供 QIANCHUAN_SECRET / DEEPSEEK_API_KEY 等敏感配置
-_env_file = os.path.join(BASE_DIR, ".env")
+_env_file = os.path.join(BASE_DIR, ".env") if os.path.isfile(os.path.join(BASE_DIR, ".env")) else _ROOT_ENV
 if os.path.isfile(_env_file):
     with open(_env_file, encoding="utf-8") as _f:
         for _line in _f:

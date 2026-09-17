@@ -1,8 +1,8 @@
 import os
 from fastapi import APIRouter, UploadFile, File, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
-from file_service import save_upload_file
-from models import UploadResp
+from ad.file_service import save_upload_file
+from ad.models import UploadResp
 
 router = APIRouter()
 

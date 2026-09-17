@@ -32,7 +32,7 @@ TAG_DIMS = {
     "背景风格": ["极简", "高级", "自然", "温馨", "生活化", "户外", "专业", "科技", "潮流", "轻奢", "都市"],
 }
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+BASE_DIR = Path(__file__).resolve().parents[2]  # 项目根（static 两系统共用）
 SCENE_AI_DIR = BASE_DIR / "static" / "scene_ai"
 
 

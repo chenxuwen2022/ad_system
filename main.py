@@ -27,15 +27,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from routes.upload_routes import router as upload_router
-from routes.ad_routes import router as ad_router
-from routes.asset_routes import router as asset_router
-from routes.scene_ai import router as scene_ai_router
+from ad.routes.upload_routes import router as upload_router
+from ad.routes.ad_routes import router as ad_router
+from ad.routes.asset_routes import router as asset_router
+from ad.routes.scene_ai import router as scene_ai_router
 from wellflow.app.api.outfit import router as wf_outfit_router
 from wellflow.app.api.uploads import router as wf_uploads_router
-from config import MEDIA_STORAGE_PATH
-from db import init_db
-from token_manager import get_token_mgr
+from ad.config import MEDIA_STORAGE_PATH
+from ad.db import init_db
+from ad.token_manager import get_token_mgr
 
 # ── 子系统二：电商商拍（WellFlow）──
 from wellflow.app.api.tasks import router as wf_tasks_router
@@ -68,7 +68,7 @@ async def lifespan(app: FastAPI):
         import threading as _th
         def _prewarm():
             try:
-                from douyin_api import DouYinAdService, DOUYIN_CONFIG
+                from ad.douyin_api import DouYinAdService, DOUYIN_CONFIG
                 svc = DouYinAdService(advertiser_id=str(DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")))
                 svc.get_all_materials_report()          # 素材报表（千川 90 天，约 40s）
                 svc.get_products_material_map()          # 商品→素材映射（约 20s）

@@ -2,8 +2,8 @@ import datetime
 
 import requests
 
-from config import DOUYIN_CONFIG
-from db import SessionLocal, TokenDB, init_db
+from ad.config import DOUYIN_CONFIG
+from ad.db import SessionLocal, TokenDB, init_db
 
 
 class DouYinTokenManager:
