@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, func, desc
@@ -20,8 +20,33 @@ class ConversationRepo:
     # CRUD
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _short_of(full_id: str) -> str:
+        """把完整 conversation_id 归一化为 12 位短 ID。
+
+        规则：去掉 '-' 后取前 12 位。这样不管前端传的是标准 UUID
+        还是后端原生 short_id，最终存到 conversation_id_short 的值一致。
+        """
+        return full_id.replace("-", "")[:12]
+
     def get(self, conversation_id: str) -> Conversation | None:
         return self.db.get(Conversation, conversation_id)
+
+    def resolve(self, any_id: str) -> Conversation | None:
+        """兼容查询：既能用完整 conversation_id，也能用 short_id。
+
+        查不到时不额外做 short_id 转换，先查完整主键，再查 short_id 唯一索引。
+        前端刷新/恢复时 URL 里可能携带 short_id（12 位）或完整 UUID（36 位），
+        两种格式都能命中。
+        """
+        # 1) 先按完整主键查（最高命中率，走 PK）
+        obj = self.db.get(Conversation, any_id)
+        if obj:
+            return obj
+        # 2) 回退：按 short_id 唯一索引查
+        short = self._short_of(any_id)
+        stmt = select(Conversation).where(Conversation.conversation_id_short == short)
+        return self.db.execute(stmt).scalar_one_or_none()
 
     def create(
         self,
@@ -32,6 +57,7 @@ class ConversationRepo:
         cid = conversation_id or uuid.uuid4().hex[:12]
         obj = Conversation(
             conversation_id=cid,
+            conversation_id_short=self._short_of(cid),
             title=title[:128] if title else "新对话",
             current_task_id=current_task_id,
         )
@@ -43,21 +69,21 @@ class ConversationRepo:
         obj = self.get(conversation_id)
         if obj:
             obj.title = title[:128]
-            obj.updated_at = datetime.utcnow()
+            obj.updated_at = datetime.now(timezone.utc)
             self.db.commit()
 
     def update_current_task(self, conversation_id: str, task_id: str | None) -> None:
         obj = self.get(conversation_id)
         if obj:
             obj.current_task_id = task_id
-            obj.updated_at = datetime.utcnow()
+            obj.updated_at = datetime.now(timezone.utc)
             self.db.commit()
 
     def touch(self, conversation_id: str) -> None:
         """更新 updated_at（用于列表排序）。"""
         obj = self.get(conversation_id)
         if obj:
-            obj.updated_at = datetime.utcnow()
+            obj.updated_at = datetime.now(timezone.utc)
             self.db.commit()
 
     def delete(self, conversation_id: str) -> bool:

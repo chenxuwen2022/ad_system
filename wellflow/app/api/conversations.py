@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from wellflow.app.database import get_db
 from wellflow.app.api.utils import ok, StandardResponse
 from wellflow.app.models.task_models import Conversation, ChatMessage, Task
+from wellflow.app.repositories.conversation_repo import ConversationRepo
 from wellflow.app.schemas.conversation_schemas import (
     ConversationListResponse,
     ConversationListItem,
@@ -110,14 +111,15 @@ def list_conversations(
 
 @router.get("/{conversation_id}", response_model=StandardResponse[ConversationDetailResponse], summary="查询会话详情（消息 + 关联 task 列表）")
 def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
-    c = db.get(Conversation, conversation_id)
+    conv_repo = ConversationRepo(db)
+    c = conv_repo.resolve(conversation_id)
     if not c:
         raise HTTPException(404, f"conversation {conversation_id} 不存在")
 
-    # 消息列表（按 session_index 升序）
+    # 消息列表（按 session_index 升序）—— 用 resolve 后的真实 PK，避免 short_id 查不到 FK
     msg_stmt = (
         select(ChatMessage)
-        .where(ChatMessage.conversation_id == conversation_id)
+        .where(ChatMessage.conversation_id == c.conversation_id)
         .order_by(ChatMessage.session_index, ChatMessage.message_id)
     )
     msgs = list(db.execute(msg_stmt).scalars().all())
@@ -144,7 +146,7 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
     # 关联 task 列表
     task_stmt = (
         select(Task)
-        .where(Task.conversation_id == conversation_id)
+        .where(Task.conversation_id == c.conversation_id)
         .order_by(Task.created_at)
     )
     tasks = list(db.execute(task_stmt).scalars().all())
@@ -179,19 +181,20 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/{conversation_id}", response_model=StandardResponse[dict], summary="删除会话（级联删 chat_message，task 保持不变，conversation_id 置 NULL）")
 def delete_conversation(conversation_id: str, db: Session = Depends(get_db)):
-    c = db.get(Conversation, conversation_id)
+    conv_repo = ConversationRepo(db)
+    c = conv_repo.resolve(conversation_id)
     if not c:
         raise HTTPException(404, f"conversation {conversation_id} 不存在")
 
     # 级联删 chat_message（FK ondelete=CASCADE 自动处理，但显式写一遍更安全）
-    db.query(ChatMessage).where(ChatMessage.conversation_id == conversation_id).delete(
+    db.query(ChatMessage).where(ChatMessage.conversation_id == c.conversation_id).delete(
         synchronize_session=False
     )
     # Task.conversation_id 置 NULL（ondelete=SET NULL 已处理，保险起见显式）
-    db.query(Task).where(Task.conversation_id == conversation_id).update(
+    db.query(Task).where(Task.conversation_id == c.conversation_id).update(
         {Task.conversation_id: None}, synchronize_session=False
     )
     db.delete(c)
     db.commit()
 
-    return ok({"conversation_id": conversation_id, "deleted": True})
+    return ok({"conversation_id": c.conversation_id, "deleted": True})

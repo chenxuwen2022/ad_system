@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, func, desc, update
@@ -191,9 +191,16 @@ class SkuRepo:
         brand_summary: str | None = None,
         source_url: str | None = None,
         images: list[dict[str, Any]] | None = None,
+        sku_no: str | None = None,
     ) -> ProductSku:
+        """创建 SKU 主表记录。
+
+        Args:
+            sku_no: 可选。调用方已经提前算好 sku_no（如用于目录命名）时直接传入；
+                    不传时内部会 :func:`_gen_no` 生成。
+        """
         obj = ProductSku(
-            sku_no=_gen_no("SKU", self.db, ProductSku),
+            sku_no=sku_no or _gen_no("SKU", self.db, ProductSku),
             series_id=series_id,
             brand_id=brand_id,
             name=name,
@@ -249,7 +256,7 @@ class SkuRepo:
         for k, v in kwargs.items():
             if v is not None and hasattr(obj, k):
                 setattr(obj, k, v)
-        obj.updated_at = datetime.utcnow()
+        obj.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return obj
 

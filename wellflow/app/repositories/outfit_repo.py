@@ -8,7 +8,7 @@ Outfit 主表 + JSONB 嵌套(items/dims),dims 六组维度筛选用 PG JSONB
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -91,7 +91,7 @@ class OutfitRepo:
             obj.items = items
         if dims is not None:
             obj.dims = dims
-        obj.updated_at = datetime.utcnow()
+        obj.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return obj
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     BIGINT, ForeignKey, String, Text, Integer, DateTime, Index, UniqueConstraint,
@@ -34,8 +34,8 @@ class Mannequin(Base):
     generate_model: Mapped[str | None] = mapped_column(String(64), nullable=True)  # AI 图像生成模型名
     generate_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
     owner_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     tags: Mapped[list["MannequinTag"]] = relationship(
         "MannequinTag", back_populates="mannequin", cascade="all, delete-orphan", lazy="selectin",
@@ -96,7 +96,7 @@ class MannequinGenerateLog(Base):
     output_uris: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # 输出图 URI 列表
     status: Mapped[str] = mapped_column(String(16), nullable=False)          # pending/success/failed
     error_msg: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("ix_mannequin_gen_id", "mannequin_id"),

@@ -599,7 +599,7 @@ async def auto_tag(body: OutfitAutoTagRequest):
 
     data_uris = _to_data_uris([body.image_uri])
     if not data_uris:
-        raise HTTPException(400, f"无法读取 image_uri: {req.image_uri}")
+        raise HTTPException(400, f"无法读取 image_uri: {body.image_uri}")
 
     dims_json = json_mod.dumps(OUTFIT_DIMENSION_GROUPS, ensure_ascii=False, indent=2)
     system = (

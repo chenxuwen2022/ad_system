@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, func, desc
@@ -48,21 +48,21 @@ class TaskRepo:
         obj = self.get(task_id)
         if obj:
             obj.phase = phase
-            obj.updated_at = datetime.utcnow()
+            obj.updated_at = datetime.now(timezone.utc)
             self.db.commit()
 
     def save_interrupt(self, task_id: str, interrupt_json: dict[str, Any] | None) -> None:
         obj = self.get(task_id)
         if obj:
             obj.interrupt_json = interrupt_json
-            obj.updated_at = datetime.utcnow()
+            obj.updated_at = datetime.now(timezone.utc)
             self.db.commit()
 
     def save_selected_plans(self, task_id: str, plan_ids: list[str]) -> None:
         obj = self.get(task_id)
         if obj:
             obj.selected_plan_ids_json = plan_ids
-            obj.updated_at = datetime.utcnow()
+            obj.updated_at = datetime.now(timezone.utc)
             self.db.commit()
 
     # ------------------------------------------------------------------

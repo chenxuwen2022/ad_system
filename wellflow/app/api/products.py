@@ -10,19 +10,23 @@
 from __future__ import annotations
 
 import json as json_mod
+import shutil
 from datetime import datetime
-from typing import Any
+from pathlib import Path
+from typing import Any, Annotated
 
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Form, File, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db
 from wellflow.app.api.utils import ok, StandardResponse
-from wellflow.app.repositories.product_repo import BrandRepo, SeriesRepo, SkuRepo
+from wellflow.app.repositories.product_repo import BrandRepo, SeriesRepo, SkuRepo, _gen_no
+from wellflow.app.utils.image_store import save_sku_assets
+from wellflow.app.config import settings as wf_settings
 from wellflow.app.schemas.asset_schemas import (
     BrandResponse, BrandUpdateRequest,
     SeriesResponse, SeriesUpdateRequest,
-    SkuCreateRequest, SkuUpdateRequest,
+    SkuCreateRequest, SkuUpdateRequest, SkuImageMeta,
     SkuListResponse, SkuListItem,
     SkuDetailResponse, SkuImageResponse,
     NavNode,
@@ -38,6 +42,60 @@ def _storage_uri_url(uri: str | None) -> str:
     if uri.startswith("http"):
         return uri
     return "/" + uri.lstrip("/")
+
+
+# SKU 图片入库规则（multipart 创建入口）
+_SKU_IMG_ALLOWED_MIME_PREFIXES = ("image/",)
+_SKU_IMG_ALLOWED_EXTS = {"jpg", "jpeg", "png", "webp", "gif"}
+_SKU_IMG_MAX_SIZE = 20 * 1024 * 1024   # 单张 20MB（前后端一致）
+_SKU_IMG_MIN_COUNT = 1
+_SKU_IMG_MAX_COUNT = 9
+
+
+def _cleanup_sku_upload(sku_no: str) -> None:
+    """失败回滚时删掉残留的 uploads/sku/{sku_no}/ 目录。"""
+    sku_dir = Path(wf_settings.upload_dir).resolve() / "sku" / sku_no
+    try:
+        resolved = sku_dir.resolve()
+        upload_root = Path(wf_settings.upload_dir).resolve()
+        if upload_root not in resolved.parents and resolved != upload_root:
+            return
+        if sku_dir.exists():
+            shutil.rmtree(sku_dir, ignore_errors=True)
+            print(f"[products] 🗑️ 回滚清理 sku 素材目录: {sku_dir}", flush=True)
+    except Exception as e:
+        print(f"[products] ⚠️ 清理 sku 素材目录失败: {e}", flush=True)
+
+
+def _ensure_brand_and_series(
+    body: SkuCreateRequest, brand_repo: BrandRepo, series_repo: SeriesRepo,
+):
+    """把 brand / series 解析出来（find-or-create），同时返回 (brand, series)。"""
+    if body.brand_id:
+        brand = brand_repo.get(body.brand_id)
+        if not brand:
+            raise HTTPException(400, f"brand_id={body.brand_id} 不存在")
+        if body.brand_guide:
+            brand.brand_guide = body.brand_guide
+    elif body.brand_name:
+        brand = brand_repo.get_or_create(body.brand_name)
+        if body.brand_guide:
+            brand.brand_guide = body.brand_guide
+    else:
+        raise HTTPException(400, "必须提供 brand_id 或 brand_name 之一")
+
+    if body.series_id:
+        series = series_repo.get(body.series_id)
+        if not series:
+            raise HTTPException(400, f"series_id={body.series_id} 不存在")
+        if series.brand_id != brand.id:
+            raise HTTPException(400, "指定的 series 不属于指定的 brand")
+    elif body.series_name:
+        series = series_repo.get_or_create(brand.id, body.series_name)
+    else:
+        raise HTTPException(400, "必须提供 series_id 或 series_name 之一")
+
+    return brand, series
 
 
 # ============================================================================
@@ -197,42 +255,103 @@ def get_sku(sku_id: int, db: Session = Depends(get_db)):
     return ok(_sku_to_detail(sku, db))
 
 
-@router.post("/skus", response_model=StandardResponse[SkuDetailResponse], summary="创建 SKU（品牌/系列自动 find-or-create）")
-def create_sku(body: SkuCreateRequest, db: Session = Depends(get_db)):
+@router.post("/skus", response_model=StandardResponse[SkuDetailResponse], summary="创建 SKU（multipart，后端直接落盘素材图到 uploads/sku/）")
+async def create_sku(
+    # --- Brand / Series（二选一：id 或 name）---
+    brand_id: Annotated[int | None, Form()] = None,
+    brand_name: Annotated[str | None, Form()] = None,
+    brand_guide: Annotated[str | None, Form()] = None,
+    series_id: Annotated[int | None, Form()] = None,
+    series_name: Annotated[str | None, Form()] = None,
+
+    # --- SKU 字段 ---
+    name: Annotated[str, Form()] = ...,
+    style_no: Annotated[str, Form()] = ...,
+    category: Annotated[str | None, Form()] = None,
+    color: Annotated[str | None, Form()] = None,
+    material: Annotated[str | None, Form()] = None,
+    silhouette: Annotated[str | None, Form()] = None,
+    season: Annotated[str | None, Form()] = None,
+    selling_points: Annotated[str | None, Form()] = None,
+    brand_summary: Annotated[str | None, Form()] = None,
+    source_url: Annotated[str | None, Form()] = None,
+
+    # --- 图片 metadata（可选，JSON 字符串；长度需与 files 对齐）---
+    images_metadata: Annotated[str | None, Form(description=(
+        "可选，JSON 字符串，形如 "
+        '[{"category":"正面","sort_order":0},{"category":"其他","sort_order":1}]。'
+        "不传时 category 默认为 '其他'，sort_order 自动按顺序编号。"
+    ))] = None,
+
+    # --- 真实文件 ---
+    files: Annotated[list[UploadFile], File(..., description="素材图列表，1-9 张")] = [],
+
+    db: Session = Depends(get_db),
+):
+    # 0. 文件前置校验 —— 先把所有文件读进内存，失败直接 400，不会留下脏目录
+    if not files:
+        raise HTTPException(400, f"请上传 {_SKU_IMG_MIN_COUNT}-{_SKU_IMG_MAX_COUNT} 张商品素材图")
+    if len(files) < _SKU_IMG_MIN_COUNT or len(files) > _SKU_IMG_MAX_COUNT:
+        raise HTTPException(400, f"素材图数量需在 {_SKU_IMG_MIN_COUNT}-{_SKU_IMG_MAX_COUNT} 张，当前 {len(files)} 张")
+
+    raw_pairs: list[tuple[str, bytes, str | None]] = []
+    for f in files:
+        content_type = f.content_type or ""
+        if not content_type.startswith(_SKU_IMG_ALLOWED_MIME_PREFIXES):
+            raise HTTPException(400, f"文件 {f.filename} 不是图片（mime={content_type or '未知'}）")
+        raw = await f.read()
+        if len(raw) > _SKU_IMG_MAX_SIZE:
+            raise HTTPException(400, f"文件 {f.filename} 超过 {_SKU_IMG_MAX_SIZE // 1024 // 1024}MB 上限")
+        # 扩展名白名单兜底（对文件类型严格把关）
+        ext = Path(f.filename or "").suffix.lower().lstrip(".")
+        if ext and ext not in _SKU_IMG_ALLOWED_EXTS:
+            raise HTTPException(400, f"文件 {f.filename} 扩展名 {ext} 不支持")
+        raw_pairs.append((f.filename or "image", raw, content_type))
+
+    # metadata 解析
+    metas: list[SkuImageMeta] = []
+    if images_metadata:
+        try:
+            parsed = json_mod.loads(images_metadata)
+            if isinstance(parsed, list):
+                for item in parsed:
+                    if isinstance(item, dict):
+                        metas.append(SkuImageMeta(**item))
+                    else:
+                        metas.append(SkuImageMeta())
+        except Exception as e:
+            raise HTTPException(400, f"images_metadata 不是合法 JSON: {e}")
+    if len(metas) != len(files):
+        # 不一致就按文件顺序补齐，避免静默错位
+        metas = [SkuImageMeta(
+            category=(metas[i].category if i < len(metas) else None) or "其他",
+            sort_order=metas[i].sort_order if i < len(metas) else i,
+        ) for i in range(len(files))]
+
+    # 1. 组装 SkuCreateRequest（复用既有的 brand/series 解析 + 查重逻辑）
+    #    注意：这里 SkuCreateRequest.images 保持空，真实 storage_uri 要等 sku_no 生成后再落盘
+    body = SkuCreateRequest(
+        brand_id=brand_id, brand_name=brand_name, brand_guide=brand_guide,
+        series_id=series_id, series_name=series_name,
+        name=name.strip(), style_no=style_no.strip(),
+        category=category, color=color, material=material,
+        silhouette=silhouette, season=season,
+        selling_points=selling_points, brand_summary=brand_summary,
+        source_url=source_url,
+        images=[],
+    )
+
     brand_repo = BrandRepo(db)
     series_repo = SeriesRepo(db)
     sku_repo = SkuRepo(db)
 
-    # 1. brand：id 优先，否则 name 自动 find-or-create
-    if body.brand_id:
-        brand = brand_repo.get(body.brand_id)
-        if not brand:
-            raise HTTPException(400, f"brand_id={body.brand_id} 不存在")
-        if body.brand_guide:
-            brand.brand_guide = body.brand_guide
-    elif body.brand_name:
-        brand = brand_repo.get_or_create(body.brand_name)
-        if body.brand_guide:
-            brand.brand_guide = body.brand_guide
-    else:
-        raise HTTPException(400, "必须提供 brand_id 或 brand_name 之一")
-
-    # 2. series：id 优先，否则 name 自动 find-or-create
-    if body.series_id:
-        series = series_repo.get(body.series_id)
-        if not series:
-            raise HTTPException(400, f"series_id={body.series_id} 不存在")
-        if series.brand_id != brand.id:
-            raise HTTPException(400, "指定的 series 不属于指定的 brand")
-    elif body.series_name:
-        series = series_repo.get_or_create(brand.id, body.series_name)
-    else:
-        raise HTTPException(400, "必须提供 series_id 或 series_name 之一")
+    # 2. Brand / Series find-or-create
+    brand, series = _ensure_brand_and_series(body, brand_repo, series_repo)
 
     # 3. 查重（series + style_no + name 三元组）
     existing = sku_repo.find_duplicate(series.id, body.style_no, body.name)
     if existing:
-        db.rollback()  # 清理 brand/series get_or_create 的 flush 副作用
+        db.rollback()
         raise HTTPException(409, detail={
             "message": "该商品已存在",
             "sku_id": existing.id,
@@ -241,7 +360,18 @@ def create_sku(body: SkuCreateRequest, db: Session = Depends(get_db)):
             "style_no": existing.style_no,
         })
 
-    # 4. 创建 SKU
+    # 4. 预生成 sku_no —— 这样图片可以提前按目录落盘
+    from wellflow.app.models.asset_models import ProductSku
+    sku_no = _gen_no("SKU", db, ProductSku)
+
+    # 5. 落盘图片到 uploads/sku/{sku_no}/
+    try:
+        storage_uris = save_sku_assets(raw_pairs, sku_no=sku_no)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"素材图落盘失败: {e}")
+
+    # 6. 写 ProductSku + ProductImage —— 事务
     from sqlalchemy.exc import IntegrityError
     try:
         sku = sku_repo.create(
@@ -257,26 +387,34 @@ def create_sku(body: SkuCreateRequest, db: Session = Depends(get_db)):
             selling_points=body.selling_points,
             brand_summary=body.brand_summary or brand.brand_guide,
             source_url=body.source_url,
-            images=[m.model_dump() for m in body.images],
+            sku_no=sku_no,
+            images=[
+                {
+                    "category": metas[i].category or "其他",
+                    "storage_uri": storage_uris[i],
+                    "sort_order": metas[i].sort_order if metas[i].sort_order is not None else i,
+                }
+                for i in range(len(storage_uris))
+            ],
         )
         db.commit()
     except IntegrityError:
         db.rollback()
-        # 并发竞争下 find_duplicate 没查到，但唯一约束拒绝了——重新查返回完整信息
+        _cleanup_sku_upload(sku_no)
+        # 并发竞争下 find_duplicate 没查到，但唯一约束拒绝了
         dup = sku_repo.find_duplicate(series.id, body.style_no, body.name)
-        detail = {
+        raise HTTPException(409, detail={
             "message": "该商品已存在",
             "sku_id": dup.id if dup else None,
             "sku_no": dup.sku_no if dup else None,
             "name": dup.name if dup else body.name,
             "style_no": dup.style_no if dup else body.style_no,
-        }
-        raise HTTPException(409, detail=detail)
+        })
     except Exception as e:
         db.rollback()
+        _cleanup_sku_upload(sku_no)
         raise HTTPException(400, f"创建失败: {e}")
 
-    # 重新查一遍拿 brand/series 名称（repo.flush 了但没 commit，关系数据可能没完全加载）
     return ok(_sku_to_detail(sku, db))
 
 
