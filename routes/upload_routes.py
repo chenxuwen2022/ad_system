@@ -998,7 +998,7 @@ async function loadMaterialDetail(){
                 html += `<div class='bar' title="${d.date} 消耗${d.cost} 成交${d.orders}单" style="height:${h}px"></div>`;
             });
             html += "</div>";
-            html += "<details style='margin-top:10px'><summary class='muted'>逐日明细（点击展开）</summary>";
+            html += "<details open style='margin-top:10px'><summary class='muted'>逐日明细（点击展开）</summary>";
             html += "<div style='max-height:260px;overflow-y:auto;border:1px solid #e7edf6;border-radius:8px;'><table class='data' style='margin:0;width:100%'><tr><th>日期</th><th>消耗</th><th>展示</th><th>点击</th><th>成交单</th><th>成交金额</th></tr>";
             daily.forEach(d=>{
                 html += `<tr><td>${d.date}</td><td>${d.cost}</td><td>${d.show}</td><td>${d.click}</td><td>${d.orders}</td><td>${d.gmv}</td></tr>`;
