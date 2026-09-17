@@ -143,6 +143,88 @@ def _cache_set(key, value, ttl):
         _CACHE[key] = (_time.time(), ttl, value)
 
 
+# ============================================================
+# 本地 JSON 持久化缓存（三级缓存：内存 -> 磁盘JSON -> 千川）
+# 商品/素材等千川数据保存到 data/cache/*.json，重启不丢、加载秒级；
+# 磁盘数据过旧时后台异步刷新，保证数据新鲜且不阻塞请求。
+# ============================================================
+_DISK_CACHE_DIR = os.path.join(BASE_DIR, "data", "cache")
+_disk_refreshing = set()          # 防止同一 key 并发重复刷新
+_DISK_LOCK = threading.Lock()
+
+
+def _disk_path(cache_key):
+    """('report','1854..') -> data/cache/report_1854...json"""
+    name = "_".join(str(x) for x in cache_key).replace("/", "_")
+    return os.path.join(_DISK_CACHE_DIR, name + ".json")
+
+
+def _disk_get(cache_key):
+    """读磁盘缓存，命中返回 (data, saved_at_ts)，否则 None"""
+    try:
+        p = _disk_path(cache_key)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
+            if isinstance(d, dict) and "saved_at" in d and "data" in d:
+                return d["data"], d["saved_at"]
+    except Exception:
+        pass
+    return None
+
+
+def _disk_set(cache_key, data):
+    try:
+        with _DISK_LOCK:
+            os.makedirs(_DISK_CACHE_DIR, exist_ok=True)
+            with open(_disk_path(cache_key), "w", encoding="utf-8") as f:
+                json.dump({"saved_at": _time.time(), "data": data}, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def _refresh_in_background(cache_key, ttl, fetcher):
+    """磁盘数据已旧时后台异步刷新：拉千川 -> 写内存缓存 + 写磁盘。同一 key 只启动一个线程。"""
+    if cache_key in _disk_refreshing:
+        return
+    _disk_refreshing.add(cache_key)
+
+    def _run():
+        try:
+            data = fetcher()
+            if data:
+                _cache_set(cache_key, data, ttl)
+                _disk_set(cache_key, data)
+        except Exception:
+            pass
+        finally:
+            _disk_refreshing.discard(cache_key)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _load_3level(cache_key, ttl, fetcher, force=False):
+    """三级缓存统一入口：内存 -> 磁盘 -> 千川。
+    磁盘命中立即返回并在过期时后台刷新；都未命中才同步拉千川并双写。"""
+    if not force:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
+        disk = _disk_get(cache_key)
+        if disk is not None:
+            data, saved_at = disk
+            if data:
+                _cache_set(cache_key, data, ttl)
+                if _time.time() - saved_at > ttl:
+                    _refresh_in_background(cache_key, ttl, fetcher)
+                return data
+    data = fetcher()
+    if data:
+        _cache_set(cache_key, data, ttl)
+        _disk_set(cache_key, data)
+    return data
+
+
 # 千川报表接口并发上限（避免触发平台限流 40100）
 _REPORT_SEM = threading.Semaphore(8)
 
@@ -532,12 +614,12 @@ class DouYinAdService:
     # ===============================================================
     def get_available_products(self, force: bool = False) -> list:
         """拉取本账户可投商品（自动翻页，过滤下架/无库存 inventory<=0 的商品），
-        返回 [{id, name}]。结果缓存 5 分钟。"""
+        返回 [{id, name}]。三级缓存：内存(5分钟) → 本地JSON → 千川，加载秒级。"""
         cache_key = ("products", str(self.advertiser_id))
-        if not force:
-            cached = _cache_get(cache_key)
-            if cached is not None:
-                return cached
+        return _load_3level(cache_key, 300, lambda: self._fetch_products(), force)
+
+    def _fetch_products(self) -> list:
+        """千川商品列表拉取主体（供三级缓存后台刷新复用）。"""
         out = []
         page = 1
         while True:
@@ -558,7 +640,6 @@ class DouYinAdService:
             if page >= total_page:
                 break
             page += 1
-        _cache_set(cache_key, out, 300)
         return out
 
     def _fetch_plan_detail_stats(self, ad_id, status):
@@ -629,7 +710,7 @@ class DouYinAdService:
         return result
 
     def _build_video_id_map(self, force: bool = False) -> dict:
-        """建立 素材库video_id(v开头) → 报表material_id(数字) 映射表。缓存 1 小时。
+        """建立 素材库video_id(v开头) → 报表material_id(数字) 映射表。三级缓存：内存(1小时) → 本地JSON → 千川。
         千川两套素材ID：素材报表/素材库用数字 material_id；投放计划详情 video_material 用 v 开头 video_id。
         素材库 video/get 按数字批量查（单次上限20个），返回 item.id(v开头) 与 material_id(数字)。"""
         cache_key = ("vidmap", str(self.advertiser_id))
@@ -637,6 +718,18 @@ class DouYinAdService:
             cached = _cache_get(cache_key)
             if cached is not None:
                 return cached
+            disk = _disk_get(cache_key)
+            if disk is not None:
+                data, saved_at = disk
+                if data:
+                    _cache_set(cache_key, data, 3600)
+                    if _time.time() - saved_at > 3600:
+                        _refresh_in_background(cache_key, 3600, lambda: self._fetch_vmap_raw())
+                    return data
+        return self._fetch_vmap_raw()
+
+    def _fetch_vmap_raw(self) -> dict:
+        """千川 video_id 映射拉取主体（供三级缓存后台刷新复用）。"""
         vmap = {}
         try:
             mats = self.get_all_materials_report()[0]["materials"]
@@ -673,19 +766,32 @@ class DouYinAdService:
                     _t.sleep(0.15)
         except Exception:
             pass
-        # 空结果不缓存，避免 1 小时内一直用空映射
+        # 空结果不落缓存，避免长时间用空映射
         if vmap:
-            _cache_set(cache_key, vmap, 3600)
+            _cache_set(("vidmap", str(self.advertiser_id)), vmap, 3600)
+            _disk_set(("vidmap", str(self.advertiser_id)), vmap)
         return vmap
 
     def get_products_material_map(self, force: bool = False) -> dict:
-        """全部状态全域计划(近90天) → {product_id: [素材数字ID]}。缓存 10 分钟。
+        """全部状态全域计划(近90天) → {product_id: [素材数字ID]}。三级缓存：内存(30分钟) → 本地JSON → 千川。
         覆盖 VIDEO_PROM_GOODS + LIVE_PROM_GOODS 两种营销目标，保证尽量多的商品能查到素材。"""
         cache_key = ("prodmap", str(self.advertiser_id))
         if not force:
             cached = _cache_get(cache_key)
             if cached is not None:
                 return cached
+            disk = _disk_get(cache_key)
+            if disk is not None:
+                data, saved_at = disk
+                if data:
+                    _cache_set(cache_key, data, 1800)
+                    if _time.time() - saved_at > 1800:
+                        _refresh_in_background(cache_key, 1800, lambda: self._fetch_prodmap_raw())
+                    return data
+        return self._fetch_prodmap_raw()
+
+    def _fetch_prodmap_raw(self) -> dict:
+        """千川商品→素材映射拉取主体（供三级缓存后台刷新复用）。"""
         import time as _t, concurrent.futures as _cf
         prod_vids = {}
 
@@ -755,7 +861,8 @@ class DouYinAdService:
             if mids:
                 out[pid] = sorted(mids)
         if out:
-            _cache_set(cache_key, out, 1800)
+            _cache_set(("prodmap", str(self.advertiser_id)), out, 1800)
+            _disk_set(("prodmap", str(self.advertiser_id)), out)
         return out
 
     def get_product_material_ids(self, product_id, force: bool = False) -> list:
@@ -1012,7 +1119,8 @@ class DouYinAdService:
         """账户级素材报表：拉本账户「商品全域/乘方」素材库里全部素材投放数据（近3个月）。
         对应千川后台 数据-素材数据-素材分析（推商品）。
         接口 /qianchuan/report/uni_promotion/data/get/，按素材类型分主题循环翻页。
-        已优化：5 类主题并行拉取 + 页内并发翻页 + 5 分钟 TTL 缓存；force=True 强制绕过缓存重拉。
+        已优化：5 类主题并行拉取 + 页内并发翻页 + 三级缓存（内存5分钟 → 本地JSON → 千川）；
+        force=True 强制绕过缓存重拉。磁盘命中立即返回秒级，后台异步刷新保新鲜。
         返回 [{plan_name, materials:[{type,id,name,消耗,展示,点击,点击率,转化率,...}]}]"""
         import datetime as _dt
         cache_key = ("report", str(self.advertiser_id))
@@ -1020,7 +1128,19 @@ class DouYinAdService:
             cached = _cache_get(cache_key)
             if cached is not None:
                 return cached
+            disk = _disk_get(cache_key)
+            if disk is not None:
+                data, saved_at = disk
+                if data:
+                    _cache_set(cache_key, data, 300)
+                    if _time.time() - saved_at > 300:
+                        _refresh_in_background(cache_key, 300, lambda: self._fetch_report_raw())
+                    return data
+        return self._fetch_report_raw()
 
+    def _fetch_report_raw(self) -> list:
+        """千川素材报表拉取主体（供三级缓存后台刷新复用）。"""
+        import datetime as _dt
         end = _dt.date.today()
         start = end - _dt.timedelta(days=90)
         start_s = start.strftime("%Y-%m-%d") + " 00:00:00"
@@ -1103,7 +1223,8 @@ class DouYinAdService:
         # 按消耗降序
         mats.sort(key=lambda x: x["消耗"], reverse=True)
         result = [{"plan_name": "账户素材库", "status": "", "materials": mats}]
-        _cache_set(cache_key, result, 300)
+        _cache_set(("report", str(self.advertiser_id)), result, 300)
+        _disk_set(("report", str(self.advertiser_id)), result)
         return result
 
     def funnel_optimize(self, materials: list) -> list:
@@ -1433,12 +1554,18 @@ class DouYinAdService:
         except Exception:
             pass
 
-        # 4. DeepSeek 单素材点评（with_ai=False 时跳过，用于跨店铺轻量对比；缓存10分钟）
+        # 4. DeepSeek 单素材点评（with_ai=False 时跳过，用于跨店铺轻量对比；内存10分钟 + 磁盘持久化重启不丢）
         ai_text = ""
         if with_ai:
             _ctx = _load_ai_context(self.advertiser_id)
             ai_key = ("ai", str(self.advertiser_id), str(material_id), _ctx.get("updated", ""))
             ai_text = _cache_get(ai_key)
+            if ai_text is None:
+                _ai_disk = _disk_get(ai_key)
+                if _ai_disk is not None:
+                    ai_text = _ai_disk[0]
+                    if ai_text:
+                        _cache_set(ai_key, ai_text, 600)
         if with_ai and ai_text is None:
             daily_text = "\n".join(
                 f"  {d['date']}: 消耗{d['cost']}, 展示{d['show']}, 点击{d['click']}, 成交{d['orders']}单/{d['gmv']}元"
@@ -1480,6 +1607,7 @@ class DouYinAdService:
             except Exception as e:
                 ai_text = f"DeepSeek调用失败:{e}"
             _cache_set(ai_key, ai_text, 600)
+            _disk_set(ai_key, ai_text)
 
         # 净成交金额（从全量指标里取，供跨店铺对比与集合汇总）
         try:
