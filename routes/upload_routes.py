@@ -124,6 +124,23 @@ HTML_PAGE = """
             border-color:transparent; box-shadow:0 3px 10px rgba(31,111,235,.25); }
         .ai-tab-pane { display:none; }
         .ai-tab-pane.on { display:block; }
+        .viz-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+        .viz-stage { padding:5px 14px; border-radius:14px; font-size:13px; font-weight:700; color:#fff; }
+        .viz-stage.cold { background:linear-gradient(120deg,#8b5cf6,#a78bfa); }
+        .viz-stage.up { background:linear-gradient(120deg,#16a34a,#22c55e); }
+        .viz-stage.stable { background:linear-gradient(120deg,#1f6feb,#3b82f6); }
+        .viz-stage.down { background:linear-gradient(120deg,#dc2626,#f87171); }
+        .viz-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 18px; margin-bottom:14px;
+            background:#fff; border:1px solid #e7edf6; border-radius:10px; padding:12px 14px; }
+        .viz-bar { display:flex; align-items:center; gap:8px; min-width:0; }
+        .viz-lab { flex:none; width:64px; font-size:12px; color:#55637a; text-align:right; }
+        .viz-track { flex:1; height:8px; border-radius:4px; background:#eef2f7; overflow:hidden; }
+        .viz-fill { height:100%; border-radius:4px; transition:width .4s; }
+        .viz-grade { flex:none; width:34px; font-size:12px; font-weight:700; }
+        .viz-val { flex:none; font-size:11px; color:#8a97ab; }
+        .viz-note { font-size:12px; color:#8a97ab; background:#fff; border:1px solid #e7edf6;
+            border-radius:8px; padding:6px 10px; margin-bottom:12px; }
+        .viz-note b { color:#1f6feb; }
         .muted { color:#8a97ab; font-size:13px; }
         .spin { color:#1f6feb; }
         .settings-btn {
@@ -975,7 +992,7 @@ async function loadMaterialDetail(){
             html += "</table></details>";
         }
         html += "<div class='ai-head'>AI 点评与修改建议</div>";
-        html += "<div class='ai-box'>" + renderAiTabs(res.ai) + "</div>";
+        html += "<div class='ai-box'>" + renderAiViz(res.ai, s) + "</div>";
         box.innerHTML = html;
     }catch(e){
         box.innerHTML = "<p style='color:#e02424'>请求失败："+e+"</p>";
@@ -989,6 +1006,56 @@ function aiInline(s){
     // 已 esc 后的文本里再把 **加粗** 转成 <b>（esc 已转义 < >，此处安全）
     // Python 层写双反斜杠，输出到 JS 为正则字面量（匹配字面双星号）
     return esc(s).replace(/\\*\\*(.+?)\\*\\*/g, "<b>$1</b>");
+}
+// ===== AI 点评可视化：诊断概览（评分条+阶段徽章） + 建议卡片 =====
+function judgeStage(s){
+    const days = Number(s.active_days) || 0;
+    const roi = parseFloat(s.支付ROI) || 0;
+    const trend = s.trend || "";
+    if(days <= 3){ return {name:"冷启动", cls:"cold"}; }
+    if(trend === "上升" && roi >= 1){ return {name:"起量期", cls:"up"}; }
+    if(trend === "下滑" && roi < 1){ return {name:"衰退期", cls:"down"}; }
+    return {name:"稳定期", cls:"stable"};
+}
+function gradeOf(v, t1, t2, t3){
+    if(v >= t1){ return {g:"优", c:"#16a34a"}; }
+    if(v >= t2){ return {g:"良", c:"#1f6feb"}; }
+    if(v >= t3){ return {g:"中", c:"#d97706"}; }
+    return {g:"差", c:"#dc2626"};
+}
+function scoreBar(label, val, pct, grade, color, unit){
+    return `<div class="viz-bar" title="${label} ${val}${unit||""}">
+        <div class="viz-lab">${label}</div>
+        <div class="viz-track"><div class="viz-fill" style="width:${Math.max(4, Math.min(100, pct))}%;background:${color}"></div></div>
+        <div class="viz-grade" style="color:${color}">${grade}</div>
+        <div class="viz-val">${val}${unit||""}</div>
+    </div>`;
+}
+function renderAiViz(text, s){
+    // 1) 诊断概览：阶段徽章 + 四维评分条（全部可视化）
+    const stage = judgeStage(s);
+    const ctr = parseFloat(s.点击率) || 0;
+    const cvr = parseFloat(s.转化率) || 0;
+    const roi = parseFloat(s.支付ROI) || 0;
+    const trend = s.trend || "平稳";
+    const trendMeta = trend === "上升" ? {c:"#16a34a", p:100}
+        : (trend === "下滑" ? {c:"#dc2626", p:30} : {c:"#1f6feb", p:60});
+    const gCtr = gradeOf(ctr, 3, 1.5, 0.8);
+    const gCvr = gradeOf(cvr, 2, 1, 0.5);
+    const gRoi = gradeOf(roi, 1.5, 1.2, 0.8);
+    let html = `<div class="viz-head">
+        <span class="viz-stage ${stage.cls}">${stage.name}</span>
+        <span class="viz-note" style="margin:0">累计投放 <b>${s.active_days||0}</b> 天 · 近7天消耗 <b>${fmtMoney(s.recent7_cost||0)}</b>${s.trend ? " · 趋势 <b>"+esc(s.trend)+"</b>" : ""}</span>
+    </div>`;
+    html += `<div class="viz-grid">`;
+    html += scoreBar("CTR", ctr.toFixed(2), ctr/4*100, gCtr.g, gCtr.c, "%");
+    html += scoreBar("CVR", cvr.toFixed(2), cvr/3*100, gCvr.g, gCvr.c, "%");
+    html += scoreBar("ROI", roi.toFixed(2), roi/2*100, gRoi.g, gRoi.c, "");
+    html += scoreBar("消耗趋势", trend, trendMeta.p, trend, trendMeta.c, "");
+    html += `</div>`;
+    // 2) AI 建议与修改方向（章节卡片）
+    html += renderAiTabs(text);
+    return html;
 }
 // Tab 内容区行渲染：编号条目 / 圆号条目 / 普通行
 function renderAiTabLines(lines){
