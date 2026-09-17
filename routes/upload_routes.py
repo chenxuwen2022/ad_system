@@ -1046,28 +1046,34 @@ function scoreBar(label, val, pct, grade, color, unit){
     </div>`;
 }
 function renderAiViz(text, s){
-    // 1) 诊断概览：阶段徽章 + 四维评分条（全部可视化）
+    // 1) AI 结论 → 纯可视化：阶段徽章 + 六维健康度面板（全部由真实数据计算，无文字分析）
     const stage = judgeStage(s);
     const ctr = parseFloat(s.点击率) || 0;
     const cvr = parseFloat(s.转化率) || 0;
     const roi = parseFloat(s.支付ROI) || 0;
+    const cost = parseFloat(s.消耗) || 0;
+    const days = Number(s.active_days) || 0;
     const trend = s.trend || "平稳";
     const trendMeta = trend === "上升" ? {c:"#16a34a", p:100}
         : (trend === "下滑" ? {c:"#dc2626", p:30} : {c:"#1f6feb", p:60});
-    const gCtr = gradeOf(ctr, 3, 1.5, 0.8);
-    const gCvr = gradeOf(cvr, 2, 1, 0.5);
-    const gRoi = gradeOf(roi, 1.5, 1.2, 0.8);
+    const gCtr  = gradeOf(ctr, 3, 1.5, 0.8);
+    const gCvr  = gradeOf(cvr, 2, 1, 0.5);
+    const gRoi  = gradeOf(roi, 1.5, 1.2, 0.8);
+    const gRun  = gradeOf(cost, 2000, 800, 200);      // 跑量能力：按累计消耗分档
+    const gDays = gradeOf(days, 30, 15, 7);           // 投放稳定：按投放天数分档
     let html = `<div class="viz-head">
         <span class="viz-stage ${stage.cls}">${stage.name}</span>
-        <span class="viz-note" style="margin:0">累计投放 <b>${s.active_days||0}</b> 天 · 近7天消耗 <b>${fmtMoney(s.recent7_cost||0)}</b>${s.trend ? " · 趋势 <b>"+esc(s.trend)+"</b>" : ""}</span>
+        <span class="viz-note" style="margin:0">累计投放 <b>${days}</b> 天 · 近7天消耗 <b>${fmtMoney(s.recent7_cost||0)}</b>${s.trend ? " · 趋势 <b>"+esc(s.trend)+"</b>" : ""}</span>
     </div>`;
     html += `<div class="viz-grid">`;
-    html += scoreBar("CTR", ctr.toFixed(2), ctr/4*100, gCtr.g, gCtr.c, "%");
-    html += scoreBar("CVR", cvr.toFixed(2), cvr/3*100, gCvr.g, gCvr.c, "%");
-    html += scoreBar("ROI", roi.toFixed(2), roi/2*100, gRoi.g, gRoi.c, "");
+    html += scoreBar("跑量能力", fmtMoney(cost), cost/3000*100, gRun.g, gRun.c, "");
+    html += scoreBar("点击率CTR", ctr.toFixed(2), ctr/4*100, gCtr.g, gCtr.c, "%");
+    html += scoreBar("转化率CVR", cvr.toFixed(2), cvr/3*100, gCvr.g, gCvr.c, "%");
+    html += scoreBar("投资回报ROI", roi.toFixed(2), roi/2*100, gRoi.g, gRoi.c, "");
     html += scoreBar("消耗趋势", trend, trendMeta.p, trend, trendMeta.c, "");
+    html += scoreBar("投放稳定", days + "天", days/30*100, gDays.g, gDays.c, "");
     html += `</div>`;
-    // 2) AI 结论 → 全可视化：诊断要点标签流 + 建议卡片网格（无段落文字）
+    // 2) AI 修改建议 → 建议卡片网格（行动项，保留精炼文字）
     html += renderAiVisual(text);
     return html;
 }
@@ -1098,6 +1104,8 @@ function renderAiVisual(text){
     if(!secs.length){ secs.push({title: "AI 结论", items: lines}); }
     let html = "";
     secs.forEach(sec=>{
+        // 仅渲染"建议/优化/修改"类章节为卡片；诊断结论已由六维数据面板可视化，跳过文字
+        if(!/建议|优化|修改|改法|方向|行动|提升|加强|关注/.test(sec.title)){ return; }
         html += `<div class="viz-sec"><span class="viz-sec-tag">${esc(sec.title)}</span></div>`;
         // 提取条目
         const cards = [];
@@ -1115,12 +1123,6 @@ function renderAiVisual(text){
             html += `<div class="viz-cards">`;
             cards.forEach((c,i)=>{
                 html += `<div class="viz-card"><span class="viz-no">${i+1}</span><span class="viz-txt">${aiInline(c.t)}</span></div>`;
-            });
-            html += `</div>`;
-        }else{
-            html += `<div class="viz-chips">`;
-            cards.forEach(c=>{
-                html += `<span class="viz-chip">${aiInline(c.t)}</span>`;
             });
             html += `</div>`;
         }
