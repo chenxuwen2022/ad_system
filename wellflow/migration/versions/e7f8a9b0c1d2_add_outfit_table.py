@@ -1,7 +1,7 @@
 """add outfit table
 
 Revision ID: e7f8a9b0c1d2
-Revises: b2c3d4e5f6a7
+Revises: c4d5e6f7a8b9
 Create Date: 2026-09-16 16:00:00.000000
 
 """
@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "e7f8a9b0c1d2"
-down_revision: Union[str, Sequence[str], None] = "b2c3d4e5f6a7"
+down_revision: Union[str, Sequence[str], None] = "c4d5e6f7a8b9"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
@@ -36,8 +36,8 @@ def upgrade() -> None:
         sa.Column("items", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("dims", postgresql.JSONB(astext_type=sa.Text()), nullable=True),
         sa.Column("owner_id", sa.BIGINT(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False),
-        sa.Column("updated_at", sa.DateTime(), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("outfit_no"),
     )

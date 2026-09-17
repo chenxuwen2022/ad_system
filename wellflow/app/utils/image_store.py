@@ -504,6 +504,44 @@ def _parse_data_uri(data_uri: str) -> tuple[str, str]:
     return m.group(1), m.group(2)
 
 
+def save_sku_assets(
+    files: Sequence[tuple[str, bytes, str | None]],
+    sku_no: str,
+) -> list[str]:
+    """把 SKU 创建时用户上传的素材图落盘到 ``uploads/sku/{sku_no}/``。
+
+    目录不存在会自动创建；同一 sku_no 下每次调用都会按 i0, i1, ... 覆盖，
+    符合“先查冲突再创建”的 SKU 流程——不冲突时才真正 insert 主记录。
+
+    Returns:
+        storage_uri 列表，如 ["uploads/sku/SKU-000456/i0.jpg", "uploads/sku/SKU-000456/i1.jpg"]
+    """
+    base = _get_upload_dir()
+    sku_dir = base / "sku" / sku_no
+    sku_dir.mkdir(parents=True, exist_ok=True)
+
+    paths: list[str] = []
+    from wellflow.app.config import settings
+
+    for i, (orig_name, raw, content_type) in enumerate(files):
+        ext = mimetypes.guess_extension(content_type or "") if content_type else None
+        if not ext or ext == ".jpe":
+            ext = Path(orig_name).suffix or ".jpg"
+        ext = ext.lstrip(".")
+        ext = settings.image_ext_map.get(ext, ext)
+
+        filename = f"i{i}.{ext}"
+        save_path = sku_dir / filename
+        save_path.write_bytes(raw)
+
+        rel_path = f"uploads/sku/{sku_no}/{filename}"
+        paths.append(rel_path)
+        mime = content_type or mimetypes.guess_type(filename)[0] or "image/jpeg"
+        print(f"[image_store] 💾 sku {rel_path} ({len(raw)}B, {mime})", flush=True)
+
+    return paths
+
+
 def delete_task_files(task_id: str) -> None:
     """安全删除 uploads/{task_id}/ 下的所有文件（含 outputs/ 子目录）。
 

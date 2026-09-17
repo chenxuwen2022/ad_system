@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, func, desc, and_, or_
@@ -151,7 +151,7 @@ class MannequinRepo:
             obj.cover_storage_uri = cover_storage_uri
         if description is not None:
             obj.description = description
-        obj.updated_at = datetime.utcnow()
+        obj.updated_at = datetime.now(timezone.utc)
 
         if tags is not None:
             self._replace_tags(mannequin_id, tags)

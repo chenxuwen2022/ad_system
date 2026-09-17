@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from sqlalchemy import DateTime, ForeignKey, String, Text, JSON, Integer, Boolean
@@ -40,8 +40,8 @@ class Task(Base):
     brand_config_json: Mapped[dict] = mapped_column(JSON, default=dict)
     selected_plan_ids_json: Mapped[list] = mapped_column(JSON, default=list)
     interrupt_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class TaskEvent(Base):
@@ -55,7 +55,7 @@ class TaskEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64))  # phase_change / llm_call / skill_call / qa / human_review ...
     payload_json: Mapped[dict] = mapped_column(JSON, default=dict)
     cost_usd: Mapped[float | None] = mapped_column(nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class TaskErrorLog(Base):
@@ -71,7 +71,7 @@ class TaskErrorLog(Base):
     message: Mapped[str] = mapped_column(Text)
     retryable: Mapped[bool] = mapped_column(default=False)
     details_json: Mapped[dict] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class TaskImage(Base):
@@ -91,7 +91,7 @@ class TaskImage(Base):
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)          # output 用
     prompt_index: Mapped[int | None] = mapped_column(Integer, nullable=True) # output 用
     variant_index: Mapped[int | None] = mapped_column(Integer, nullable=True)# output 用
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 # =============================================================================
@@ -111,11 +111,13 @@ class Conversation(Base):
     __tablename__ = "conversation"
 
     conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 短 ID（conversation_id 去掉 '-' 后的前 12 位），用于兼容前端用短格式 URL 查询
+    conversation_id_short: Mapped[str] = mapped_column(String(12), nullable=False, unique=True)
     title: Mapped[str] = mapped_column(String(128), default="新对话")
     # 可选：当前活跃 task（用于前端恢复时直接跳转到）
     current_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
 
 class ChatMessage(Base):
@@ -147,4 +149,4 @@ class ChatMessage(Base):
     intent: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 每个 conversation 内自增序号（前端恢复时按此排序）
     session_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))

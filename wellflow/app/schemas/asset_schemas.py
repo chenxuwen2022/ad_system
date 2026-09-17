@@ -67,7 +67,12 @@ class ProductHistoricalAssetIn(BaseModel):
 
 
 class SkuCreateRequest(BaseModel):
-    """新建 SKU —— 同时接受 brand/series 的名称（find-or-create）或直接传 ID。"""
+    """新建 SKU —— 纯 JSON 版本，用于编辑或复用创建接口（可选）。
+
+    生产环境的创建入口已改为 :func:`POST /api/products/skus` 的
+    ``multipart/form-data`` 版本，直接接收 ``files`` 并在后端落盘到
+    ``uploads/sku/{sku_no}/``；这个 schema 保留是为了类型对齐和潜在复用。
+    """
 
     # brand：name + id 二选一
     brand_id: int | None = None
@@ -90,6 +95,13 @@ class SkuCreateRequest(BaseModel):
     source_url: str | None = None
 
     images: list[ProductImageIn] = Field(default_factory=list)
+
+
+class SkuImageMeta(BaseModel):
+    """multipart 模式下，每张 file 可选附带的元信息 —— ``category`` / ``sort_order``。"""
+
+    category: str | None = None
+    sort_order: int = 0
 
 
 class SkuUpdateRequest(BaseModel):

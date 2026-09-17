@@ -395,38 +395,40 @@ async def optimize_prompt(
     tags_text = "\n".join(tag_lines) if tag_lines else "（未选择任何维度标签）"
 
     system = (
-        "You are a professional e-commerce model image prompt optimization expert. "
-        "Your task is to integrate the user's raw description and dimension tags into a structured, "
-        "detailed English prompt suitable for AI image generation models like GPT Image.\n\n"
-        "Rules:\n"
-        "1. Preserve the user's core intent. Do not invent new attributes.\n"
-        "2. Naturally incorporate dimension tags into the description.\n"
-        "3. Output ONLY the English prompt. No explanations, no prefixes, no suffixes.\n"
-        "4. Describe clothing display naturally if the user mentions specific garments."
+        "你是一名专业的电商模特图提示词优化专家，负责把用户的原始描述和维度标签整合成一条"
+        "结构化、细节丰富的中文提示词，用于 GPT Image 等 AI 图像生成模型。\n\n"
+        "规则：\n"
+        "1. 保留用户核心意图，不要凭空创造属性。\n"
+        "2. 把维度标签自然融入描述。\n"
+        "3. 只输出最终的中文提示词本身，不要解释、不要前后缀、不要引号。\n"
+        "4. 如果用户提到了具体服装，要自然描述服装的穿着与展示效果。\n"
+        "5. 优先使用中文表达；如果某些风格、材质或摄影术语用英文更自然（如 soft lighting、"
+        "cinematic、Denim 等），可以保留，但整体提示词应以中文为主。"
     )
 
     user_text = (
-        f"Raw description: {raw_prompt}\n\n"
-        f"Dimension tags:\n{tags_text}\n\n"
-        f"Reference images provided: {len(ref_data_uris)} image(s)\n\n"
-        f"Please output the optimized English prompt:"
+        f"用户原始描述：{raw_prompt}\n\n"
+        f"维度标签：\n{tags_text}\n\n"
+        f"参考图数量：{len(ref_data_uris)} 张\n\n"
+        f"请输出优化后的中文提示词："
     )
 
-    model_name = settings.llm_model_text
-    print(f"[mannequin/optimize-prompt] 📤 {model_name}, refs={len(ref_data_uris)}", flush=True)
+    from wellflow.app.llm.model_pool import get_model_pool
+
+    print(f"[mannequin/optimize-prompt] 📤 model_pool, refs={len(ref_data_uris)}", flush=True)
 
     try:
-        client = get_llm_client("vlm", model_override=model_name)
+        pool = get_model_pool()
 
-        # 有参考图 → 用 chat_with_images（让 LLM 看图理解用户要的模特五官）
+        # 有参考图 → 走多模态接口让 VLM 看图理解用户要的模特五官
         if ref_data_uris:
-            resp = await client.chat_with_images(
+            resp, used_model = await pool.chat_with_images(
                 system=system,
                 user=user_text,
                 image_uris=ref_data_uris,
             )
         else:
-            resp = await client.chat(
+            resp, used_model = await pool.chat(
                 system=system,
                 user=user_text,
                 temperature=0.3,
@@ -696,7 +698,7 @@ async def auto_tag_mannequin(
             tags=validated_tags,
             description=description,
             suggested_name=suggested_name if isinstance(suggested_name, str) else None,
-            model=model_name,
+            model=used_model,
         ))
 
     except json_mod.JSONDecodeError as e:

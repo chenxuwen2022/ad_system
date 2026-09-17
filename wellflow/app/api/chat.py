@@ -389,11 +389,20 @@ async def chat(
             print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title={_title}", flush=True)
         else:
             # 前端传了但还没建（首次 start_task，前端 generate 的 id 后端还没记录）
-            existing = conv_repo.get(conv_id_for_this_turn)
+            # 用 resolve() 兼容 short_id / 完整 UUID
+            existing = conv_repo.resolve(conv_id_for_this_turn)
             if not existing:
                 _title = message.strip()[:30] or "新对话"
                 conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
                 print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
+
+    # 归一化：确保 conv_id_for_this_turn 是完整主键（short_id / UUID 都能解析）
+    # 下游 persist / touch / update_current_task 需要真实 PK
+    if conv_id_for_this_turn:
+        _resolved_obj = conv_repo.resolve(conv_id_for_this_turn)
+        if _resolved_obj and _resolved_obj.conversation_id != conv_id_for_this_turn:
+            print(f"[chat] 🔄 归一化 conversation_id {conv_id_for_this_turn} → {_resolved_obj.conversation_id}", flush=True)
+            conv_id_for_this_turn = _resolved_obj.conversation_id
 
     # 写 user chat_message（无论什么 intent 都写，保留完整对话历史）
     if conv_id_for_this_turn:

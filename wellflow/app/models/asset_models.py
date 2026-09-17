@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     BIGINT, ForeignKey, String, Text, Integer, DateTime, Index, UniqueConstraint,
@@ -29,8 +29,8 @@ class ProductBrand(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     series_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # 冗余
     sku_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)     # 冗余
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("ix_product_brand_status", "status"),
@@ -54,8 +54,8 @@ class ProductSeries(Base):
     name: Mapped[str] = mapped_column(String(128), nullable=False)
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     sku_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # 冗余
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     brand: Mapped[ProductBrand] = relationship("ProductBrand", lazy="joined")
 
@@ -92,8 +92,8 @@ class ProductSku(Base):
     brand_summary: Mapped[str | None] = mapped_column(Text, nullable=True)        # 品牌要求摘要
     source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     brand: Mapped[ProductBrand] = relationship("ProductBrand", lazy="joined")
     series: Mapped[ProductSeries] = relationship("ProductSeries", lazy="joined")
@@ -121,7 +121,7 @@ class ProductImage(Base):
     category: Mapped[str] = mapped_column(String(32), nullable=False)  # 正面/侧面/背面/...
     storage_uri: Mapped[str] = mapped_column(String(512), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     sku: Mapped[ProductSku] = relationship("ProductSku", back_populates="images")
 
@@ -144,7 +144,7 @@ class ProductHistoricalAsset(Base):
     storage_uri: Mapped[str] = mapped_column(String(512), nullable=False)
     source: Mapped[str | None] = mapped_column(String(64), nullable=True)
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         Index("ix_product_hist_asset_sku", "sku_id", "asset_type"),
@@ -163,7 +163,7 @@ class ProductKnowledgeLink(Base):
     doc_type: Mapped[str] = mapped_column(String(16), nullable=False)  # knowledge/chat_doc
     doc_ref: Mapped[str] = mapped_column(String(256), nullable=False)
     match_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    linked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=datetime.utcnow)
+    linked_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
         UniqueConstraint("sku_id", "doc_type", "doc_ref", name="uk_product_knowledge_link"),
