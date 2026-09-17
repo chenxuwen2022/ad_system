@@ -328,6 +328,8 @@ HTML_PAGE = """
                 <div class="lm-field">
                     <div class="lm-label">投放计划 <span class="lm-hint">素材将追加到所选计划，不会新建</span></div>
                     <div class="lm-line">
+                        <input type="text" id="popPlanSearch" placeholder="输入关键词筛选计划…"
+                               oninput="filterPopPlans()" class="lm-search">
                         <select id="popPlanSelect"></select>
                         <button class="ghost lm-refresh" onclick="loadPopPlans(true)" title="从千川重新拉取该店铺全部投放计划（约10-30秒）">刷新计划</button>
                     </div>
@@ -640,18 +642,26 @@ async function loadPopPlans(force){
 }
 function renderPopPlanOptions(){
     const sel = document.getElementById("popPlanSelect");
+    const kw = (document.getElementById("popPlanSearch").value||"").trim().toLowerCase();
     sel.innerHTML = "";
+    const matched = kw ? popPlans.filter(p=>(p.name||"").toLowerCase().includes(kw)) : popPlans;
     const ph = document.createElement("option");
     ph.value = "";
-    ph.textContent = `共${popPlans.length}个投放计划`;
+    ph.textContent = `共${popPlans.length}个投放计划`+(kw?`，筛选出${matched.length}个`:"");
     sel.appendChild(ph);
-    popPlans.forEach(p=>{
+    matched.slice(0, 500).forEach(p=>{
         const o = document.createElement("option");
         o.value = p.ad_id;
         o.textContent = `[${p.status_text}] ${p.name}（日预算${fmtMoney(p.budget)}，消耗${fmtMoney(p.cost)}）`;
         sel.appendChild(o);
     });
+    if(matched.length > 500){
+        const tip = document.createElement("option");
+        tip.value = ""; tip.textContent = `…共${matched.length}个，仅显示前500个，请输入关键词筛选`;
+        sel.appendChild(tip);
+    }
 }
+function filterPopPlans(){ renderPopPlanOptions(); }
 function renderPopPlanSummary(res){
     const sum = document.getElementById("popPlanSummary");
     sum.innerHTML =
