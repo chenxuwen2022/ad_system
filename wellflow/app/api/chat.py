@@ -240,7 +240,7 @@ async def _stream_queue(task_id: str, q) -> AsyncGenerator[str, None]:
             event = await asyncio.wait_for(q.get(), timeout=25)
             etype = event.get("type")
             edata = event.get("data", {})
-            print(f"[chat:stream] task={task_id} ← {etype}", flush=True)
+            # print(f"[chat:stream] task={task_id} ← {etype}", flush=True)
 
             yield _handle_sse_event(etype, edata)
 
@@ -615,6 +615,7 @@ async def chat(
                     message, model_images, product_images,
                     existing_report, existing_schemes,
                     existing_model_images, graph,
+                    selected_scheme_indices=selected_scheme_indices,
                 )):
                     yield ev
         except Exception as exc:
@@ -806,6 +807,8 @@ async def _handle_resume(
     existing_schemes: list,
     existing_model_images: list[str],
     graph,
+    *,
+    selected_scheme_indices: str | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
