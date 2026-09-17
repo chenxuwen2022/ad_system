@@ -25,6 +25,28 @@ _QUEUE_MAX_SIZE = 64
 # 队列闲置多久后自动清理（秒），避免孤儿队列
 _QUEUE_IDLE_TIMEOUT = 600
 
+# ---------------------------------------------------------------------------
+# graph 运行状态追踪 —— 防止同一个 task_id 并发启动多个 graph 执行
+# ---------------------------------------------------------------------------
+
+# 正在执行 graph 的 task_id 集合（graph 运行时 = 不在 interrupt 等待）
+_running_tasks: set[str] = set()
+
+
+def mark_running(task_id: str) -> None:
+    """标记 task 正在执行 graph。"""
+    _running_tasks.add(task_id)
+
+
+def mark_done(task_id: str) -> None:
+    """标记 task 的 graph 已结束（正常完成、interrupt 暂停、或报错）。"""
+    _running_tasks.discard(task_id)
+
+
+def is_running(task_id: str) -> bool:
+    """检查 task 是否正在执行 graph。"""
+    return task_id in _running_tasks
+
 
 def _get_or_create_queue(task_id: str) -> asyncio.Queue:
     """获取或创建队列；满了就淘汰最旧事件（FIFO）。"""

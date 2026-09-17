@@ -51,6 +51,7 @@ class Node1State(TypedDict, total=False):
     input_analysis: dict[str, Any]
     product_insight: str             # VLM 输出的 Markdown 报告全文
     compressed_images: list[str]      # 商品图 data URI 缓存（给下游复用）
+    thinking_text: str                # VLM 深度思考过程文本（用于刷新后恢复展示）
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ class SchemeState(TypedDict, total=False):
     schemes: list[dict[str, Any]]          # 3 套完整 12 维 JSON（每套 = PLANNING_AGENT_SYSTEM_PROMPT 输出）
     scheme_raw: str                         # VLM 原始 JSON 文本（前端展示/调试）
     selected_scheme_indices: list[int]      # C2 选的方案索引，如 [0, 2] 或 [0, 1, 2]
+    thinking_text: str                      # VLM 深度思考过程文本
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +85,7 @@ class PromptState(TypedDict, total=False):
     per_prompt_count: list[int]             # 每个 prompt 生成几张图，如 [3, 1]
     per_prompt_size: list[str]              # 每个 prompt 的图片规格，如 ["3:4", "3:4"]
     compressed_model_images: list[str]      # 模特图 data URI 缓存
+    thinking_text: str                      # VLM 深度思考过程文本（多个方案的 thinking 拼接）
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     t0 = time.time()
     content_parts: list[str] = []
     think_parts: list[str] = []
+    thinking_text_final: str | None = None
     content_chunk_index = 0
     think_chunk_index = 0
     first_content_ts = None
@@ -88,6 +89,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         content_chunk_index = 1
         raw_text = result.get("raw_text", "")
         thinking_text = result.get("thinking_text")
+        thinking_text_final = thinking_text or None
 
         # 🔍 非流式路径诊断
         print(f"[node2] 🔍 非流式 raw_text 前 500 字: {raw_text[:500]}", flush=True)
@@ -174,6 +176,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
             "schemes": schemes,
             "raw_text": raw_content,
         }
+        thinking_text_final = "".join(think_parts) if think_parts else None
 
     # 推 done
     if task_id:
@@ -193,6 +196,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         "schemes": schemes,
         "scheme_raw": raw_text,
         "selected_scheme_indices": [],  # C2 interrupt 后写入
+        "thinking_text": thinking_text_final or "",
     }
 
     output = {"phase": "node2_plan_scheme", "node2": new_node2}

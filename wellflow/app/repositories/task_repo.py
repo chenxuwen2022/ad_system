@@ -31,9 +31,11 @@ class TaskRepo:
         request_json: dict[str, Any],
         phase: str = "input",
         brand_config_json: dict[str, Any] | None = None,
+        conversation_id: str | None = None,
     ) -> Task:
         obj = Task(
             task_id=task_id,
+            conversation_id=conversation_id,
             phase=phase,
             request_json=request_json,
             brand_config_json=brand_config_json or {},

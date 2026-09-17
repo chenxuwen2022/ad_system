@@ -24,7 +24,7 @@ import json
 import re
 from typing import Any
 
-from wellflow.app.llm.factory import get_llm_client
+from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.prompt.constant import GENERATE_IMAGE_PROMPT
 
 
@@ -229,7 +229,7 @@ async def stream_generate_prompt(
     """流式为单个方案生成最终 prompt（yield {"type": "thinking"|"content", "text": "..."}）。"""
     from wellflow.app.config import settings
 
-    client = get_llm_client("vlm", node_name="node3")
+    pool = get_model_pool()
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
 
     system_prompt = GENERATE_IMAGE_PROMPT
@@ -276,7 +276,7 @@ async def stream_generate_prompt(
 
     all_images = product_images + model_images
 
-    async for delta in client.stream_chat_with_images(
+    async for delta in pool.stream_chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
         image_uris=all_images,
@@ -308,7 +308,7 @@ async def generate_prompt_for_scheme(
     """
     from wellflow.app.config import settings
 
-    client = get_llm_client("vlm", node_name="node3")
+    pool = get_model_pool()
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
 
     system_prompt = GENERATE_IMAGE_PROMPT
@@ -352,12 +352,12 @@ async def generate_prompt_for_scheme(
 
     all_images = product_images + model_images
 
-    print(f"[prompt_generation] 调用 VLM: scheme #{scheme_index}, "
+    print(f"[prompt_generation] 调用: scheme #{scheme_index}, "
           f"product_images={n_prod}, model_images={n_model}, "
           f"reasoning_effort={effort}",
           flush=True)
 
-    resp = await client.chat_with_images(
+    resp, used_model = await pool.chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
         image_uris=all_images,

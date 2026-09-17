@@ -167,5 +167,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             "product_insight": full_report,
             # 🔁 缓存已压缩的商品图 data URIs，供 Node2 复用（避免重复 PIL 压缩 ~1.2s）
             "compressed_images": images,
+            # 💭 持久化 thinking 文本，刷新后前端可恢复展示
+            "thinking_text": full_thinking if full_thinking else "",
         },
     }

@@ -650,12 +650,13 @@ async def auto_tag_mannequin(
         "}"
     )
 
-    model_name = settings.llm_model_node3
-    print(f"[mannequin/auto-tag] 📤 {model_name}", flush=True)
+    from wellflow.app.llm.model_pool import get_model_pool
+
+    print(f"[mannequin/auto-tag] 📤 model_pool", flush=True)
 
     try:
-        client = get_llm_client("vlm", model_override=model_name)
-        resp = await client.chat_with_images(
+        pool = get_model_pool()
+        resp, used_model = await pool.chat_with_images(
             system=system,
             user=user_text,
             image_uris=data_uris,

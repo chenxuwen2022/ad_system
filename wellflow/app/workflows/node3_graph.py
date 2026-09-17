@@ -93,6 +93,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     t_total = time.time()
     all_prompts: list[str] = []
     all_details: list[dict[str, Any]] = []
+    all_think_parts: list[str] = []  # 💭 累积所有方案的 thinking 文本
 
     # ---- 顺序循环 N 次，每次一套方案 ----
     for si, scheme in enumerate(selected_schemes):
@@ -147,6 +148,10 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
                 "prompt_detail": result.get("prompt_detail"),
                 "elapsed": round(time.time() - t0, 1),
             })
+            # 💭 收集 thinking 文本（非流式路径）
+            _nt = result.get("thinking_text")
+            if _nt:
+                all_think_parts.append(f"【方案 #{scheme_index} {scheme_name}】\n{_nt}")
         else:
             # 流式：逐 token 推送 SSE
             content_parts: list[str] = []
@@ -215,6 +220,11 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
                 "prompt_detail": detail,
                 "elapsed": round(time.time() - t0, 1),
             })
+            # 💭 收集 thinking 文本（流式路径）
+            if think_parts:
+                all_think_parts.append(
+                    f"【方案 #{scheme_index} {scheme_name}】\n{''.join(think_parts)}"
+                )
 
         print(f"[node3] ✅ 方案 #{scheme_index}({scheme_name}) prompt 生成完成 — "
               f"耗时={time.time() - t0:.1f}s", flush=True)
@@ -229,6 +239,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
         "generate_prompts": all_prompts,
         "prompts_detail": all_details,
         "prompt_raw": "\n---\n".join(d.get("prompt", "") for d in all_details),
+        "thinking_text": "\n\n".join(all_think_parts),
     }
 
     output = {"phase": "node3_prompt_gen", "node3": new_node3}

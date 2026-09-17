@@ -18,6 +18,7 @@ from wellflow.app.api.products import router as products_router
 from wellflow.app.api.mannequins import router as mannequins_router
 from wellflow.app.api.uploads import router as uploads_router
 from wellflow.app.api.chat import router as chat_router
+from wellflow.app.api.conversations import router as conversations_router
 from wellflow.app.api.utils import ok, fail, StandardResponse
 from wellflow.app.sse import router as sse_router
 from wellflow.app.config import settings
@@ -214,6 +215,9 @@ app.include_router(uploads_router, prefix="/api")
 
 # 对话入口（意图路由 —— 把自然语言映射到 LangGraph 节点）
 app.include_router(chat_router, prefix="/api")
+
+# 会话（Conversation-centric：左侧历史 + 消息持久化）
+app.include_router(conversations_router, prefix="/api")
 
 # SSE
 app.include_router(sse_router)

@@ -271,6 +271,7 @@ async def create_task(
             "task_id": task_id,
             "phase": TaskPhase.INPUT.value,
             "estimated_cost_range": [2.0, 10.0],
+            "description": _desc,
         })
 
         # 先推一个 phase=input（对齐旧版 SSE 契约）
