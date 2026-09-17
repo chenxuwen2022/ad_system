@@ -31,6 +31,8 @@ from routes.upload_routes import router as upload_router
 from routes.ad_routes import router as ad_router
 from routes.asset_routes import router as asset_router
 from routes.scene_ai import router as scene_ai_router
+from wellflow.app.api.outfit import router as wf_outfit_router
+from wellflow.app.api.uploads import router as wf_uploads_router
 from config import MEDIA_STORAGE_PATH
 from db import init_db
 from token_manager import get_token_mgr
@@ -82,6 +84,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.include_router(upload_router)
 app.include_router(ad_router)
 app.include_router(asset_router)
+app.include_router(wf_outfit_router, prefix="/api")    # 穿搭库(数据库版,wellflow/app/api/outfit.py)
+app.include_router(wf_uploads_router, prefix="/api")  # WellFlow 统一图片上传
 app.include_router(scene_ai_router, prefix="/api/scene")
 
 # ── 子系统二：电商商拍（WellFlow，API 路径与独立运行时一致）──
