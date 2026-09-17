@@ -208,14 +208,6 @@ HTML_PAGE = """
         .lm-tag.on { background:#e8f1ff; border-color:#1f6feb; color:#1f6feb; font-weight:600; }
         .lm-tag.on .dot { box-shadow:0 0 0 2px #fff inset; }
         .lm-tags-empty { font-size:12.5px; color:#9aa7ba; }
-        .lm-x { font-size:14px; line-height:1; margin-left:2px; opacity:.55; }
-        .lm-tag:hover .lm-x { opacity:1; }
-        .lm-clear { flex:none; font-size:12px; padding:5px 12px; }
-        .lm-batch-summary { font-size:15px; font-weight:700; margin-bottom:10px; }
-        .lm-batch-item { border:1px solid #e7edf6; border-radius:10px; padding:10px 14px; margin-bottom:8px; background:#fff; }
-        .lm-batch-item.ok { border-color:#c9ecd4; }
-        .lm-batch-item.err { border-color:#f3cccc; background:#fdf8f8; }
-        .lm-batch-item pre { margin:6px 0 0; font-size:12px; white-space:pre-wrap; word-break:break-all; }
     </style>
 </head>
 <body>
@@ -344,14 +336,13 @@ HTML_PAGE = """
                     <div id="popPlanSummary" class="lm-summary"></div>
                 </div>
                 <div class="lm-field">
-                    <div class="lm-label">投放商品 <span class="lm-hint">仅展示在售商品，可多选批量投放</span></div>
+                    <div class="lm-label">投放商品 <span class="lm-hint">仅展示在售商品</span></div>
                     <div class="lm-line">
                         <input type="text" id="popProductSearch" placeholder="输入关键词筛选商品…"
                                oninput="filterPopProducts()" class="lm-search">
-                        <select id="popProductSelect" onchange="addPopProduct()"></select>
+                        <select id="popProductSelect"></select>
                         <button class="ghost lm-refresh" onclick="loadPopProducts(true)" title="从千川重新拉取最新商品（约10-30秒）">刷新商品</button>
                     </div>
-                    <div id="popProductBox" class="lm-tags" style="margin-top:8px"><span class="lm-tags-empty">尚未选择商品（下拉选择后自动加入批量列表）</span></div>
                 </div>
                 <div class="lm-field">
                     <div class="lm-label">素材标签 <span class="lm-hint">投放后为素材打标记（可多选，在右上角「标签设置」中维护）</span></div>
@@ -552,10 +543,8 @@ async function loadUploadedMaterials(){
 let popLocalFilePath = "";
 let popTagList = [];        // 标签设置里的全部标签
 let popSelectedTags = [];   // 本次投放选中的标签（多选）
-let popSelectedProducts = []; // 本次投放选中的商品（批量，多选）
 function openLaunchModal(path, name){
     popLocalFilePath = path;
-    popSelectedProducts = [];
     document.getElementById("popFileName").textContent = name;
     document.getElementById("popLaunchResult").style.display = "none";
     document.getElementById("launchModal").classList.add("show");
@@ -722,49 +711,11 @@ function renderPopProductOptions(){
     }
 }
 function filterPopProducts(){ renderPopProductOptions(); }
-
-// ===== 批量投放：已选商品列表（chips 多选） =====
-function addPopProduct(){
-    const sel = document.getElementById("popProductSelect");
-    const pid = sel.value;
-    if(!pid) return;
-    const p = popProducts.find(x=>String(x.id)===String(pid));
-    if(!p) return;
-    if(!popSelectedProducts.some(x=>String(x.id)===String(pid))){
-        popSelectedProducts.push({id:pid, name:p.name || String(pid)});
-    }
-    renderPopSelectedProducts();
-}
-function removePopProduct(id){
-    popSelectedProducts = popSelectedProducts.filter(x=>String(x.id)!==String(id));
-    renderPopSelectedProducts();
-}
-function clearPopProducts(){
-    popSelectedProducts = [];
-    renderPopSelectedProducts();
-}
-function renderPopSelectedProducts(){
-    const box = document.getElementById("popProductBox");
-    const btn = document.getElementById("popLaunchBtn");
-    if(!popSelectedProducts.length){
-        box.innerHTML = "<span class='lm-tags-empty'>尚未选择商品（下拉选择后自动加入批量列表，可多选）</span>";
-    }else{
-        box.innerHTML = popSelectedProducts.map(p=>
-            `<span class="lm-tag on" data-pid="${esc(String(p.id))}" title="点击移除">${esc(p.name)} <span class="lm-x">×</span></span>`
-        ).join("") + `<button class="ghost lm-clear" id="popClearBtn">清空</button>`;
-        box.querySelectorAll(".lm-tag").forEach(chip=>{
-            chip.onclick = ()=>removePopProduct(chip.getAttribute("data-pid"));
-        });
-        document.getElementById("popClearBtn").onclick = clearPopProducts;
-    }
-    btn.textContent = popSelectedProducts.length > 1
-        ? `执行抖音投放（${popSelectedProducts.length} 个商品）`
-        : "执行抖音投放";
-}
 async function popLaunchAd(){
+    const pid = document.getElementById("popProductSelect").value;
+    if(!pid){ alert("请选择投放商品"); return; }
     const planId = document.getElementById("popPlanSelect").value;
     if(!planId){ alert("请先选择投放计划（素材必须投放到所选计划下，不会新建计划）"); return; }
-    if(!popSelectedProducts.length){ alert("请至少选择一个投放商品（可多选批量投放）"); return; }
     const btn = document.getElementById("popLaunchBtn");
     if(btn.disabled) return;
     const testMode = document.getElementById("popTestMode").checked;
@@ -775,51 +726,36 @@ async function popLaunchAd(){
     lr.style.color = "#55637a";
     lr.style.background = "#f6f8fb";
     lr.style.border = "1px solid #e4ebf4";
-    lr.style.whiteSpace = "normal";
-    const total = popSelectedProducts.length;
-    const results = [];
-    for(let i=0;i<total;i++){
-        const p = popSelectedProducts[i];
-        lr.innerText = testMode
-            ? `【测试模式】正在模拟投放 ${i+1}/${total}：${p.name} …`
-            : `正在投放 ${i+1}/${total}：${p.name}（约10-30秒）…`;
+    lr.innerText = testMode ? "【测试模式】正在本地模拟投放链路，不会创建真实计划…"
+                            : "正在把素材追加到所选投放计划，请稍候（约10-30秒）…";
+    try{
+        const payload = {
+            "platform":"douyin",
+            "local_file_path": popLocalFilePath,
+            "product_ids": [pid],
+            "advertiser_id": document.getElementById("popAdvertiser").value || null,
+            "plan_id": planId,
+            "tags": popSelectedTags,
+            "test_mode": testMode
+        };
+        const resp = await fetch("/api/ad/launch", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify(payload)
+        });
+        const res = await resp.json();
+        lr.removeAttribute("style");
+        lr.className = "lm-result " + (res.success ? "ok" : "err");
+        lr.innerText = JSON.stringify(res,null,2);
         lr.scrollIntoView({block:"nearest"});
-        try{
-            const payload = {
-                "platform":"douyin",
-                "local_file_path": popLocalFilePath,
-                "product_ids": [String(p.id)],
-                "advertiser_id": document.getElementById("popAdvertiser").value || null,
-                "plan_id": planId,
-                "tags": popSelectedTags,
-                "test_mode": testMode
-            };
-            const resp = await fetch("/api/ad/launch", {
-                method:"POST",
-                headers:{"Content-Type":"application/json"},
-                body:JSON.stringify(payload)
-            });
-            const res = await resp.json();
-            results.push({name:p.name, ok:!!res.success, res:res});
-        }catch(e){
-            results.push({name:p.name, ok:false, res:{success:false, error:String(e)}});
-        }
+    }catch(e){
+        lr.removeAttribute("style");
+        lr.className = "lm-result err";
+        lr.innerText = "投放请求失败：" + e;
+        lr.scrollIntoView({block:"nearest"});
+    }finally{
+        setBusy(btn, false);
     }
-    const okN = results.filter(r=>r.ok).length;
-    let html = `<div class="lm-batch-summary">批量投放完成：成功 ${okN}/${total}${testMode ? "（测试模式，未产生真实费用）" : ""}</div>`;
-    results.forEach((r,i)=>{
-        const ok = r.ok;
-        const brief = ok && r.res && r.res.data ? (r.res.data.error_msg || r.res.msg || "") : (r.res.error || "");
-        html += `<div class="lm-batch-item ${ok?"ok":"err"}">
-            <b>${i+1}. ${esc(r.name)}</b> — ${ok ? "✅ 成功" : "❌ 失败"}${brief ? `　<span style="color:#8a97ab">${esc(brief)}</span>` : ""}
-            <pre>${esc(JSON.stringify(r.res,null,2))}</pre>
-        </div>`;
-    });
-    lr.removeAttribute("style");
-    lr.className = "lm-result " + (okN===total ? "ok" : "err");
-    lr.innerHTML = html;
-    lr.scrollIntoView({block:"nearest"});
-    setBusy(btn, false);
 }
 
 // ===== 单素材深度分析 =====
