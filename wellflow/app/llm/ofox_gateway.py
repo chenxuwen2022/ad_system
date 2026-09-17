@@ -166,7 +166,9 @@ class OfoxGateway(BaseLLMClient):
         }
 
         # 深度思考 / Reasoning 控制（OpenAI 协议透传，Gemini 等模型支持）
-        if reasoning_effort is not None:
+        # 约定：reasoning_effort 为 "none" 时**不传该字段**，让模型用默认值（通常关闭推理）。
+        # OpenAI 官方合法值为 low/medium/high；传 "none" 字符串可能被网关忽略后仍返回 thinking。
+        if reasoning_effort is not None and reasoning_effort != "none":
             payload["reasoning_effort"] = reasoning_effort
 
         if response_format and response_format.get("type") == "json_object":
@@ -288,7 +290,8 @@ class OfoxGateway(BaseLLMClient):
 
         # ✅ ofox 网关流式多模态 + reasoning_effort 先尝试传
         # 如果底层不支持会抛异常，Node1 的流式调用方会 catch 并降级到非流式
-        if reasoning_effort is not None:
+        # 约定同非流式：effort=="none" 时**不传**，避免模型忽略后仍返回 thinking
+        if reasoning_effort is not None and reasoning_effort != "none":
             payload["reasoning_effort"] = reasoning_effort
 
         if extra_params:

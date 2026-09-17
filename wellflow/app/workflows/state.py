@@ -7,11 +7,33 @@
   Node4 (generate_image)     → C4 (重做/确认) → finalize
 
 各 Node 有自己的子状态。
+
+⚠️ LangGraph 1.2.x 的 LastValue channel 默认不允许同 superstep 多写入。
+   Command(update=X, goto=Y) 这种原子提交如果 update 和目标 node return 都写了同一个
+   channel（比如 phase、node3），就会 InvalidUpdateError。
+   解决方案：顶层 state 字段全部用 merge_state_values 自定义 reducer，
+   dict 类型做字段级 merge，其他类型后来者覆盖。
 """
 
 from __future__ import annotations
 
-from typing import Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
+
+
+def _merge_state_values(a: Any, b: Any) -> Any:
+    """LangGraph reducer —— dict 用 | 字段级合并，其他类型后来者覆盖。
+
+    签名必须是 (a, b) -> c，符合 LangGraph Annotated[type, reducer] 约定。
+    a = 当前值（channel 已有内容），b = 本次 node Command/update 提交的新值。
+    """
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a | b  # Python 3.9+ dict merge
+    return b  # 标量 / list / None → 后来者覆盖
+
+
+# LangGraph reducer 签名：(prev, new) -> merged
+# 把函数暴露成模块级常量，方便 Annotated 引用
+REDUCER = _merge_state_values
 
 
 class Progress(TypedDict, total=False):
@@ -108,17 +130,22 @@ class Node4State(TypedDict, total=False):
 
 
 class TaskState(TypedDict, total=False):
-    task_id: str
-    phase: str                     # input → analyze → c1_confirm → plan_scheme → c2_select →
-                                    #   gen_prompt → c3_confirm → generate → c4_review → done / failed
-    request: dict[str, Any]
-    brand_config: dict[str, Any]
-    node1: Node1State
-    node2: SchemeState
-    node3: PromptState
-    node4: Node4State
-    progress: Progress
-    cost: CostSummary
-    interrupt: InterruptSnapshot | None
-    error: TaskError | None
-    event_ids: list[str]
+    # —— 以下字段全部用 _merge_state_values reducer ——
+    # LangGraph 1.2.x 默认 LastValue channel 在同 superstep 多次写入时直接炸。
+    # 我们所有 Command(update=..., goto=...) 原子提交场景（backward / resume）
+    # 都会 update phase/nodeX/request 等字段，而目标 node 自己又会 return 这些字段，
+    # 所以同 step 多写入是**必然**会发生的，不能依赖"不会撞"。
+    # reducer 策略：dict 做字段级 | merge，标量/list 后来者覆盖（符合"更新"语义）。
+    task_id: Annotated[str, REDUCER]
+    phase: Annotated[str, REDUCER]
+    request: Annotated[dict[str, Any], REDUCER]
+    brand_config: Annotated[dict[str, Any], REDUCER]
+    node1: Annotated[Node1State, REDUCER]
+    node2: Annotated[SchemeState, REDUCER]
+    node3: Annotated[PromptState, REDUCER]
+    node4: Annotated[Node4State, REDUCER]
+    progress: Annotated[Progress, REDUCER]
+    cost: Annotated[CostSummary, REDUCER]
+    interrupt: Annotated[InterruptSnapshot | None, REDUCER]
+    error: Annotated[TaskError | None, REDUCER]
+    event_ids: Annotated[list[str], REDUCER]
