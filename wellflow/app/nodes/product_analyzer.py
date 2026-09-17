@@ -33,7 +33,7 @@ async def analyze_product(
     if not images:
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
-    client = get_llm_client("vlm")
+    client = get_llm_client("vlm", node_name="node1")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
 
     user_message_parts: list[str] = []
@@ -71,7 +71,7 @@ async def stream_analyze_product(
     if not images:
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
-    client = get_llm_client("vlm")
+    client = get_llm_client("vlm", node_name="node1")
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
 
     user_message_parts: list[str] = []

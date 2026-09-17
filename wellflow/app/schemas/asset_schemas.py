@@ -79,7 +79,7 @@ class SkuCreateRequest(BaseModel):
     series_name: str | None = None
 
     name: str
-    style_no: str | None = None
+    style_no: str = Field(..., description="货号/款号，必填")
     category: str | None = None
     color: str | None = None
     material: str | None = None
@@ -183,23 +183,37 @@ class MannequinTagIn(BaseModel):
     tag_values: list[str]
 
 
-class MannequinCreateRequest(BaseModel):
-    """创建模特（上传方式或 AI 生成方式共用一个 schema，由 origin 区分）。"""
+# ============================================================================
+# 模特创建流程 —— 交互端点 + 入库端点（全部改 multipart/form-data，无 JSON body）
+# ============================================================================
 
-    name: str
-    en_name: str | None = None
-    scope: Literal["official", "mine"] = "mine"
-    origin: Literal["upload", "ai_generate"] = "upload"
-    cover_storage_uri: str | None = None
-    description: str | None = None
-    tags: list[MannequinTagIn] = Field(default_factory=list)
+class MannequinOptimizePromptResponse(BaseModel):
+    final_prompt: str
 
-    # AI 生成专用
-    input_desc: str | None = None
-    input_refs: list[str] = Field(default_factory=list)
-    final_prompt: str | None = None
-    generate_model: str | None = None
-    num_output: int = 1
+
+class GeneratedImage(BaseModel):
+    """首轮生图返回的单张 —— 不落盘，只回 base64。"""
+    index: int
+    base64: str
+
+
+class MannequinGenerateResponse(BaseModel):
+    images: list[GeneratedImage]
+    model: str            # 实际使用的后端模型名
+    final_prompt: str     # 最终发给模型的 prompt
+
+
+class MannequinFineTuneResponse(BaseModel):
+    """微调返回 —— 不落盘，只回 base64。"""
+    base64: str
+    model: str
+
+
+class MannequinAutoTagResponse(BaseModel):
+    tags: list[MannequinTagIn]        # VLM 建议的标签（前端可编辑）
+    description: str                  # VLM 生成的一句话描述
+    suggested_name: str | None = None  # 建议的模特名字（可选）
+    model: str
 
 
 class MannequinUpdateRequest(BaseModel):

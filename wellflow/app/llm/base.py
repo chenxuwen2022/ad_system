@@ -180,33 +180,47 @@ class BaseLLMClient(ABC):
         # ---------- 🔑 按模型名分流 ----------
         model_name = getattr(self, "model", "")
         is_gpt_image = "gpt-image" in model_name.lower()
-        is_non_gpt = model_name in settings.image_non_gpt_models
 
-        # 🔑 GPT Image 图生图（有参考图）默认走 /v1/images/edits multipart。
-        #   gpt-image-2 的原生编辑端点只认 multipart 的「image」文件字段，
-        #   不认 generations 里的 JSON「reference_images」——之前统一走 generations，
-        #   GPT Image 压根没读到参考图，导致生图失真。
+        # GPT edit 模式端点选择（默认 "edits"，可配成 "responses"）
         gpt_edit_endpoint = getattr(settings, "image_gpt_edit_endpoint", "edits")
-        gpt_edit_to_responses = (
-            is_gpt_image and refs and gpt_edit_endpoint == "responses"
-        )
 
-        if is_gpt_image and refs and not gpt_edit_to_responses:
+        # ═══════════════════════════════════════════════════════════════════════════
+        # 分流规则：**全部直接用用户指定的模型**，不再换模型名
+        #
+        #  ① GPT + 有 refs + 默认配置       → /v1/images/edits multipart
+        #                                      gpt-image-2 原生 edit 端点，
+        #                                      参考图作为多个同名 image 文件字段
+        #
+        #  ② GPT + 无 refs（纯文生图）      → /v1/images/generations JSON
+        #                                      gpt-image-2 原生 generations，
+        #                                      不需要 gpt-5.4-mini 当大脑
+        #
+        #  ③ 非 GPT 模型（qwen/doubao 等） → /v1/images/generations JSON
+        #                                      参考图通过 reference_images 字段传递
+        #
+        #  ④ GPT edit + 强制 responses     → /v1/responses + image_generation
+        #     （image_gpt_edit_endpoint    tool (action=edit)
+        #       = "responses" 时）           ⚠️ 仅这个分支需要 llm_model_responses
+        # ═══════════════════════════════════════════════════════════════════════════
+
+        # ── ① GPT 图生图（有 refs）→ edits multipart（默认路径）──
+        if is_gpt_image and refs and gpt_edit_endpoint != "responses":
             return await self._generate_image_via_edits(
                 prompt=prompt, refs=refs, size=size, n=n,
                 response_format=response_format,
             )
 
-        # 非 GPT 模型（qwen 等）→ /v1/images/generations JSON + reference_images
-        if is_non_gpt and not gpt_edit_to_responses:
+        # ── ④ GPT 图生图 + 强制 responses → responses + image_generation tool ──
+        if is_gpt_image and refs and gpt_edit_endpoint == "responses":
+            # 只有这个分支需要额外的 responses 端点配置
+            from wellflow.app.llm.factory import _strip_provider
+            top_model = _strip_provider(getattr(settings, "llm_model_responses", "openai/gpt-5.4-mini"))
+        else:
+            # ── ② + ③ GPT 纯文生图 / 非 GPT / 其他 → generations JSON ──
             return await self._generate_image_via_generations(
                 prompt=prompt, refs=refs, size=size, n=n,
                 response_format=response_format, extra_params=extra_params,
             )
-
-        # GPT Image 系列（文生图，或 edit 走 responses）→ /v1/responses + image_generation
-        from wellflow.app.llm.factory import _strip_provider
-        top_model = _strip_provider(getattr(settings, "llm_model_responses", "openai/gpt-5.4-mini"))
 
         # ---------- 从 config 读取速度/质量参数（调高质量→慢，调低→快）----------
         quality = settings.image_gen_quality

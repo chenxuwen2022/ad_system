@@ -45,19 +45,21 @@ wellflow/uploads/
 # AI 场景处理产物
 static/scene_ai/
 
-# AI 穿搭拆解/平铺图运行时产物
+# ===== 图片/视频素材一律不入库（用户要求：不上传图片到云效）=====
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.ico
+*.svg
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+static/assets/
 static/outfit_ai/
-
-# 资产库迁移备份文件
 assets_data/*.bak_*
-
-# static 目录下所有图片(运行时上传/生成/种子图片均不入库)
-static/**/*.png
-static/**/*.jpg
-static/**/*.jpeg
-static/**/*.webp
-static/**/*.gif
-static/**/*.bmp
-
-# 测试页面(仅本地,不提交/不推送)
 static/*.html

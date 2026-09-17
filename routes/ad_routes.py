@@ -8,7 +8,7 @@ from douyin_api import DouYinAdService
 from file_service import delete_media_file
 from token_manager import get_token_mgr
 from config import DOUYIN_CONFIG
-from db import SessionLocal, AdvertiserDB, MaterialTagDB, MaterialMarkDB
+from db import SessionLocal, AdvertiserDB, MaterialTagDB, MaterialMarkDB, MaterialLaunchDB
 
 router = APIRouter()
 
@@ -27,6 +27,18 @@ class MaterialTagBody(BaseModel):
     name: str
     color: str = "#1f6feb"
     id: Optional[int] = None  # 编辑时传数据库主键，用于精确更新
+
+
+class AiContextBody(BaseModel):
+    advertiser_id: str = ""
+    links: list = []          # 竞品链接列表
+    market_data: str = ""     # 行业市场数据文本
+
+
+def _ai_context_path(aid):
+    d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+    os.makedirs(d, exist_ok=True)
+    return os.path.join(d, f"ai_context_{aid}.json")
 
 
 def _resolve_advertiser_id(req_id, accounts):
@@ -74,6 +86,24 @@ def _save_material_marks(file_path: str, tags):
         else:
             row = MaterialMarkDB(file_path=file_path, tags=",".join(names))
             db.add(row)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _save_launch_record(file_path: str, status: str, mode: str,
+                        plan_id: str = "", plan_name: str = "",
+                        product_id: str = "", detail: str = ""):
+    """记录一次素材投放历史，用于素材库展示投放状态"""
+    if not file_path:
+        return
+    db = SessionLocal()
+    try:
+        db.add(MaterialLaunchDB(
+            file_path=file_path, status=status, mode=mode,
+            plan_id=plan_id or "", plan_name=plan_name or "",
+            product_id=product_id or "", detail=(detail or "")[:300],
+        ))
         db.commit()
     finally:
         db.close()
@@ -135,6 +165,10 @@ async def ad_launch(req: AdLaunchRequest):
                 f"⑧ 素材标记：{('、'.join(req.tags) + '（已保存到素材标记）') if req.tags else '未选择标签'}",
             ]
             _save_material_marks(f_path, req.tags)
+            _save_launch_record(f_path, "success", "test",
+                                plan_id=req.plan_id or "", plan_name=plan_ref,
+                                product_id=chosen_pid or "",
+                                detail="测试模式模拟投放")
             return {
                 "success": True,
                 "test_mode": True,
@@ -185,7 +219,14 @@ async def ad_launch(req: AdLaunchRequest):
             )
         if result.success:
             _save_material_marks(req.local_file_path, req.tags)
+            _save_launch_record(req.local_file_path, "success", "real",
+                                plan_id=req.plan_id, product_id=",".join(req.product_ids or []),
+                                detail="已追加到投放计划")
             delete_media_file(req.local_file_path)
+        else:
+            _save_launch_record(req.local_file_path, "fail", "real",
+                                plan_id=req.plan_id or "", product_id=",".join(req.product_ids or []),
+                                detail=result.error_msg or "投放失败")
         return result
 
     elif req.platform in ["jd", "taobao"]:
@@ -221,6 +262,37 @@ async def material_list(advertiser_id: str = "", refresh: bool = False):
         return {"success": False, "error": str(e), "data": []}
 
 
+@router.get("/api/materials_by_product")
+async def materials_by_product(advertiser_id: str = "", product_id: str = ""):
+    """返回指定商品下的素材列表（来自该商品在投全域计划挂载的素材，去重），
+    并聚合该商品所有素材的投放数据（素材数/消耗/净成交/总成交/ROI/成交单数）。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        if not product_id:
+            return {"success": True, "data": [], "agg": None, "total": 0, "note": "未选择商品"}
+        mat_ids = set(svc.get_product_material_ids(product_id))
+        mats = svc.get_all_materials_report()[0]["materials"]
+        items = [m for m in mats if m["id"] in mat_ids]
+        agg = {"素材数": len(items),
+               "消耗": round(sum(float(m.get("消耗") or 0) for m in items), 2),
+               "成交金额": round(sum(float(m.get("成交金额") or 0) for m in items), 2),
+               "成交单数": int(sum(float(m.get("成交单数") or 0) for m in items)),
+               "净成交金额": round(sum(float(
+                   next((x["value"] for x in (m.get("metrics_all") or [])
+                        if x["field"] == "total_order_settle_amount_for_roi2_1h"), 0))
+                   for m in items), 2)}
+        if agg["消耗"]:
+            agg["支付ROI"] = round(agg["成交金额"] / agg["消耗"], 2)
+        out = [{"id": m["id"], "name": m["name"], "type": m["type"],
+                "消耗": m["消耗"], "成交金额": m["成交金额"], "支付ROI": m["支付ROI"]}
+               for m in items]
+        out.sort(key=lambda x: -float(x["消耗"] or 0))
+        return {"success": True, "data": out, "agg": agg, "total": len(out)}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": [], "agg": None}
+
+
 @router.get("/api/material_detail")
 async def material_detail(material_id: str, advertiser_id: str = ""):
     """单个素材：汇总+逐日曲线+DeepSeek点评与建议。可指定 advertiser_id 查询对应账户的素材。"""
@@ -229,6 +301,121 @@ async def material_detail(material_id: str, advertiser_id: str = ""):
         svc = DouYinAdService(advertiser_id=aid)
         data = svc.get_material_detail(material_id)
         return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.post("/api/ai_context")
+async def save_ai_context(body: AiContextBody):
+    """保存 AI 分析上下文：竞品链接列表 + 行业市场数据（按广告主分文件存储）。"""
+    import json
+    aid = str(body.advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID"))
+    links = [str(x).strip() for x in (body.links or []) if str(x).strip()]
+    market = (body.market_data or "").strip()
+    try:
+        with open(_ai_context_path(aid), "w", encoding="utf-8") as f:
+            json.dump({"links": links, "market_data": market,
+                       "updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
+                      f, ensure_ascii=False, indent=2)
+        return {"success": True, "links": links, "market_data_len": len(market)}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/ai_context")
+async def get_ai_context(advertiser_id: str = ""):
+    """读取已保存的 AI 分析上下文。"""
+    import json
+    aid = str(advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID"))
+    path = _ai_context_path(aid)
+    try:
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                d = json.load(f)
+            return {"success": True, "links": d.get("links", []),
+                    "market_data": d.get("market_data", ""), "updated": d.get("updated", "")}
+        return {"success": True, "links": [], "market_data": "", "updated": ""}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/material_multi_shop")
+async def material_multi_shop(material_id: str, advertiser_id: str = ""):
+    """同一素材跨店铺分析：
+    1) 主店铺（当前选中店铺）：素材集合数据（该店铺全部素材聚合）+ 该素材具体数据
+    2) 店铺对比：遍历后台保存的全部店铺，查询同一素材在各店铺的 消耗/净成交金额/总成交金额/ROI/环比/同比
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    aid = str(advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID"))
+
+    def _shop_row(a):
+        """单店铺：该素材汇总 + 集合数据（该店铺全部素材聚合）"""
+        try:
+            svc = DouYinAdService(advertiser_id=str(a["advertiser_id"]))
+            detail = svc.get_material_detail(material_id, with_ai=False)
+            s = detail.get("summary", {})
+            row = {
+                "advertiser_id": str(a["advertiser_id"]), "name": a.get("name") or str(a["advertiser_id"]),
+                "material_id": material_id, "素材名称": s.get("name", ""),
+                "ok": True,
+                "消耗": s.get("消耗", 0), "成交金额": s.get("成交金额", 0),
+                "净成交金额": s.get("净成交金额", 0), "支付ROI": s.get("支付ROI", 0),
+                "成交单数": s.get("成交单数", 0), "trend": s.get("trend", "—"),
+                "recent7_cost": s.get("recent7_cost", 0), "prev7_cost": s.get("prev7_cost", 0),
+                "yoy_trend": s.get("yoy_trend", "—"),
+                "recent30_cost": s.get("recent30_cost", 0), "prev30_cost": s.get("prev30_cost", 0),
+            }
+            # 集合数据：该店铺全部素材聚合（消耗/成交/净成交/ROI 加权）
+            agg = {"消耗": 0, "成交金额": 0, "净成交金额": 0, "成交单数": 0, "素材数": 0}
+            try:
+                mats = svc.get_all_materials_report()[0]["materials"]
+                agg["素材数"] = len(mats)
+                agg["消耗"] = round(sum(float(m.get("消耗") or 0) for m in mats), 2)
+                agg["成交金额"] = round(sum(float(m.get("成交金额") or 0) for m in mats), 2)
+                agg["成交单数"] = int(sum(float(m.get("成交单数") or 0) for m in mats))
+                agg["净成交金额"] = round(sum(float(
+                    next((x["value"] for x in (m.get("metrics_all") or [])
+                         if x["field"] == "total_order_settle_amount_for_roi2_1h"), 0))
+                    for m in mats), 2)
+                if agg["消耗"]:
+                    agg["支付ROI"] = round(agg["成交金额"] / agg["消耗"], 2)
+                # 该素材在集合中的占比
+                if agg["消耗"]:
+                    row["消耗占比"] = round(float(row["消耗"]) / agg["消耗"] * 100, 1)
+            except Exception:
+                pass
+            row["集合"] = agg
+            return row
+        except Exception as e:
+            return {"advertiser_id": str(a["advertiser_id"]), "name": a.get("name") or str(a["advertiser_id"]),
+                    "ok": False, "error": str(e)}
+
+    try:
+        # 主店铺详情（含 AI 点评，走原接口逻辑）
+        main_svc = DouYinAdService(advertiser_id=aid)
+        main_detail = main_svc.get_material_detail(material_id)
+
+        # 店铺列表：后台保存的全部账户 + 主店铺兜底
+        db = SessionLocal()
+        try:
+            accounts = [{"advertiser_id": r.advertiser_id, "name": r.name} for r in
+                        db.query(AdvertiserDB).order_by(AdvertiserDB.id).all()]
+        finally:
+            db.close()
+        if not any(str(a["advertiser_id"]) == aid for a in accounts):
+            accounts.insert(0, {"advertiser_id": aid, "name": aid})
+
+        shops = []
+        with ThreadPoolExecutor(max_workers=min(4, len(accounts))) as ex:
+            futs = {ex.submit(_shop_row, a): a for a in accounts}
+            for fu in as_completed(futs):
+                shops.append(fu.result())
+        shops.sort(key=lambda x: (not x.get("ok"), -float(x.get("消耗") or 0)))
+
+        main_s = main_detail.get("summary", {})
+        return {"success": True,
+                "main_shop": {"advertiser_id": aid, "summary": main_s},
+                "shops": shops}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -442,5 +629,36 @@ async def get_material_marks(file_path: str = ""):
         return {"success": True, "data": [
             {"file_path": r.file_path, "tags": [t for t in r.tags.split(",") if t]} for r in rows
         ]}
+    finally:
+        db.close()
+
+
+@router.get("/api/material_launch_status")
+async def get_material_launch_status():
+    """返回全部素材的投放状态汇总：{file_path: {status, mode, count, time, plan_name, product_id, detail}}
+    status 取该素材最近一次投放结果（success/fail），mode 区分真实/测试。"""
+    from collections import defaultdict
+    db = SessionLocal()
+    try:
+        rows = db.query(MaterialLaunchDB).order_by(MaterialLaunchDB.id.desc()).all()
+        latest = {}
+        counts = defaultdict(int)
+        for r in rows:
+            counts[r.file_path] += 1
+            if r.file_path not in latest:
+                latest[r.file_path] = r
+        out = {}
+        for path, r in latest.items():
+            out[path] = {
+                "status": r.status,
+                "mode": r.mode,
+                "count": counts[path],
+                "time": r.create_time.strftime("%m-%d %H:%M") if r.create_time else "",
+                "plan_id": r.plan_id,
+                "plan_name": r.plan_name,
+                "product_id": r.product_id,
+                "detail": r.detail,
+            }
+        return {"success": True, "data": out}
     finally:
         db.close()

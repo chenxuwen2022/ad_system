@@ -71,7 +71,7 @@ class MannequinTag(Base):
 
 
 class MannequinGenerateLog(Base):
-    """模特 AI 生成历史。"""
+    """模特 AI 生成历史（可多条，支持首轮 + 微调多轮追加）。"""
 
     __tablename__ = "mannequin_generate_log"
 
@@ -79,6 +79,15 @@ class MannequinGenerateLog(Base):
     mannequin_id: Mapped[int | None] = mapped_column(
         BIGINT, ForeignKey("mannequin.id", ondelete="SET NULL"), nullable=True,
     )
+    # 轮次标记：first_round 首轮批量生图 / fine_tune 单张微调
+    round_type: Mapped[str] = mapped_column(String(32), nullable=False, default="first_round")
+    # 微调记录指向父级首轮记录；首轮记录此字段为 NULL
+    parent_log_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("mannequin_generate_log.id", ondelete="SET NULL"), nullable=True,
+    )
+    # 微调时选中的那一张图（从首轮 n 张里挑出来的那张）
+    target_image_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
     input_desc: Mapped[str | None] = mapped_column(Text, nullable=True)
     input_refs: Mapped[dict | None] = mapped_column(JSONB, nullable=True)   # 参考图 URI 列表
     final_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -92,4 +101,5 @@ class MannequinGenerateLog(Base):
     __table_args__ = (
         Index("ix_mannequin_gen_id", "mannequin_id"),
         Index("ix_mannequin_gen_time", "created_at"),
+        Index("ix_mannequin_gen_parent", "parent_log_id"),
     )

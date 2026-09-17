@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WellFlow 资产库 · 接口文档</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0e1117; color: #e8eaed; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; padding: 32px 20px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 6px; }
+  .sub { color: #8b949e; font-size: 13px; margin-bottom: 24px; }
+  h2 { font-size: 17px; margin: 28px 0 12px; padding-left: 10px; border-left: 4px solid #ffd83d; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 12px; padding: 16px 18px; margin-bottom: 14px; }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+  .method { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 6px; color: #fff; }
+  .m-get { background: #2b5bff; }
+  .m-post { background: #238636; }
+  .m-put { background: #bf8700; }
+  .m-del { background: #da3633; }
+  .path { font-family: Consolas, monospace; font-size: 14px; color: #ffd83d; word-break: break-all; }
+  .desc { color: #8b949e; font-size: 12.5px; margin-bottom: 10px; line-height: 1.7; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin: 8px 0; }
+  th { background: #21262d; color: #c9d1d9; text-align: left; padding: 7px 10px; font-weight: 600; }
+  td { border-top: 1px solid #21262d; padding: 7px 10px; vertical-align: top; color: #c9d1d9; }
+  td code, .code { font-family: Consolas, monospace; color: #7ee787; background: #1c2128; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  .req { color: #ff7b72; font-weight: 600; }
+  .opt { color: #8b949e; }
+  pre { background: #0d1117; border: 1px solid #21262d; border-radius: 8px; padding: 12px 14px; font-size: 12px; line-height: 1.6; overflow-x: auto; color: #c9d1d9; font-family: Consolas, monospace; margin-top: 6px; }
+  pre .k { color: #79c0ff; }
+  pre .s { color: #a5d6ff; }
+  .note { background: #17233b; border: 1px solid #2b5bff44; border-radius: 8px; padding: 10px 14px; font-size: 12.5px; color: #7ea0ff; margin-top: 10px; line-height: 1.8; }
+  .base { font-family: Consolas, monospace; font-size: 12px; color: #8b949e; margin-bottom: 18px; }
+  .field { color: #ffd83d; }
+  .new { background: #23863622; color: #7ee787; border: 1px solid #23863666; font-size: 11px; padding: 1px 7px; border-radius: 10px; margin-left: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>WellFlow · 资产库 &amp; 场景 AI 接口文档</h1>
+  <div class="sub">数据保存在本地 JSON（assets_data/library.json），图片落盘 static/assets/ 与 static/scene_ai/</div>
+  <div class="base">Base URL：<span class="code">http://127.0.0.1:8000</span> · 更新于 2026-09-15</div>
+
+  <h2>一、资产库 CRUD（/api/assets）</h2>
+
+  <!-- GET 列表 -->
+  <div class="card">
+    <div class="row"><span class="method m-get">GET</span><span class="path">/api/assets</span></div>
+    <div class="desc">查询资产列表，支持分类 / 来源 / 关键词（描述式搜索） / 维度（多选）组合过滤。返回列表 + 分类统计。</div>
+    <table>
+      <tr><th style="width:110px">参数</th><th style="width:70px">类型</th><th style="width:80px">必填</th><th>说明</th></tr>
+      <tr><td><span class="field">category</span></td><td>string</td><td class="opt">否</td><td>分类：<code>brand</code> 品牌资产库 / <code>reference</code> 参考素材 / <code>model</code> 模特库 / <code>outfit</code> 穿搭库 / <code>scene</code> 场景库；不传返回全部</td></tr>
+      <tr><td><span class="field">scope</span></td><td>string</td><td class="opt">否</td><td>来源：<code>official</code> 官方 / <code>mine</code> 我的</td></tr>
+      <tr><td><span class="field">q</span></td><td>string</td><td class="opt">否</td><td>关键词，空格/逗号/顿号分词，任一命中即返回（OR）；支持"去尾字"变体（如"夏天"→"夏"），可输入 ID、名称、标签、一句话描述或自然语言描述</td></tr>
+      <tr><td><span class="field">dims</span></td><td>string</td><td class="opt">否</td><td>JSON 字符串，维度多选过滤（多维之间 AND、维度内任一命中即匹配）。如 <code>{"空间类型":["卧室","厨房"],"天气":["晴天"]}</code></td></tr>
+    </table>
+    <div>返回示例：</div>
+<pre>{
+  <span class="k">"code"</span>: 0,
+  <span class="k">"data"</span>: {
+    <span class="k">"list"</span>: [
+      {
+        <span class="k">"id"</span>: <span class="s">"WF-S011"</span>,
+        <span class="k">"category"</span>: <span class="s">"scene"</span>,
+        <span class="k">"name"</span>: <span class="s">"夏日海边沙滩"</span>,
+        <span class="k">"description"</span>: <span class="s">"阳光、沙滩与海浪，适合夏日度假风格拍摄。"</span>,
+        <span class="k">"tags"</span>: <span class="s">"海边 沙滩"</span>,
+        <span class="k">"scope"</span>: <span class="s">"mine"</span>,
+        <span class="k">"dims"</span>: { <span class="s">"空间类型"</span>: [<span class="s">"沙滩"</span>], <span class="s">"天气"</span>: [<span class="s">"日落"</span>] },
+        <span class="k">"image"</span>: <span class="s">"/static/assets/xxxx.png"</span>,
+        <span class="k">"created_at"</span>: <span class="s">"2026-09-15 10:30:00"</span>
+      }
+    ],
+    <span class="k">"total"</span>: 8,
+    <span class="k">"stats"</span>: { <span class="s">"brand"</span>: 5, <span class="s">"reference"</span>: 27, <span class="s">"model"</span>: 12, <span class="s">"outfit"</span>: 8, <span class="s">"scene"</span>: 8 }
+  }
+}</pre>
+  </div>
+
+  <!-- POST 创建 -->
+  <div class="card">
+    <div class="row"><span class="method m-post">POST</span><span class="path">/api/assets</span></div>
+    <div class="desc">创建资产（multipart/form-data），自动生成 ID（如 WF-S012）。</div>
+    <table>
+      <tr><th style="width:110px">参数</th><th style="width:90px">类型</th><th style="width:80px">必填</th><th>说明</th></tr>
+      <tr><td><span class="field">category</span></td><td>string</td><td class="req">是</td><td>分类 key（同查询接口）</td></tr>
+      <tr><td><span class="field">name</span></td><td>string</td><td class="req">是</td><td>资产名称</td></tr>
+      <tr><td><span class="field">description</span></td><td>string</td><td class="opt">否</td><td>一句话描述<span class="new">新增</span></td></tr>
+      <tr><td><span class="field">tags</span></td><td>string</td><td class="opt">否</td><td>标签，空格或顿号分隔</td></tr>
+      <tr><td><span class="field">scope</span></td><td>string</td><td class="opt">否</td><td>默认 <code>mine</code></td></tr>
+      <tr><td><span class="field">dims</span></td><td>string</td><td class="opt">否</td><td>JSON 字符串，维度值统一存为数组。如 <code>{"空间类型":["摄影棚"],"天气":["晴天"]}</code></td></tr>
+      <tr><td><span class="field">image</span></td><td>file</td><td class="opt">否</td><td>图片文件（jpg/jpeg/png/gif/webp/bmp），保存到 <code>/static/assets/</code></td></tr>
+      <tr><td><span class="field">image_url</span></td><td>string</td><td class="opt">否</td><td>图片 URL（http/https 或 /static 开头），与 image 二选一</td></tr>
+    </table>
+    <div>返回：<code>{"code":0,"data":{资产对象}}</code></div>
+  </div>
+
+  <!-- PUT 更新 -->
+  <div class="card">
+    <div class="row"><span class="method m-put">PUT</span><span class="path">/api/assets/{asset_id}</span></div>
+    <div class="desc">更新资产（multipart/form-data）。<b>支持修改分类</b>；上传新图片时自动删除旧图；不传 image/image_url 时保留原图。前端「编辑资产」页即调用此接口。</div>
+    <table>
+      <tr><th style="width:130px">参数</th><th style="width:90px">类型</th><th style="width:80px">必填</th><th>说明</th></tr>
+      <tr><td><span class="field">asset_id</span></td><td>string</td><td class="req">是</td><td>路径参数，资产 ID（如 WF-S011）</td></tr>
+      <tr><td><span class="field">category</span></td><td>string</td><td class="opt">否</td><td>分类 key，传入则更新分类（校验在 5 类内）<span class="new">新增</span></td></tr>
+      <tr><td><span class="field">name</span></td><td>string</td><td class="req">是</td><td>资产名称</td></tr>
+      <tr><td><span class="field">description</span></td><td>string</td><td class="opt">否</td><td>一句话描述<span class="new">新增</span></td></tr>
+      <tr><td><span class="field">tags</span></td><td>string</td><td class="opt">否</td><td>标签</td></tr>
+      <tr><td><span class="field">scope</span></td><td>string</td><td class="opt">否</td><td>来源（不传默认 mine，建议编辑时带上原值）</td></tr>
+      <tr><td><span class="field">dims</span></td><td>string</td><td class="opt">否</td><td>JSON 维度（多值数组）</td></tr>
+      <tr><td><span class="field">image</span></td><td>file</td><td class="opt">否</td><td>不传则保留原图</td></tr>
+      <tr><td><span class="field">image_url</span></td><td>string</td><td class="opt">否</td><td>不传则保留原图</td></tr>
+    </table>
+    <div>错误：资产不存在 → HTTP 404 <code>{"detail":"资产不存在: xxx"}</code>；分类非法 → HTTP 400 <code>{"detail":"未知分类: xxx"}</code></div>
+  </div>
+
+  <!-- DELETE -->
+  <div class="card">
+    <div class="row"><span class="method m-del">DELETE</span><span class="path">/api/assets/{asset_id}</span></div>
+    <div class="desc">删除资产，并清理本地图片文件。</div>
+    <table>
+      <tr><th style="width:130px">参数</th><th style="width:90px">类型</th><th style="width:80px">必填</th><th>说明</th></tr>
+      <tr><td><span class="field">asset_id</span></td><td>string</td><td class="req">是</td><td>资产 ID</td></tr>
+    </table>
+    <div>返回：<code>{"code":0,"data":{"deleted":"WF-S011"}}</code></div>
+  </div>
+
+  <h2>二、场景 AI 提取（/api/scene）</h2>
+
+  <!-- POST ai-extract -->
+  <div class="card">
+    <div class="row"><span class="method m-post">POST</span><span class="path">/api/scene/ai-extract</span></div>
+    <div class="desc">上传原图，提交 AI 后台生成场景图。<b>接口秒级返回任务 ID</b>，AI 在线程中处理（约 30~60 秒），处理结果写入 <code>static/scene_ai/</code>，前端轮询状态接口获取结果。</div>
+    <table>
+      <tr><th style="width:110px">参数</th><th style="width:90px">类型</th><th style="width:80px">必填</th><th>说明</th></tr>
+      <tr><td><span class="field">image</span></td><td>file</td><td class="req">是</td><td>原图（≤15MB）</td></tr>
+      <tr><td><span class="field">prompt</span></td><td>string</td><td class="opt">否</td><td>生成指令，默认："提取这张图片中的场景部分，生成场景图片"</td></tr>
+    </table>
+    <div>返回示例：</div>
+<pre>{
+  <span class="k">"code"</span>: 0,
+  <span class="k">"data"</span>: {
+    <span class="k">"task_id"</span>: <span class="s">"1789453922896_226e97"</span>,
+    <span class="k">"orig_url"</span>: <span class="s">"/static/scene_ai/orig_1789453922896_226e97.png"</span>,
+    <span class="k">"status"</span>: <span class="s">"processing"</span>
+  }
+}</pre>
+    <div class="note">模型自动降级链：<b>mai-image-2.5 → gpt-image-2.5-flare → gpt-image-2</b>，任一成功即返回；408/429/5xx 自动重试 1 次，超时 240 秒。gpt 系对含人物图可能被安全系统拒绝，此时自动切换后续模型。生成过程中同步用 gemini-3.7-flash 识别图片 5 维场景标签（空间类型/地域环境/季节/天气/背景风格），随 <code>dims</code> 返回。</div>
+  </div>
+
+  <!-- GET ai-status -->
+  <div class="card">
+    <div class="row"><span class="method m-get">GET</span><span class="path">/api/scene/ai-status?task_id=xxx</span></div>
+    <div class="desc">查询 AI 任务状态。前端建议每 3 秒轮询，直到 <code>done</code> 或 <code>failed</code>。任务完成后返回场景图地址、识别到的 5 维标签与 Tokens 消耗。</div>
+    <table>
+      <tr><th style="width:110px">参数</th><th style="width:90px">类型</th><th style="width:80px">必填</th><th>说明</th></tr>
+      <tr><td><span class="field">task_id</span></td><td>string</td><td class="req">是</td><td>提交接口返回的任务 ID</td></tr>
+    </table>
+    <div>返回示例（done）：</div>
+<pre>{
+  <span class="k">"code"</span>: 0,
+  <span class="k">"data"</span>: {
+    <span class="k">"task_id"</span>: <span class="s">"1789453922896_226e97"</span>,
+    <span class="k">"status"</span>: <span class="s">"done"</span>,
+    <span class="k">"orig_url"</span>: <span class="s">"/static/scene_ai/orig_xxx.png"</span>,
+    <span class="k">"scene_url"</span>: <span class="s">"/static/scene_ai/scene_xxx.png"</span>,
+    <span class="k">"model"</span>: <span class="s">"mai-image-2.5"</span>,
+    <span class="k">"dims"</span>: { <span class="s">"空间类型"</span>: [<span class="s">"摄影棚"</span>], <span class="s">"背景风格"</span>: [<span class="s">"极简"</span>] },
+    <span class="k">"usage"</span>: { <span class="s">"input_tokens"</span>: 873, <span class="s">"output_tokens"</span>: 1017, <span class="s">"total_tokens"</span>: 1890 },
+    <span class="k">"error"</span>: <span class="s">""</span>
+  }
+}</pre>
+    <div>返回示例（failed）：</div>
+<pre>{
+  <span class="k">"code"</span>: 0,
+  <span class="k">"data"</span>: {
+    <span class="k">"status"</span>: <span class="s">"failed"</span>,
+    <span class="k">"error"</span>: <span class="s">"gpt-image-2: HTTP 400 {...}; mai-image-2.5: HTTP 408 timeout"</span>
+    <span class="k">// 其他字段同上；error 汇总各模型失败原因</span>
+  }
+}</pre>
+  </div>
+
+  <h2>三、公共字段说明</h2>
+  <div class="card">
+    <table>
+      <tr><th style="width:130px">字段</th><th style="width:90px">类型</th><th>说明</th></tr>
+      <tr><td><span class="field">id</span></td><td>string</td><td>资产 ID，自动生成：品牌 WF-B001 / 参考 WF-R001 / 模特 WF-M001 / 穿搭 WF-O001 / 场景 WF-S001 起</td></tr>
+      <tr><td><span class="field">category</span></td><td>string</td><td>brand / reference / model / outfit / scene</td></tr>
+      <tr><td><span class="field">name</span></td><td>string</td><td>资产名称</td></tr>
+      <tr><td><span class="field">description</span></td><td>string</td><td>一句话描述<span class="new">新增</span>，编辑页「一句话描述」字段</td></tr>
+      <tr><td><span class="field">tags</span></td><td>string</td><td>标签文本</td></tr>
+      <tr><td><span class="field">scope</span></td><td>string</td><td>official（官方）/ mine（我的）</td></tr>
+      <tr><td><span class="field">dims</span></td><td>object</td><td>维度字典，值为数组（多选）。如 <code>{"空间类型":["卧室","厨房"],"季节":["夏"]}</code>。场景库维度：空间类型 / 地域环境 / 季节 / 天气 / 背景风格</td></tr>
+      <tr><td><span class="field">image</span></td><td>string</td><td>图片地址（/static/assets/ 或外链）；无图资产该字段为空字符串</td></tr>
+      <tr><td><span class="field">created_at</span></td><td>string</td><td>创建时间 yyyy-MM-dd HH:mm:ss</td></tr>
+      <tr><td><span class="field">status</span></td><td>string</td><td>AI 任务状态：processing / done / failed</td></tr>
+      <tr><td><span class="field">scene_url</span></td><td>string</td><td>AI 生成的场景图地址（仅 AI 接口）</td></tr>
+      <tr><td><span class="field">usage</span></td><td>object</td><td>AI Tokens 消耗明细（input/output/total）</td></tr>
+    </table>
+  </div>
+
+  <h2>四、前端页面</h2>
+  <div class="card">
+    <table>
+      <tr><th style="width:200px">页面</th><th>说明</th></tr>
+      <tr><td><code>static/资产库-场景库.html</code></td><td>资产库主页：5 分类 Tab、维度多选筛选（选完点搜索才查询）、卡片列表、创建场景、编辑/删除</td></tr>
+      <tr><td><code>static/编辑资产.html</code><span class="new">新增</span></td><td>编辑表单：素材名称 / 分类（可改）/ 一句话描述 / 标签 / 素材图片（上传或更换），保存调 PUT /api/assets/{id}，通过 postMessage 通知父页刷新</td></tr>
+      <tr><td><code>static/创建场景.html</code></td><td>选图 → 压缩 → 提交 AI 任务 → 跳转确认入库页</td></tr>
+      <tr><td><code>static/创建场景-确认入库.html</code></td><td>AI 处理进度轮询、5 维标签多选面板（AI 自动补选识别到的标签）、确认入库（POST /api/assets）</td></tr>
+    </table>
+  </div>
+
+  <div class="note">通用返回格式：<code>{"code":0,"data":…}</code>；<code>code=0</code> 成功，<code>code≠0</code> 失败（msg 含原因）。数据文件：<code>assets_data/library.json</code>；图片目录：<code>static/assets/</code>（资产图）、<code>static/scene_ai/</code>（AI 场景图，已 gitignore）。</div>
+</div>
+</body>
+</html>

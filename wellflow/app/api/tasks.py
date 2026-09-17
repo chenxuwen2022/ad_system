@@ -24,11 +24,14 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
+from wellflow.app.api.utils import ok, StandardResponse
+from wellflow.app.graph_persist import persist_phase, persist_interrupt, persist_error, persist_outputs
 from wellflow.app.models.task_models import TaskPhase
 from wellflow.app.repositories.task_repo import TaskRepo
 from wellflow.app.schemas.task_schemas import (
     TaskListResponse,
     TaskListItem,
+    TaskInfoResponse,
 )
 
 
@@ -78,11 +81,11 @@ def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
     interrupt_value = _extract_interrupt_value(chunk)
     if interrupt_value:
         print(f"[graph-interrupt] ✅ 命中 interrupt! node={interrupt_value.get('node')}", flush=True)
-        phase = f"{interrupt_value.get('node')}_confirm"
+        phase = interrupt_value.get("phase") or f"{interrupt_value.get('node')}_confirm"
         _eb(task_id, "phase", {"phase": phase})
         _eb(task_id, "interrupt", {**interrupt_value, "_phase": phase})
         asyncio.get_event_loop().run_in_executor(
-            None, _persist_interrupt, task_id, interrupt_value, phase
+            None, persist_interrupt, task_id, interrupt_value, phase
         )
         return
 
@@ -100,91 +103,27 @@ def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
                 continue
             _eb(task_id, "phase", {"phase": phase})
             if phase == "done":
+                n4_raw = node_out.get("node4") or {}
                 n3_raw = node_out.get("node3") or {}
-                if n3_raw.get("reference_images"):
+                if n4_raw.get("reference_images"):
                     from wellflow.app.utils.image_store import paths_to_data_uris
-                    n3_raw = {**n3_raw, "reference_images": paths_to_data_uris(n3_raw["reference_images"])}
+                    n4_raw = {**n4_raw, "reference_images": paths_to_data_uris(n4_raw["reference_images"])}
                 _eb(task_id, "done", {
                     "phase": "done",
                     "node1": node_out.get("node1"),
                     "node2": node_out.get("node2"),
                     "node3": n3_raw,
+                    "node4": n4_raw,
                     "cost": node_out.get("cost", {}),
                     "progress": node_out.get("progress", {}),
                 })
                 # 确认结束：生图成品落盘 + 写 task_image 表（按 task_id 可查）
                 asyncio.get_event_loop().run_in_executor(
-                    None, _persist_outputs, task_id, n3_raw
+                    None, persist_outputs, task_id, n4_raw
                 )
             asyncio.get_event_loop().run_in_executor(
-                None, _persist_phase, task_id, phase, node_name
+                None, persist_phase, task_id, phase, node_name
             )
-
-
-def _persist_phase(task_id: str, phase: str, node_name: str) -> None:
-    try:
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            repo.update_phase(task_id, phase)
-            repo.add_event(task_id, "phase_change", phase=phase, payload_json={"node": node_name})
-    except Exception:
-        pass
-
-
-def _persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str) -> None:
-    try:
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            repo.save_interrupt(task_id, interrupt_value)
-            repo.update_phase(task_id, phase)
-            repo.add_event(
-                task_id, "graph_interrupt",
-                phase=phase,
-                payload_json={"node": interrupt_value.get("node")},
-            )
-    except Exception as e:
-        print(f"[graph] interrupt persist error: {e}", flush=True)
-
-
-def _persist_error(task_id: str, code: str, message: str, source: str) -> None:
-    try:
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            repo.add_error(task_id, code, "unrecoverable", message, source=source)
-            repo.update_phase(task_id, TaskPhase.FAILED.value)
-    except Exception:
-        pass
-
-
-def _persist_outputs(task_id: str, node3: dict[str, Any]) -> None:
-    """确认结束（done）后：把 node3.outputs 的生图成品落盘 + 写 task_image 表。"""
-    outputs = node3.get("outputs") or []
-    if not outputs:
-        print(f"[graph] task={task_id} done 但 outputs 为空，跳过成品落库", flush=True)
-        return
-
-    from wellflow.app.utils.image_store import save_output_image
-
-    images: list[dict[str, Any]] = []
-    for o in outputs:
-        wid = o.get("work_item_id") or f"shot-{int(o.get('prompt_index', 0)) + 1:02d}"
-        storage_uri = save_output_image(task_id, wid, o.get("image_url") or "")
-        images.append({
-            "image_type": "output",
-            "storage_uri": storage_uri,
-            "shot_id": wid,
-            "prompt": o.get("prompt"),
-            "prompt_index": o.get("prompt_index"),
-            "variant_index": o.get("variant_index"),
-        })
-
-    try:
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            ids = repo.save_images(task_id, images)
-            print(f"[graph] task={task_id} 成品落库 {len(ids)} 张", flush=True)
-    except Exception as e:
-        print(f"[graph] output persist error: {e}", flush=True)
 
 
 def _storage_uri_url(storage_uri: str) -> str:
@@ -229,7 +168,7 @@ async def _start_graph(task_id: str, graph, config, initial_state=None, resume_v
         try:
             _eb(task_id, "error", {"phase": "failed", "message": str(exc)})
             asyncio.get_event_loop().run_in_executor(
-                None, _persist_error, task_id, "GRAPH_RUNTIME_ERROR", str(exc), "parent_graph"
+                None, persist_error, task_id, "GRAPH_RUNTIME_ERROR", str(exc), "parent_graph"
             )
         except Exception:
             pass
@@ -272,8 +211,12 @@ async def create_task(
     print(f"[create_task] 📁 图片落盘完成 ({time.time() - t0:.2f}s), paths={len(product_image_paths)}", flush=True)
 
     image_names = [f.filename for f in product_images]
+    # 生成简短 description 供前端历史列表展示
+    _desc = description.strip()[:30]
+    if not _desc:
+        _desc = " ".join(n.rsplit(".", 1)[0] for n in image_names[:2]) or "新商拍任务"
     request_json: dict[str, Any] = {
-        "description": description,
+        "description": _desc,
         "platform": platform,
         "image_type": image_type,
         "marketing_goal": marketing_goal,
@@ -305,7 +248,7 @@ async def create_task(
             "phase": TaskPhase.INPUT.value,
             "request": request_json,
             "brand_config": brand_cfg,
-            "node1": {}, "node2": {}, "node3": {},
+            "node1": {}, "node2": {}, "node3": {}, "node4": {},
             "selected_plan_ids": [],
             "progress": {},
             "cost": {},
@@ -419,8 +362,18 @@ def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
         return _sse("report_chunk", event_data)
     elif event_type == "report_chunk_done":
         return _sse("report_chunk_done", event_data)
-    elif event_type == "node3_image_done":
-        return _sse("node3_image_done", event_data)
+    elif event_type == "node4_image_done":
+        return _sse("node4_image_done", event_data)
+    elif event_type == "node4_image_failed":
+        return _sse("node4_image_failed", event_data)
+    elif event_type == "scheme_chunk":
+        return _sse("scheme_chunk", event_data)
+    elif event_type == "scheme_chunk_done":
+        return _sse("scheme_chunk_done", event_data)
+    elif event_type == "prompt_chunk":
+        return _sse("prompt_chunk", event_data)
+    elif event_type == "prompt_chunk_done":
+        return _sse("prompt_chunk_done", event_data)
     elif event_type == "done":
         return _sse("done", event_data)
     elif event_type == "error":
@@ -440,15 +393,23 @@ async def resume_task(
     request: Request,
     node: str = Form(...),
     confirmed_report: str = Form(default=""),
-    ratio: str = Form(default="9:16竖版"),
-    count: int = Form(default=10),
+    ratio: str = Form(default="9:16"),
+    scheme_count: int = Form(default=3),
     action: str = Form(default="confirm"),
     image_model: str | None = Form(default=None),
-    images_per_prompt: int = Form(default=0),
-    selected_prompt_indices: str | None = Form(default=None),  # 逗号分隔的索引串，如 "0,2,5"
     model_images: list[UploadFile] = File(default_factory=list),
+    # C2（选方案）：selected_scheme_indices "0,2" 或 JSON body
+    selected_scheme_indices: str | None = Form(default=None),
+    # C3（确认 prompt）：JSON body，后端不拆 Form
+    # C4（重做/确认）：decision "redo" / "confirm"，redo_target 可选
+    redo_target: str | None = Form(default=None),
+    # 🔑 灵活 JSON body：前端可直接传完整 resume_values dict
+    # 优先级最高，覆盖所有 Form 字段
+    resume_json: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
+    import json as _json
+
     repo = TaskRepo(db)
     task = repo.get(task_id)
     if not task:
@@ -459,38 +420,80 @@ async def resume_task(
     if not current_node or current_node != node:
         raise HTTPException(409, f"当前暂停在 node={current_node}，不能 resume node={node}")
 
-    # model_images 落盘
+    # model_images 落盘（C1 专用）
     model_image_paths: list[str] = []
     if model_images:
         raw_files = [(f.filename or "model", await f.read(), f.content_type) for f in model_images]
         from wellflow.app.utils.image_store import save_upload
         model_image_paths = save_upload(task_id, raw_files, prefix="m")
 
-    resume_values: dict[str, Any] = {"node": node}
-    if node == "c1":
-        resume_values["confirmed_report"] = confirmed_report
-        resume_values["model_images"] = model_image_paths
-        resume_values["ratio"] = ratio
-        resume_values["count"] = count
-    elif node == "c2":
-        if image_model:
-            resume_values["image_model"] = image_model
-        resume_values["ratio"] = ratio  # C2 也允许改 ratio
-        if images_per_prompt > 0:
-            resume_values["images_per_prompt"] = images_per_prompt
-        # 🔑 解析 selected_prompt_indices："0,2,5" → [0, 2, 5]
-        if selected_prompt_indices is not None:
-            try:
-                indices = [int(x) for x in selected_prompt_indices.split(",") if x.strip()]
-                resume_values["selected_prompt_indices"] = indices
-                print(f"[resume] C2 收到 selected_prompt_indices={indices}", flush=True)
-            except ValueError:
-                print(f"[resume] ⚠️ selected_prompt_indices 解析失败: {selected_prompt_indices}", flush=True)
-    elif node == "c3":
-        resume_values["action"] = action
-        if image_model:
-            resume_values["image_model"] = image_model
-        resume_values["ratio"] = ratio  # C3 重做时也允许改 ratio
+    # ---- 优先用 resume_json（最灵活的通路） ----
+    if resume_json:
+        try:
+            resume_values = _json.loads(resume_json)
+            if not isinstance(resume_values, dict):
+                raise ValueError("resume_json 必须是 JSON 对象")
+        except Exception as exc:
+            raise HTTPException(400, f"resume_json 解析失败: {exc}")
+        # 注入通用字段（Form 参数仍可覆盖 json）
+        resume_values.setdefault("node", node)
+        if model_image_paths and "model_images" not in resume_values:
+            resume_values["model_images"] = model_image_paths
+    else:
+        # ---- 按 node 类型组装 Form 参数 ----
+        resume_values: dict[str, Any] = {"node": node}
+        if node == "c1":
+            # C1：报告确认，也支持 redo 模式
+            if action and action != "confirm":
+                resume_values["decision"] = action  # "redo"
+                resume_values["redo_target"] = redo_target or "node1"
+                print(f"[resume] C1 redo → {redo_target or 'node1'}", flush=True)
+            else:
+                # C1 阶段无需传模特参考图，用户直接确认报告即可继续
+                resume_values["confirmed_report"] = confirmed_report
+                if model_image_paths:
+                    resume_values["model_images"] = model_image_paths
+                resume_values["ratio"] = ratio
+                if image_model:
+                    resume_values["image_model"] = image_model
+        elif node == "c2":
+            # C2：选方案，selected_scheme_indices
+            # 同时支持 redo 模式：action="redo" + redo_target="node1"/"node2"
+            if action and action != "confirm":
+                resume_values["decision"] = action  # "redo"
+                if redo_target:
+                    resume_values["redo_target"] = redo_target
+                print(f"[resume] C2 redo → {redo_target}", flush=True)
+            else:
+                if image_model:
+                    resume_values["image_model"] = image_model
+                if ratio:
+                    resume_values["ratio"] = ratio
+                if selected_scheme_indices:
+                    try:
+                        indices = [int(x) for x in selected_scheme_indices.split(",") if x.strip()]
+                        resume_values["selected_scheme_indices"] = indices
+                        print(f"[resume] C2 收到 selected_scheme_indices={indices}", flush=True)
+                    except ValueError:
+                        print(f"[resume] ⚠️ selected_scheme_indices 解析失败: {selected_scheme_indices}", flush=True)
+        elif node == "c3":
+            # C3：确认提示词 — Form 不够用，前端应传 resume_json
+            # 同时支持 redo 模式：action="redo" + redo_target="node1"/"node2"/"node3"/"node4"
+            if action and action != "confirm":
+                resume_values["decision"] = action  # "redo"
+                if redo_target:
+                    resume_values["redo_target"] = redo_target
+                print(f"[resume] C3 redo → {redo_target}", flush=True)
+            else:
+                if image_model:
+                    resume_values["image_model"] = image_model
+                if ratio:
+                    resume_values["ratio"] = ratio
+        elif node == "c4":
+            # C4：重做/确认 — decision "confirm"/"redo" + redo_target
+            resume_values["decision"] = action  # "confirm" / "redo"
+            if redo_target:
+                resume_values["redo_target"] = redo_target
 
     # fire-and-forget DB: 清 interrupt + 写事件
     def _sync_prepare():
@@ -570,7 +573,7 @@ async def resume_task(
 # ===========================================================================
 
 
-@router.get("", response_model=TaskListResponse, summary="列出任务（分页）")
+@router.get("", response_model=StandardResponse[TaskListResponse], summary="列出任务（分页）")
 def list_tasks(
     page: int = 1,
     page_size: int = 20,
@@ -599,12 +602,12 @@ def list_tasks(
             updated_at=t.updated_at.isoformat(),
         ))
 
-    return TaskListResponse(
+    return ok(TaskListResponse(
         items=list_items,
         total=total,
         page=page,
         page_size=page_size,
-    )
+    ))
 
 
 async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
@@ -622,7 +625,7 @@ async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
         return None
 
 
-@router.get("/{task_id}", summary="查询任务状态")
+@router.get("/{task_id}", response_model=StandardResponse[TaskInfoResponse], summary="查询任务状态")
 async def get_task(task_id: str, db: Session = Depends(get_db)):
     """查询单任务状态（从 DB + LangGraph checkpoint）。保留给旧版客户端用。"""
     from wellflow.app.schemas.task_schemas import TaskInfoResponse
@@ -654,7 +657,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             item["variant_index"] = img.variant_index
             output_images.append(item)
 
-    return TaskInfoResponse(
+    return ok(TaskInfoResponse(
         task_id=task.task_id,
         phase=task.phase,
         request=task.request_json or {},
@@ -669,7 +672,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         output_images=output_images,
         created_at=task.created_at.isoformat(),
         updated_at=task.updated_at.isoformat(),
-    )
+    ))
 
 
 # ===========================================================================
@@ -677,7 +680,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 # ===========================================================================
 
 
-@router.delete("/{task_id}", summary="删除任务及所有关联数据")
+@router.delete("/{task_id}", response_model=StandardResponse[dict], summary="删除任务及所有关联数据")
 async def delete_task(task_id: str):
     """删除指定任务的全部数据：DB 所有子表记录 + 主表 + uploads/{task_id}/ 磁盘文件 + LangGraph checkpoint。
 
@@ -723,4 +726,4 @@ async def delete_task(task_id: str):
             print(f"[delete_task] ⚠️ checkpoint 清理失败（不影响主流程）: {e}", flush=True)
 
     print(f"[delete_task] 🗑️ 任务已彻底删除 task_id={task_id}", flush=True)
-    return {"task_id": task_id, "deleted": True}
+    return ok({"task_id": task_id, "deleted": True})

@@ -379,6 +379,65 @@ def _compress_single(raw: bytes, threshold_bytes: int) -> tuple[bytes, int, bool
         return best_enc, best_q, False
 
 
+def bytes_items_to_data_uris(
+    items: list[tuple[bytes, str]],
+) -> list[str]:
+    """直接从 (raw_bytes, mime_type) 列表转 data URI，带逐张压缩决策。
+
+    跳过文件落盘环节 —— 交互端点（optimize-prompt / generate / fine-tune / auto-tag）
+    读 multipart 的文件字节后直接喂 LLM。
+
+    规则同 paths_to_data_uris：最多取前 image_max_per_call 张，单张 ≤ threshold 原样，
+    > threshold 走 PIL 压缩。
+
+    Args:
+        items: [(raw_bytes, mime_type), ...]
+
+    Returns:
+        data URI 列表
+    """
+    import base64 as _b64
+
+    constants = _image_constants()
+    MAX_IMAGES_PER_CALL = constants["MAX_IMAGES_PER_CALL"]
+    SINGLE_THRESHOLD_MB = constants["SINGLE_THRESHOLD_RAW_MB"]
+    threshold_bytes = int(SINGLE_THRESHOLD_MB * 1024 * 1024)
+
+    result: list[str] = []
+    pil_available = True
+    try:
+        __import__("PIL.Image")
+    except ImportError:
+        pil_available = False
+
+    for raw, mime in items[:MAX_IMAGES_PER_CALL]:
+        mime = mime or "image/jpeg"
+        if len(raw) <= threshold_bytes:
+            # 小图原样
+            b64 = _b64.b64encode(raw).decode("ascii")
+            result.append(f"data:{mime};base64,{b64}")
+            continue
+
+        if not pil_available:
+            print(f"[image_store] ⚠️ 未安装 Pillow，无法压缩内存图片 ({len(raw)/1024/1024:.1f}MB)，原样 base64", flush=True)
+            b64 = _b64.b64encode(raw).decode("ascii")
+            result.append(f"data:{mime};base64,{b64}")
+            continue
+
+        enc, final_q, used_resize = _compress_single(raw, threshold_bytes)
+        compressed_count = 1
+        resize_tag = " [resize]" if used_resize else ""
+        print(
+            f"[image_store] 🗜️ 内存图片: {len(raw)/1024/1024:.1f}MB → {len(enc)/1024:.0f}KB "
+            f"(q={final_q}){resize_tag}",
+            flush=True,
+        )
+        b64 = _b64.b64encode(enc).decode("ascii")
+        result.append(f"data:image/jpeg;base64,{b64}")
+
+    return result
+
+
 def is_path(value: str) -> bool:
     """判断一个字符串是文件路径（以 'uploads/' 开头或文件存在）还是 data URI。"""
     if value.startswith("data:"):

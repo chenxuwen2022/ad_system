@@ -133,6 +133,7 @@ async def create_asset(
     category: str = Form(...),
     name: str = Form(...),
     tags: str = Form(""),
+    description: str = Form(""),
     scope: str = Form("mine"),
     dims: str = Form("{}"),
     image: UploadFile | None = File(None),
@@ -145,7 +146,7 @@ async def create_asset(
     img_url = (await _save_image(image)) if image else _valid_img_url(image_url)
     item = {
         "id": asset_id, "category": category, "name": name.strip(),
-        "tags": tags.strip(), "scope": scope,
+        "tags": tags.strip(), "description": description.strip(), "scope": scope,
         "dims": _parse_dims(dims),
         "image": img_url,
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -158,8 +159,10 @@ async def create_asset(
 @router.put("/{asset_id}")
 async def update_asset(
     asset_id: str,
+    category: str = Form(None),
     name: str = Form(...),
     tags: str = Form(""),
+    description: str = Form(""),
     scope: str = Form("mine"),
     dims: str = Form("{}"),
     image: UploadFile | None = File(None),
@@ -174,8 +177,13 @@ async def update_asset(
         target["image"] = await _save_image(image)
     elif image_url:
         target["image"] = _valid_img_url(image_url)
+    if category:
+        if category not in CATEGORIES:
+            raise HTTPException(400, f"未知分类: {category}")
+        target["category"] = category
     target["name"] = name.strip()
     target["tags"] = tags.strip()
+    target["description"] = description.strip()
     target["scope"] = scope
     target["dims"] = _parse_dims(dims)
     _save(items)

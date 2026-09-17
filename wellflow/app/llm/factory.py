@@ -12,12 +12,23 @@ from wellflow.app.config import settings
 from wellflow.app.llm.base import BaseLLMClient
 
 
-ModelRole = Literal["vlm", "image"]
+ModelRole = Literal["vlm", "image", "text"]
 
 
-def _resolve_model(role: ModelRole) -> str:
-    """根据 role 拿到实际模型名，值来自 config.py Settings.llm_model_xxx（含默认值）。"""
-    return getattr(settings, f"llm_model_{role}")
+def _resolve_model(role: ModelRole, *, node_name: str | None = None) -> str:
+    """根据 role + 可选 node_name 拿到模型名。
+
+    优先级：
+      1. node_name → settings.llm_model_{node_name}  （Node 级别，最精确）
+      2. role      → settings.llm_model_{role}       （Role 级别兜底）
+      3. "qwen-turbo"                                  （极端兜底）
+    """
+    if node_name:
+        node_model = getattr(settings, f"llm_model_{node_name}", None)
+        if node_model:
+            print(f"[factory] 🎯 Node 级别模型: llm_model_{node_name} = {node_model}", flush=True)
+            return node_model
+    return getattr(settings, f"llm_model_{role}", "qwen-turbo")
 
 
 def _strip_provider(model: str) -> str:
@@ -33,46 +44,51 @@ def _strip_provider(model: str) -> str:
     return model
 
 
-def get_llm_client(role: ModelRole, *, model_override: str | None = None) -> BaseLLMClient:
+def get_llm_client(
+    role: ModelRole,
+    *,
+    model_override: str | None = None,
+    node_name: str | None = None,
+) -> BaseLLMClient:
     """拿到指定角色的 LLM 客户端。
 
     路由规则（统一走 new-api 中转网关）：
-    ┌─────────┬───────────────────────────────────────────────────┐
-    │ vlm     │ OpenAI 协议 → OfoxGateway（/v1/chat/completions）│
-    │ image   │ multipart → LaozhangGateway（/v1/images/edits） │
-    └─────────┴───────────────────────────────────────────────────┘
+    ┌─────────┬──────────────────────────────────────────────────────────────────────┐
+    │ vlm     │ OfoxGateway（/v1/chat/completions + chat_with_images）               │
+    │ image   │ OfoxGateway（继承 BaseLLMClient.generate_image 完整分流逻辑）       │
+    │         │   GPT 图生图 → _generate_image_via_edits multipart                 │
+    │         │   GPT 文生图 → /v1/responses + image_generation tool               │
+    │         │   非 GPT     → _generate_image_via_generations JSON                │
+    └─────────┴──────────────────────────────────────────────────────────────────────┘
 
     Args:
-        role: 角色 —— "vlm" 多模态识别 / "image" 图像生成。
+        role: 角色 —— "vlm" 多模态识别 / "image" 图像生成 / "text" 纯文本。
         model_override: 临时覆盖模型名——Node 3 从 state 读用户在前端选的 image_model 时用。
+        node_name: Node 名称（如 "node1" / "node2" / "node3"），优先从 config 读取
+            llm_model_{node_name} 常量。指定后会覆盖 role 级别的默认模型。
     """
     if not settings.newapi_api_key:
         raise RuntimeError("newapi_api_key 未配置，请在 .env 中设置 NEWAPI_API_KEY")
 
-    model = _strip_provider(model_override or _resolve_model(role))
+    model = _strip_provider(model_override or _resolve_model(role, node_name=node_name))
     newapi_base = settings.newapi_base_url
     newapi_key = settings.newapi_api_key
 
-    if role == "image":
-        from wellflow.app.llm.laozhang_gateway import LaozhangGateway
-
-        print(f"[factory] → image → LaozhangGateway (new-api) model={model}", flush=True)
-        return LaozhangGateway(
-            base_url=newapi_base,
-            api_key=newapi_key,
-            model=model,
-            timeout=settings.image_timeout,
-            proxy_url=None,  # new-api 在局域网，不走代理
-        )
-
-    # vlm / 其他 role
+    # image 和 vlm 统一走 OfoxGateway（继承 BaseLLMClient 的 generate_image 完整分流）
+    # ── generate_image 自动分流：
+    #   - GPT 图生图（有 refs）    → _generate_image_via_edits  multipart
+    #   - GPT 文生图（无 refs）    → /v1/responses + image_generation tool
+    #   - 非 GPT 模型              → _generate_image_via_generations JSON + reference_images
+    # 以前固定 LaozhangGateway 重写 generate_image 只走 edits multipart，
+    # 纯文生图场景（无 refs）会 POST /images/edits 但没有 image 文件字段 → gpt-image-2 报错
     from wellflow.app.llm.ofox_gateway import OfoxGateway
 
-    print(f"[factory] → vlm → OfoxGateway (new-api) model={model}", flush=True)
+    is_image_role = (role == "image")
+    print(f"[factory] → {role} → OfoxGateway (new-api) model={model}", flush=True)
     return OfoxGateway(
         model=model,
         base_url=newapi_base,
         api_key=newapi_key,
-        timeout=settings.llm_timeout,
+        timeout=settings.image_timeout if is_image_role else settings.llm_timeout,
         proxy_url=None,  # new-api 在局域网，不走代理
     )

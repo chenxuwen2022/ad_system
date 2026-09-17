@@ -35,7 +35,7 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 .dim-wrap { position: relative; }
 .dimbtn { padding: 5px 12px; border-radius: 999px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; border: 1px solid #30363d; max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dimbtn .arrow { color: #8b949e; margin-left: 4px; }
-.dimbtn.sel { background: #b8e27a; color: #151b0d; border-color: #b8e27a; font-weight: 600; }
+.dimbtn.sel { background: #ffd83d; color: #151b0d; border-color: #ffd83d; font-weight: 600; }
 .dim-panel .panel-ops { display: flex; justify-content: space-between; align-items: center; margin-top: 8px; padding-top: 8px; border-top: 1px solid #21262d; font-size: 12px; color: #8b949e; }
 .dim-panel .panel-ops .reset { cursor: pointer; padding: 4px 10px; border-radius: 6px; background: #21262d; color: #c9d1d9; }
 .dim-panel .panel-ops .reset:hover { background: #30363d; }
@@ -45,9 +45,9 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 .dim-clear:hover { color: #ffd83d; }
 .dim-panel { position: absolute; top: 32px; left: 0; z-index: 20; background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 10px; min-width: 200px; box-shadow: 0 8px 24px rgba(0,0,0,.5); display: none; }
 .dim-panel.open { display: block; }
-.dim-panel .vals { display: flex; flex-wrap: wrap; gap: 6px; }
+.dim-panel .vals { display: grid; grid-template-columns: repeat(3, minmax(88px, auto)); gap: 6px; }
 .dim-panel .val { padding: 4px 10px; border-radius: 6px; font-size: 12px; background: #21262d; color: #c9d1d9; cursor: pointer; }
-.dim-panel .val.on { background: #2b5bff; color: #fff; }
+.dim-panel .val.on { background: #ffd83d; color: #151b0d; font-weight: 600; }
 .dim-panel .reset { margin-top: 8px; font-size: 11px; color: #8b949e; cursor: pointer; text-align: right; }
 
 .resultbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
@@ -223,7 +223,7 @@ h1 { font-size: 22px; font-weight: 700; margin: 6px 0 4px; }
 const API = '/api/assets';
 const CATS = { brand:'品牌资产库', reference:'参考素材', model:'模特库', outfit:'穿搭库', scene:'场景库' };
 const DIM_DEFS = {
-  scene: { '空间类型':['纯色棚拍','摄影棚','客厅','卧室','厨房','卫生间','办公室','商场','街道','公园','体育场','健身房','山林','雪山','沙滩','营地','岩壁'], '地域环境':['城市','城市街头','郊外','森林','山地','雪地','湖泊','海边','沙漠'], '季节':['春','夏','秋','冬'], '天气':['晴天','阴天','雨天','雪天','雾','日落','夜晚'], '背景风格':['极简','专业','高级','自然','温馨','生活化','户外','科技','潮流','轻奢','都市'] },
+  scene: { '空间类型':['纯色棚拍','摄影棚','客厅','卧室','厨房','卫生间','办公室','商场','街道','公园','体育场','健身房','山林','雪山','沙滩','营地','岩壁'], '地域环境':['城市','城市街头','郊外','森林','山地','雪地','湖泊','海边','沙漠'], '季节':['春','夏','秋','冬'], '天气':['阴天','雨天','雪天','雾','日落'], '背景风格':['极简','高级','自然','温馨','生活化','户外','专业','科技','潮流','轻奢','都市'] },
   model: { '性别':['女','男','儿童','老人'], '风格':['休闲','职业','时尚','甜美','运动'], '年龄':['18-25','25-35','35-45','45+'] },
   outfit: { '风格':['休闲','职业','时尚','甜美','运动','复古'], '季节':['春','夏','秋','冬','不限'], '适用场景':['通勤','约会','旅行','居家','运动'] },
   reference: { '类型':['摄影','插画','海报','视频','文案'], '风格':['极简','自然','复古','科技','国潮'] },
@@ -254,26 +254,29 @@ function renderTabs(stats){
   $('tabs').innerHTML = Object.entries(CATS).map(([k,v])=>
     `<div class="tab ${k===state.cat?'on':''}" data-cat="${k}">${v}<span class="cnt">${stats[k]||0}</span></div>`).join('');
   $('headBadge').textContent = `${stats[state.cat]||0} 个${CAT_NAME[state.cat]}素材`;
-  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ state.cat=t.dataset.cat; state.dims={}; $('qInput').value=''; load(); });
+  document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{ state.cat=t.dataset.cat; state.dims={}; state.openDim=null; $('qInput').value=''; load(); });
 }
 
 /* ── 渲染维度筛选栏 ── */
 function renderDims(){
   const defs = DIM_DEFS[state.cat] || {};
   const keys = Object.keys(defs);
+  const openDim = state.openDim || null;
   $('dimsBar').innerHTML = keys.map(k=>{
     const arr = state.dims[k] || [];
     const txt = arr.length ? arr.map(v=>`${k}/${v}`).join('、') : k;
     return `<div class="dim-wrap"><button class="dimbtn ${arr.length?'sel':''}" data-dim="${esc(k)}" title="${esc(txt)}">${esc(txt)}<span class="arrow">▾</span></button>
-      <div class="dim-panel" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${arr.includes(x)?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div>
+      <div class="dim-panel ${k===openDim?'open':''}" data-panel="${esc(k)}"><div class="vals">${defs[k].map(x=>`<span class="val ${arr.includes(x)?'on':''}" data-val="${esc(x)}">${esc(x)}</span>`).join('')}</div>
       <div class="panel-ops"><span class="reset">清空本项</span><button class="done" type="button">完成</button></div></div></div>`;
   }).join('') + `<div class="dim-clear" id="dimClear">清空筛选</div>`;
   $('dimsBar').querySelectorAll('.dimbtn').forEach(b=>b.onclick=e=>{
     e.stopPropagation();
+    const k = b.dataset.dim;
     const p = b.parentElement.querySelector('.dim-panel');
     const wasOpen = p.classList.contains('open');
     document.querySelectorAll('.dim-panel').forEach(x=>x.classList.remove('open'));
-    if(!wasOpen) p.classList.add('open');
+    if(!wasOpen){ p.classList.add('open'); state.openDim = k; }
+    else state.openDim = null;
   });
   $('dimsBar').querySelectorAll('.dim-panel').forEach(p=>{
     p.addEventListener('click', e=>e.stopPropagation());
@@ -284,16 +287,41 @@ function renderDims(){
       const i = arr.indexOf(val);
       if(i>=0) arr.splice(i,1); else arr.push(val);
       if(!arr.length) delete state.dims[k];
-      load();
+      state.openDim = k;   // 保持本面板打开，支持连续多选
+      refreshDimUI();      // 只更新筛选栏显示，点"搜索"才查询
     });
-    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; load(); };
-    p.querySelector('.done').onclick=()=>{ p.classList.remove('open'); };
+    p.querySelector('.reset').onclick=()=>{ delete state.dims[ p.dataset.panel ]; state.openDim = p.dataset.panel; refreshDimUI(); };
+    p.querySelector('.done').onclick=()=>{ state.openDim = null; p.classList.remove('open'); };
   });
   const clear = $('dimClear');
-  if(clear) clear.onclick = ()=>{ state.dims={}; load(); };
-  document.addEventListener('click', ()=>document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open')));
+  if(clear) clear.onclick = ()=>{ state.dims={}; state.openDim=null; refreshDimUI(); };
+  document.addEventListener('click', e=>{
+    if(!e.target.closest('.dim-panel') && !e.target.closest('.dimbtn')){
+      document.querySelectorAll('.dim-panel.open').forEach(p=>p.classList.remove('open'));
+    }
+  });
 }
 
+/* ── 仅刷新筛选栏 UI（不查询列表，点"搜索"才查询）── */
+function refreshDimUI(){
+  document.querySelectorAll('.dim-wrap').forEach(w=>{
+    const k = w.querySelector('.dimbtn').dataset.dim;
+    const arr = state.dims[k] || [];
+    const txt = arr.length ? arr.map(v=>`${k}/${v}`).join('、') : k;
+    const btn = w.querySelector('.dimbtn');
+    btn.innerHTML = esc(txt) + '<span class="arrow"> ▾</span>';
+    btn.title = txt;
+    btn.classList.toggle('sel', !!arr.length);
+    w.querySelector('.dim-panel').querySelectorAll('.val').forEach(v=>{
+      v.classList.toggle('on', arr.includes(v.dataset.val));
+    });
+  });
+}
+
+function imgFailCard(elm){
+  const th = elm.closest('.thumb');
+  if(th){ const imgs = th.querySelectorAll('img'); imgs.forEach(i=>i.remove()); }
+}
 /* ── 渲染卡片 ── */
 function renderCard(it){
   const dimsTxt = Object.entries(it.dims||{}).filter(([k,v])=>Array.isArray(v)?v.length:v).map(([k,v])=>{
@@ -302,7 +330,7 @@ function renderCard(it){
   }).join(' · ');
   const tagsTxt = [it.tags, dimsTxt].filter(Boolean).join(' · ');
   const imgHtml = it.image
-    ? `<img src="${esc(it.image)}" alt="">`
+    ? `<img src="${esc(it.image)}" alt="" onerror="imgFailCard(this)">`
     : `<div class="grad" style="background:${hashGrad(it.id+it.name)}"></div>`;
   return `<div class="card">
     <div class="thumb">${imgHtml}<span class="id">ID · ${esc(it.id)}</span><span class="scope-tag">${it.scope==='official'?'官方':'我的'}</span></div>
@@ -329,7 +357,7 @@ async function load(){
     $('resultN').textContent = `${list.length} 个结果`;
     $('grid').innerHTML = list.length ? list.map(renderCard).join('')
       : '<div class="empty">没有匹配的资产，试试调整筛选或创建一个</div>';
-    document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openModal(b.dataset.edit));
+    document.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openEditModal(b.dataset.edit));
     document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>delAsset(b.dataset.del));
   }catch(e){ toast('加载失败: '+e.message, true); }
   $('loading').style.display = 'none';
@@ -459,6 +487,13 @@ function doSearch(){ state.q = $('qInput').value.trim(); load(); }
 $('qBtn').onclick = doSearch;
 $('qInput').addEventListener('keydown', e=>{ if(e.key==='Enter') doSearch(); });
 $('createBtn').onclick = ()=>openSceneModal();
+
+/* 编辑资产：iframe 加载编辑表单（截图样式） */
+function openEditModal(id){
+  const fr = $('sceneFrame');
+  fr.src = '/static/编辑资产.html?id=' + encodeURIComponent(id);
+  $('sceneMask').classList.add('open');
+}
 function openSceneModal(){
   const fr = $('sceneFrame');
   fr.src = fr.src;              // 每次打开重置（重新加载页面）
@@ -469,7 +504,7 @@ $('sceneMask').addEventListener('click', e=>{
 });
 window.addEventListener('message', ev=>{
   const d = ev.data || {};
-  if(d.type === 'asset-saved'){ $('sceneMask').classList.remove('open'); toast('场景已创建入库: '+d.id); load(); }
+  if(d.type === 'asset-saved'){ $('sceneMask').classList.remove('open'); toast('已保存: '+d.id); load(); }
   if(d.type === 'asset-close'){ $('sceneMask').classList.remove('open'); }
 });
 

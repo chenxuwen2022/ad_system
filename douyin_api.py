@@ -114,6 +114,20 @@ _CACHE = {}
 _CACHE_LOCK = threading.Lock()
 
 
+def _load_ai_context(advertiser_id):
+    """读取该广告主保存的 AI 分析上下文（竞品链接 + 行业市场数据），无则返回空。"""
+    import json as _json, os as _os
+    try:
+        _d = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "data")
+        _p = _os.path.join(_d, f"ai_context_{advertiser_id}.json")
+        if _os.path.isfile(_p):
+            with open(_p, encoding="utf-8") as _f:
+                return _json.load(_f)
+    except Exception:
+        pass
+    return {"links": [], "market_data": "", "updated": ""}
+
+
 def _cache_get(key):
     item = _CACHE.get(key)
     if not item:
@@ -613,6 +627,127 @@ class DouYinAdService:
                     result[pid] = {"material_count": n, "plan_id": ad_id, "status": status}
         _cache_set(cache_key, result, 600)
         return result
+
+    def _build_video_id_map(self, force: bool = False) -> dict:
+        """建立 素材库video_id(v开头) → 报表material_id(数字) 映射表。缓存 1 小时。
+        千川两套素材ID：素材报表/素材库用数字 material_id；投放计划详情 video_material 用 v 开头 video_id。
+        素材库 video/get 按数字批量查（单次上限20个），返回 item.id(v开头) 与 material_id(数字)。"""
+        cache_key = ("vidmap", str(self.advertiser_id))
+        if not force:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+        vmap = {}
+        try:
+            mats = self.get_all_materials_report()[0]["materials"]
+            mids = [m["id"] for m in mats if m.get("type") == "视频" and str(m["id"]).isdigit()]
+            import concurrent.futures as _cf, time as _t
+
+            def _batch(ids):
+                for attempt in range(3):
+                    try:
+                        r = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/video/get/",
+                                         headers=self.headers,
+                                         params={"advertiser_id": int(self.advertiser_id),
+                                                 "filtering": json.dumps({"material_ids": [int(x) for x in ids]})},
+                                         timeout=60).json()
+                        if r.get("code") == 0:
+                            out = {}
+                            for it in (r.get("data", {}) or {}).get("list", []) or []:
+                                if it.get("id") and it.get("material_id"):
+                                    out[str(it["id"])] = str(it["material_id"])
+                            return out
+                        if r.get("code") == 40100:
+                            _t.sleep(6)
+                            continue
+                        return {}
+                    except Exception:
+                        _t.sleep(2)
+                return {}
+
+            # 串行分批：千川 video/get 并发易触发限流(40100)，串行+批间小间隔最稳
+            batches = [mids[i:i + 20] for i in range(0, len(mids), 20)]
+            for b in batches:
+                vmap.update(_batch(b))
+                _t.sleep(0.2)
+        except Exception:
+            pass
+        # 空结果不缓存，避免 1 小时内一直用空映射
+        if vmap:
+            _cache_set(cache_key, vmap, 3600)
+        return vmap
+
+    def get_product_material_ids(self, product_id, force: bool = False) -> list:
+        """该商品在投全域计划下挂载的素材ID（报表数字ID，去重）。缓存 10 分钟。
+        计划详情 multi_product_creative_list 含 video_material（v开头 video_id），
+        经 video_id→material_id 映射后返回；仅覆盖在投全域计划，未投计划的素材不计入。"""
+        cache_key = ("prod_matids", str(self.advertiser_id), str(product_id))
+        if not force:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+        ids = set()
+        try:
+            # 在投全域计划列表
+            url = f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/list/"
+            params = {
+                "advertiser_id": int(self.advertiser_id),
+                "start_time": (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y-%m-%d 00:00:00"),
+                "end_time": datetime.datetime.now().strftime("%Y-%m-%d 23:59:59"),
+                "marketing_goal": "VIDEO_PROM_GOODS",
+                "filtering": json.dumps({"status": "DELIVERY_OK"}),
+                "fields": json.dumps(["stat_cost"]),
+                "page": 1, "page_size": 100,
+            }
+            import time as _t
+            for attempt in range(3):
+                try:
+                    rj = requests.get(url, headers=self.headers, params=params, timeout=30).json()
+                except Exception:
+                    rj = {}
+                if rj.get("code") == 0 and (rj.get("data", {}) or {}).get("ad_list"):
+                    break
+                _t.sleep(2)
+            if rj.get("code") == 0:
+                plan_ids = [str((p.get("ad_info") or {}).get("id"))
+                            for p in (rj.get("data", {}) or {}).get("ad_list", []) or []
+                            if (p.get("ad_info") or {}).get("id")]
+                import concurrent.futures as _cf
+                with _cf.ThreadPoolExecutor(max_workers=12) as ex:
+                    futs = [ex.submit(self._fetch_plan_detail_mids, pid, product_id) for pid in plan_ids]
+                    for fu in _cf.as_completed(futs):
+                        ids.update(fu.result())
+            # v开头 video_id → 报表数字 material_id
+            vmap = self._build_video_id_map()
+            ids = {vmap.get(v) for v in ids if vmap.get(v)}
+        except Exception:
+            pass
+        out = sorted(ids)
+        _cache_set(cache_key, out, 600)
+        return out
+
+    def _fetch_plan_detail_mids(self, ad_id: str, product_id: str = "") -> list:
+        """读单个全域计划详情，返回该计划下（指定商品）所有素材 video_id 列表。
+        product_id 为空时返回计划下全部素材。"""
+        for _ in (1, 2):
+            try:
+                d = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/ad/detail/",
+                                 headers=self.headers,
+                                 params={"advertiser_id": int(self.advertiser_id), "ad_id": int(ad_id)},
+                                 timeout=8).json()
+                if d.get("code") != 0:
+                    continue
+                mids = []
+                for c in (d.get("data", {}) or {}).get("multi_product_creative_list", []) or []:
+                    if product_id and str(c.get("product_id") or "") != str(product_id):
+                        continue
+                    for v in (c.get("video_material") or []) or []:
+                        if v.get("video_id"):
+                            mids.append(str(v["video_id"]))
+                return mids
+            except Exception:
+                continue
+        return []
 
     # 千川全域计划状态 → 中文
     _PLAN_STATUS_TEXT = {
@@ -1118,7 +1253,7 @@ class DouYinAdService:
         "其他": "SITE_PROMOTION_PRODUCT_POST_DATA_OTHER",
     }
 
-    def get_material_detail(self, material_id: str) -> dict:
+    def get_material_detail(self, material_id: str, with_ai: bool = True) -> dict:
         """单个素材：汇总指标 + 逐日投放曲线 + DeepSeek 点评与修改建议。
         汇总行来自素材报表缓存（≤5分钟），逐日曲线实时拉取，仅 DeepSeek 点评缓存 10 分钟（省钱）。"""
         import datetime as _dt
@@ -1205,6 +1340,14 @@ class DouYinAdService:
             "peak_day": peak["date"] if peak else "", "peak_cost": peak["cost"] if peak else 0,
             "recent7_cost": recent7_cost, "prev7_cost": prev7_cost, "trend": trend_dir,
         }
+        # 同比（近30天 vs 前30天，日均口径）与净成交金额
+        _r30 = sum(x["cost"] for x in daily[-30:])
+        _p30 = sum(x["cost"] for x in daily[-60:-30]) if len(daily) >= 60 else 0
+        summary["recent30_cost"] = round(_r30, 2)
+        summary["prev30_cost"] = round(_p30, 2)
+        summary["yoy_trend"] = ("上升" if _p30 and _r30 > _p30 * 1.15
+                                else ("下滑" if _p30 and _r30 < _p30 * 0.85
+                                      else ("平稳" if _p30 else "数据不足")))
 
         # 2.5 全量指标（25 项）：按素材过滤单独拉一次报表，覆盖列表的 8 项基础指标。
         # 只查单素材 + 两个主题，秒回；未命中时保留列表的基础 8 项。
@@ -1241,10 +1384,13 @@ class DouYinAdService:
         except Exception:
             pass
 
-        # 4. DeepSeek 单素材点评（缓存10分钟，避免重复调用花钱）
-        ai_key = ("ai", str(self.advertiser_id), str(material_id))
-        ai_text = _cache_get(ai_key)
-        if ai_text is None:
+        # 4. DeepSeek 单素材点评（with_ai=False 时跳过，用于跨店铺轻量对比；缓存10分钟）
+        ai_text = ""
+        if with_ai:
+            _ctx = _load_ai_context(self.advertiser_id)
+            ai_key = ("ai", str(self.advertiser_id), str(material_id), _ctx.get("updated", ""))
+            ai_text = _cache_get(ai_key)
+        if with_ai and ai_text is None:
             daily_text = "\n".join(
                 f"  {d['date']}: 消耗{d['cost']}, 展示{d['show']}, 点击{d['click']}, 成交{d['orders']}单/{d['gmv']}元"
                 for d in daily[-30:]
@@ -1262,6 +1408,13 @@ class DouYinAdService:
                 f"投放时间：累计{active_days}天, 首发{first_day}~{last_day}, 峰值{peak['date'] if peak else ''}消耗{peak['cost'] if peak else 0}元, 近7天趋势{trend_dir}(近7天{recent7_cost}元 vs 前7天{prev7_cost}元)\n"
                 f"逐日曲线(近30天):\n{daily_text or '（无逐日数据）'}"
             )
+            if _ctx.get("links") or _ctx.get("market_data"):
+                prompt += "\n\n【额外参考资料：竞品与行业市场】\n"
+                if _ctx.get("links"):
+                    prompt += "竞品链接：\n" + "\n".join(_ctx["links"]) + "\n"
+                if _ctx.get("market_data"):
+                    prompt += "行业市场数据：\n" + _ctx["market_data"][:3000] + "\n"
+                prompt += "请结合这些参考资料，输出更有针对性的点评与修改建议（与竞品对比、结合行业水平判断），并明确标注哪些结论来自参考资料。"
             api_key = DOUYIN_CONFIG.get("DEEPSEEK_API_KEY", "")
             base = DOUYIN_CONFIG.get("DEEPSEEK_BASE", "https://api.deepseek.com")
             try:
@@ -1278,6 +1431,14 @@ class DouYinAdService:
             except Exception as e:
                 ai_text = f"DeepSeek调用失败:{e}"
             _cache_set(ai_key, ai_text, 600)
+
+        # 净成交金额（从全量指标里取，供跨店铺对比与集合汇总）
+        try:
+            _net = next((m for m in (summary.get("metrics_all") or [])
+                         if m["field"] == "total_order_settle_amount_for_roi2_1h"), None)
+            summary["净成交金额"] = round(float(_net["value"]), 2) if _net else 0
+        except Exception:
+            summary["净成交金额"] = 0
 
         # 5. 素材预览（视频取播放url+封面，图片取图片url）
         preview = self._get_material_preview(material_id, row["type"])
