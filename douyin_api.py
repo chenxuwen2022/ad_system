@@ -1132,7 +1132,7 @@ class DouYinAdService:
         "其他": "SITE_PROMOTION_PRODUCT_POST_DATA_OTHER",
     }
 
-    def get_material_detail(self, material_id: str) -> dict:
+    def get_material_detail(self, material_id: str, with_ai: bool = True) -> dict:
         """单个素材：汇总指标 + 逐日投放曲线 + DeepSeek 点评与修改建议。
         汇总行来自素材报表缓存（≤5分钟），逐日曲线实时拉取，仅 DeepSeek 点评缓存 10 分钟（省钱）。"""
         import datetime as _dt
@@ -1219,6 +1219,14 @@ class DouYinAdService:
             "peak_day": peak["date"] if peak else "", "peak_cost": peak["cost"] if peak else 0,
             "recent7_cost": recent7_cost, "prev7_cost": prev7_cost, "trend": trend_dir,
         }
+        # 同比（近30天 vs 前30天，日均口径）与净成交金额
+        _r30 = sum(x["cost"] for x in daily[-30:])
+        _p30 = sum(x["cost"] for x in daily[-60:-30]) if len(daily) >= 60 else 0
+        summary["recent30_cost"] = round(_r30, 2)
+        summary["prev30_cost"] = round(_p30, 2)
+        summary["yoy_trend"] = ("上升" if _p30 and _r30 > _p30 * 1.15
+                                else ("下滑" if _p30 and _r30 < _p30 * 0.85
+                                      else ("平稳" if _p30 else "数据不足")))
 
         # 2.5 全量指标（25 项）：按素材过滤单独拉一次报表，覆盖列表的 8 项基础指标。
         # 只查单素材 + 两个主题，秒回；未命中时保留列表的基础 8 项。
@@ -1255,11 +1263,13 @@ class DouYinAdService:
         except Exception:
             pass
 
-        # 4. DeepSeek 单素材点评（缓存10分钟，避免重复调用花钱；竞品/行业上下文更新后自动重新分析）
-        _ctx = _load_ai_context(self.advertiser_id)
-        ai_key = ("ai", str(self.advertiser_id), str(material_id), _ctx.get("updated", ""))
-        ai_text = _cache_get(ai_key)
-        if ai_text is None:
+        # 4. DeepSeek 单素材点评（with_ai=False 时跳过，用于跨店铺轻量对比；缓存10分钟）
+        ai_text = ""
+        if with_ai:
+            _ctx = _load_ai_context(self.advertiser_id)
+            ai_key = ("ai", str(self.advertiser_id), str(material_id), _ctx.get("updated", ""))
+            ai_text = _cache_get(ai_key)
+        if with_ai and ai_text is None:
             daily_text = "\n".join(
                 f"  {d['date']}: 消耗{d['cost']}, 展示{d['show']}, 点击{d['click']}, 成交{d['orders']}单/{d['gmv']}元"
                 for d in daily[-30:]
@@ -1300,6 +1310,14 @@ class DouYinAdService:
             except Exception as e:
                 ai_text = f"DeepSeek调用失败:{e}"
             _cache_set(ai_key, ai_text, 600)
+
+        # 净成交金额（从全量指标里取，供跨店铺对比与集合汇总）
+        try:
+            _net = next((m for m in (summary.get("metrics_all") or [])
+                         if m["field"] == "total_order_settle_amount_for_roi2_1h"), None)
+            summary["净成交金额"] = round(float(_net["value"]), 2) if _net else 0
+        except Exception:
+            summary["净成交金额"] = 0
 
         # 5. 素材预览（视频取播放url+封面，图片取图片url）
         preview = self._get_material_preview(material_id, row["type"])

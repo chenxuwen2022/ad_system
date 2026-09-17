@@ -308,6 +308,86 @@ async def get_ai_context(advertiser_id: str = ""):
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/material_multi_shop")
+async def material_multi_shop(material_id: str, advertiser_id: str = ""):
+    """同一素材跨店铺分析：
+    1) 主店铺（当前选中店铺）：素材集合数据（该店铺全部素材聚合）+ 该素材具体数据
+    2) 店铺对比：遍历后台保存的全部店铺，查询同一素材在各店铺的 消耗/净成交金额/总成交金额/ROI/环比/同比
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    aid = str(advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID"))
+
+    def _shop_row(a):
+        """单店铺：该素材汇总 + 集合数据（该店铺全部素材聚合）"""
+        try:
+            svc = DouYinAdService(advertiser_id=str(a["advertiser_id"]))
+            detail = svc.get_material_detail(material_id, with_ai=False)
+            s = detail.get("summary", {})
+            row = {
+                "advertiser_id": str(a["advertiser_id"]), "name": a.get("name") or str(a["advertiser_id"]),
+                "ok": True,
+                "消耗": s.get("消耗", 0), "成交金额": s.get("成交金额", 0),
+                "净成交金额": s.get("净成交金额", 0), "支付ROI": s.get("支付ROI", 0),
+                "成交单数": s.get("成交单数", 0), "trend": s.get("trend", "—"),
+                "recent7_cost": s.get("recent7_cost", 0), "prev7_cost": s.get("prev7_cost", 0),
+                "yoy_trend": s.get("yoy_trend", "—"),
+                "recent30_cost": s.get("recent30_cost", 0), "prev30_cost": s.get("prev30_cost", 0),
+            }
+            # 集合数据：该店铺全部素材聚合（消耗/成交/净成交/ROI 加权）
+            agg = {"消耗": 0, "成交金额": 0, "净成交金额": 0, "成交单数": 0, "素材数": 0}
+            try:
+                mats = svc.get_all_materials_report()[0]["materials"]
+                agg["素材数"] = len(mats)
+                agg["消耗"] = round(sum(float(m.get("消耗") or 0) for m in mats), 2)
+                agg["成交金额"] = round(sum(float(m.get("成交金额") or 0) for m in mats), 2)
+                agg["成交单数"] = int(sum(float(m.get("成交单数") or 0) for m in mats))
+                agg["净成交金额"] = round(sum(float(
+                    next((x["value"] for x in (m.get("metrics_all") or [])
+                         if x["field"] == "total_order_settle_amount_for_roi2_1h"), 0))
+                    for m in mats), 2)
+                if agg["消耗"]:
+                    agg["支付ROI"] = round(agg["成交金额"] / agg["消耗"], 2)
+                # 该素材在集合中的占比
+                if agg["消耗"]:
+                    row["消耗占比"] = round(float(row["消耗"]) / agg["消耗"] * 100, 1)
+            except Exception:
+                pass
+            row["集合"] = agg
+            return row
+        except Exception as e:
+            return {"advertiser_id": str(a["advertiser_id"]), "name": a.get("name") or str(a["advertiser_id"]),
+                    "ok": False, "error": str(e)}
+
+    try:
+        # 主店铺详情（含 AI 点评，走原接口逻辑）
+        main_svc = DouYinAdService(advertiser_id=aid)
+        main_detail = main_svc.get_material_detail(material_id)
+
+        # 店铺列表：后台保存的全部账户 + 主店铺兜底
+        db = SessionLocal()
+        try:
+            accounts = [{"advertiser_id": r.advertiser_id, "name": r.name} for r in
+                        db.query(AdvertiserDB).order_by(AdvertiserDB.id).all()]
+        finally:
+            db.close()
+        if not any(str(a["advertiser_id"]) == aid for a in accounts):
+            accounts.insert(0, {"advertiser_id": aid, "name": aid})
+
+        shops = []
+        with ThreadPoolExecutor(max_workers=min(4, len(accounts))) as ex:
+            futs = {ex.submit(_shop_row, a): a for a in accounts}
+            for fu in as_completed(futs):
+                shops.append(fu.result())
+        shops.sort(key=lambda x: (not x.get("ok"), -float(x.get("消耗") or 0)))
+
+        main_s = main_detail.get("summary", {})
+        return {"success": True,
+                "main_shop": {"advertiser_id": aid, "summary": main_s},
+                "shops": shops}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/api/material_export")
 async def material_export(material_id: str, advertiser_id: str = ""):
     """单个素材全量数据导出：素材库信息+汇总+逐日曲线+关联计划/商品+AI点评，返回完整 JSON。"""

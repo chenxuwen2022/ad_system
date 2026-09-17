@@ -839,6 +839,79 @@ function clearAiCtx(){
 function closeAiCtxModal(){
     document.getElementById("aiCtxModal").classList.remove("show");
 }
+
+// ===== 同一素材跨店铺分析：集合数据 + 店铺对比 =====
+function fmtNum(x){ return Number(x||0).toLocaleString("zh-CN"); }
+function trendTag(v){
+    if(v === "上升") return "<span style='color:#16a34a;font-weight:700'>↑ 上升</span>";
+    if(v === "下滑") return "<span style='color:#dc2626;font-weight:700'>↓ 下滑</span>";
+    if(v === "数据不足") return "<span style='color:#9aa7ba'>—</span>";
+    return "<span style='color:#1f6feb'>→ 平稳</span>";
+}
+async function loadMultiShop(mid, aid){
+    const box = document.getElementById("multiShopBox");
+    if(!box) return;
+    try{
+        const r = await fetch("/api/material_multi_shop?material_id=" + encodeURIComponent(mid) + (aid ? ("&advertiser_id="+encodeURIComponent(aid)) : ""));
+        const j = await r.json();
+        if(!j.success){ box.innerHTML = "<div class='muted' style='margin-top:12px'>跨店铺对比加载失败：" + esc(j.error||"") + "</div>"; return; }
+        const shops = j.shops || [];
+        const mainS = (j.main_shop && j.main_shop.summary) || {};
+        let h = "<div style='margin-top:16px'>";
+        // ① 素材集合数据（主店铺全部素材）
+        const ms = shops.find(s => s.advertiser_id === String(aid)) || shops[0];
+        const agg = (ms && ms.集合) || null;
+        h += "<h4 style='font-size:14px;margin:0 0 8px'>素材集合数据（" + esc((ms && ms.name) || aid) + " 全部素材）</h4>";
+        if(agg){
+            h += "<div class='kpi' style='margin-bottom:8px'>";
+            h += kpi("素材总数", fmtNum(agg.素材数));
+            h += kpi("集合消耗", fmtMoney(agg.消耗));
+            h += kpi("集合净成交", agg.净成交金额 ? fmtMoney(agg.净成交金额) : "—");
+            h += kpi("集合总成交", fmtMoney(agg.成交金额));
+            h += kpi("集合ROI", (agg.支付ROI||0).toFixed(2));
+            h += "</div>";
+            if(ms["消耗占比"] != null){
+                h += "<div class='muted' style='font-size:12px;margin-bottom:10px'>本素材消耗占比 <b style='color:#1f6feb'>" + ms["消耗占比"] + "%</b></div>";
+            }
+        }else{
+            h += "<div class='muted'>（集合数据暂不可用）</div>";
+        }
+        // ② 本素材具体数据（主店铺）
+        h += "<h4 style='font-size:14px;margin:14px 0 8px'>本素材投放数据</h4>";
+        h += "<div class='kpi' style='margin-bottom:8px'>";
+        h += kpi("消耗", fmtMoney(mainS.消耗));
+        h += kpi("净成交金额", fmtMoney(mainS.净成交金额));
+        h += kpi("总成交金额", fmtMoney(mainS.成交金额));
+        h += kpi("ROI", (mainS.支付ROI||0).toFixed(2));
+        h += kpi("环比(近7天)", trendTag(mainS.trend));
+        h += kpi("同比(近30天)", trendTag(mainS.yoy_trend));
+        h += "</div>";
+        // ③ 同一素材跨店铺对比
+        const okShops = shops.filter(s=>s.ok);
+        if(okShops.length > 1){
+            h += "<h4 style='font-size:14px;margin:14px 0 8px'>同一素材 · 各店铺对比</h4>";
+            h += "<div style='max-height:320px;overflow-y:auto;border:1px solid #e7edf6;border-radius:10px'><table class='data' style='margin:0;width:100%;font-size:12.5px'><tr><th>店铺</th><th>消耗</th><th>净成交金额</th><th>总成交金额</th><th>ROI</th><th>环比</th><th>同比</th></tr>";
+            okShops.forEach(s=>{
+                const hl = (s.advertiser_id === String(aid));
+                h += "<tr" + (hl ? " style='background:#eef4ff;font-weight:700'" : "") + ">";
+                h += "<td>" + esc(s.name) + (hl ? "（当前）" : "") + "</td>";
+                h += "<td>" + fmtMoney(s.消耗) + "</td>";
+                h += "<td>" + fmtMoney(s.净成交金额) + "</td>";
+                h += "<td>" + fmtMoney(s.成交金额) + "</td>";
+                h += "<td>" + (s.支付ROI||0).toFixed(2) + "</td>";
+                h += "<td>" + trendTag(s.trend) + "</td>";
+                h += "<td>" + trendTag(s.yoy_trend) + "</td></tr>";
+            });
+            h += "</table></div>";
+        }else{
+            h += "<div class='muted' style='margin-top:8px'>当前仅 1 个店铺有该素材数据" + (shops.some(s=>!s.ok) ? "（其余店铺未授权或查询失败）" : "") + "</div>";
+        }
+        h += "</div>";
+        box.innerHTML = h;
+    }catch(e){
+        box.innerHTML = "<div class='muted' style='margin-top:12px'>跨店铺对比加载失败：" + esc(String(e)) + "</div>";
+    }
+}
 function onPopAdvertiserChange(){
     loadPopProducts();
     loadPopPlans();
@@ -1116,6 +1189,7 @@ async function loadMaterialDetail(){
             });
             html += "</table></div></details>";
         }
+        html += "<div id='multiShopBox'><p class='spin' style='margin:14px 0 0'>正在加载跨店铺对比与素材集合数据…</p></div>";
         html += "<div class='ai-head' style='justify-content:space-between'>AI 点评与修改建议";
         html += "<span style='display:flex;align-items:center;gap:8px;font-weight:400'>";
         html += "<button class='ghost' style='font-weight:400' onclick='openAiCtxModal(\\"links\\")'>竞品链接</button>";
@@ -1124,6 +1198,7 @@ async function loadMaterialDetail(){
         html += "<div class='ai-box'>" + renderAiViz(res.ai, s) + "</div>";
         box.innerHTML = html;
         loadAiCtx();
+        loadMultiShop(mid, aid);
     }catch(e){
         box.innerHTML = "<p style='color:#e02424'>请求失败："+e+"</p>";
     }
