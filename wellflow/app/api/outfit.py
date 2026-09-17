@@ -31,6 +31,7 @@ from wellflow.app.api.utils import ok
 from wellflow.app.config import settings
 from wellflow.app.database import get_db
 from wellflow.app.llm.factory import get_llm_client
+from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.repositories.outfit_repo import OutfitRepo
 from wellflow.app.schemas.outfit_schemas import (
     OutfitAutoTagRequest, OutfitAutoTagResponse,
@@ -374,8 +375,8 @@ def _call_vlm_recognize(raw: bytes):
             "要求:\n1. 按从上到下、从外到内排列\n"
             "2. 不要包含人物本身特征(发型、肤色、身材)\n3. 只输出 JSON,不要任何解释"
         )
-        client = get_llm_client("vlm", model_override=settings.llm_model_node3)  # 识别 VLM(网关已部署 gemini-3.7-flash)
-        resp = await client.chat_with_images(
+        pool = get_model_pool()
+        resp, _used_model = await pool.chat_with_images(
             system="你是专业的电商服饰单品识别专家。",
             user=prompt,
             image_uris=[f"data:image/png;base64,{b64}"],
@@ -621,8 +622,8 @@ async def auto_tag(body: OutfitAutoTagRequest):
     )
 
     try:
-        client = get_llm_client("vlm", model_override=settings.llm_model_node3)
-        resp = await client.chat_with_images(
+        pool = get_model_pool()
+        resp, used_model = await pool.chat_with_images(
             system=system, user=user_text, image_uris=data_uris,
             response_format={"type": "json_object"},
         )
@@ -656,5 +657,5 @@ async def auto_tag(body: OutfitAutoTagRequest):
         dims=validated,
         description=description,
         suggested_name=suggested if isinstance(suggested, str) else None,
-        model=settings.llm_model_node3,
+        model=used_model,
     ).model_dump())
