@@ -142,6 +142,10 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
 
     full_report = "".join(full_report_parts)
     full_thinking = "".join(think_parts)
+
+    # 归一化为稳定 key 的四块结构（前端"重点洞察"面板只认这个，不认 prompt 字段名）
+    from wellflow.app.prompt.report_sections import build_report_sections
+    report_sections = build_report_sections(full_report)
     total_ts = time.time()
     print(f"[node1] ✅ VLM 完成: 报告 {len(full_report)} 字, "
           f"thinking {len(full_thinking)} 字, "
@@ -165,6 +169,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             **state.get("node1", {}),
             "input_analysis": analysis,
             "product_insight": full_report,
+            "report_sections": report_sections,
             # 🔁 缓存已压缩的商品图 data URIs，供 Node2 复用（避免重复 PIL 压缩 ~1.2s）
             "compressed_images": images,
             # 💭 持久化 thinking 文本，刷新后前端可恢复展示

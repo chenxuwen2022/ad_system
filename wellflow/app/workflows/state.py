@@ -25,10 +25,28 @@ def _merge_state_values(a: Any, b: Any) -> Any:
 
     签名必须是 (a, b) -> c，符合 LangGraph Annotated[type, reducer] 约定。
     a = 当前值（channel 已有内容），b = 本次 node Command/update 提交的新值。
+
+    ⚠️ 字段级 merge 的副作用：写 `nodeX: {}` 是 no-op（旧键全保留），
+    无法用于 redo/jump 的"清空节点"场景。清理路径请用 cleared() 生成
+    带 __clear__ 哨兵的写入值，这里识别后会整体替换（丢弃旧 dict）。
     """
+    if isinstance(b, dict) and b.get(_CLEAR_FLAG) is True:
+        return {k: v for k, v in b.items() if k != _CLEAR_FLAG}
     if isinstance(a, dict) and isinstance(b, dict):
         return a | b  # Python 3.9+ dict merge
     return b  # 标量 / list / None → 后来者覆盖
+
+
+_CLEAR_FLAG = "__clear__"
+
+
+def cleared(**keep: Any) -> dict[str, Any]:
+    """生成"整体替换"语义的 dict 写入值：清空该字段后仅保留 keep 中的键。
+
+    用于 redo / graph jump 时清空下游节点（如 node2/3/4），避免
+    _merge_state_values 的字段级 merge 把 {} 当 no-op 导致旧数据残留。
+    """
+    return {_CLEAR_FLAG: True, **keep}
 
 
 # LangGraph reducer 签名：(prev, new) -> merged
