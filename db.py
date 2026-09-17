@@ -54,6 +54,21 @@ class MaterialMarkDB(Base):
     update_time = Column(DateTime, default=datetime.datetime.now)
 
 
+class MaterialLaunchDB(Base):
+    """素材投放历史：每次投放记录一条，用于素材库展示每个素材的投放状态"""
+    __tablename__ = "material_launch"
+
+    id = Column(Integer, primary_key=True, index=True)
+    file_path = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, default="success")  # success / fail
+    mode = Column(String, nullable=False, default="real")       # real / test
+    plan_id = Column(String, nullable=False, default="")
+    plan_name = Column(String, nullable=False, default="")
+    product_id = Column(String, nullable=False, default="")
+    detail = Column(String, nullable=False, default="")
+    create_time = Column(DateTime, default=datetime.datetime.now)
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
 

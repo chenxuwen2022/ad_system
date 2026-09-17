@@ -124,6 +124,37 @@ HTML_PAGE = """
             border-color:transparent; box-shadow:0 3px 10px rgba(31,111,235,.25); }
         .ai-tab-pane { display:none; }
         .ai-tab-pane.on { display:block; }
+        .viz-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+        .viz-stage { padding:5px 14px; border-radius:14px; font-size:13px; font-weight:700; color:#fff; }
+        .viz-stage.cold { background:linear-gradient(120deg,#8b5cf6,#a78bfa); }
+        .viz-stage.up { background:linear-gradient(120deg,#16a34a,#22c55e); }
+        .viz-stage.stable { background:linear-gradient(120deg,#1f6feb,#3b82f6); }
+        .viz-stage.down { background:linear-gradient(120deg,#dc2626,#f87171); }
+        .viz-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 18px; margin-bottom:14px;
+            background:#fff; border:1px solid #e7edf6; border-radius:10px; padding:12px 14px; }
+        .viz-bar { display:flex; align-items:center; gap:8px; min-width:0; }
+        .viz-lab { flex:none; width:64px; font-size:12px; color:#55637a; text-align:right; }
+        .viz-track { flex:1; height:8px; border-radius:4px; background:#eef2f7; overflow:hidden; }
+        .viz-fill { height:100%; border-radius:4px; transition:width .4s; }
+        .viz-grade { flex:none; width:34px; font-size:12px; font-weight:700; }
+        .viz-val { flex:none; font-size:11px; color:#8a97ab; }
+        .viz-note { font-size:12px; color:#8a97ab; background:#fff; border:1px solid #e7edf6;
+            border-radius:8px; padding:6px 10px; margin-bottom:12px; }
+        .viz-note b { color:#1f6feb; }
+        .viz-sec { display:flex; align-items:center; gap:8px; margin:12px 0 8px; }
+        .viz-sec-tag { font-size:13px; font-weight:700; color:#fff; padding:4px 12px; border-radius:8px;
+            background:linear-gradient(120deg,#1f6feb,#3b82f6); box-shadow:0 1px 3px rgba(31,111,235,.25); }
+        .viz-chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:4px; }
+        .viz-chip { background:#eef4ff; border:1px solid #d5e2ff; color:#2b5bff; font-size:12.5px;
+            padding:6px 12px; border-radius:14px; line-height:1.5; }
+        .viz-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }
+        .viz-card { background:#fff; border:1px solid #e7edf6; border-radius:10px; padding:10px 12px;
+            display:flex; gap:10px; align-items:flex-start; box-shadow:0 1px 2px rgba(31,111,235,.05); }
+        .viz-no { flex:none; min-width:22px; height:22px; line-height:22px; text-align:center;
+            background:linear-gradient(135deg,#4aa3ff,#1f6feb); color:#fff; border-radius:6px;
+            font-size:12.5px; font-weight:700; margin-top:1px; }
+        .viz-txt { font-size:13px; color:#1f2329; line-height:1.7; }
+        .viz-txt b { color:#d25f00; }
         .muted { color:#8a97ab; font-size:13px; }
         .spin { color:#1f6feb; }
         .settings-btn {
@@ -208,6 +239,27 @@ HTML_PAGE = """
         .lm-tag.on { background:#e8f1ff; border-color:#1f6feb; color:#1f6feb; font-weight:600; }
         .lm-tag.on .dot { box-shadow:0 0 0 2px #fff inset; }
         .lm-tags-empty { font-size:12.5px; color:#9aa7ba; }
+        .mat-card { position:relative; }
+        .mat-check { position:absolute; top:8px; left:8px; width:22px; height:22px; border-radius:50%;
+            background:rgba(255,255,255,.92); border:2px solid #c2cad6; display:flex; align-items:center;
+            justify-content:center; font-size:13px; color:#fff; cursor:pointer; z-index:2; transition:.15s;
+            user-select:none; line-height:1; }
+        .mat-check:hover { border-color:#1f6feb; }
+        .mat-check.on { background:#1f6feb; border-color:#1f6feb; }
+        .mat-card.sel { border-color:#1f6feb; box-shadow:0 0 0 2px rgba(31,111,235,.15); }
+        .launch-badge { position:absolute; top:36px; right:8px; z-index:2; font-size:11px;
+            padding:2px 8px; border-radius:10px; background:rgba(255,255,255,.94);
+            border:1px solid #e0e6ef; color:#8a97ab; cursor:default; line-height:1.5; }
+        .launch-badge.ok { color:#1a7f37; border-color:#c9ecd4; background:rgba(240,250,243,.94); }
+        .launch-badge.test { color:#b26a00; border-color:#f2d9a6; background:rgba(255,248,235,.94); }
+        .launch-badge.fail { color:#c0392b; border-color:#f3cccc; background:rgba(253,242,242,.94); }
+        .lib-tabs { display:flex; align-items:center; gap:10px; }
+        .batch-btn { margin-left:auto; }
+        .lm-batch-summary { font-size:15px; font-weight:700; margin-bottom:10px; }
+        .lm-batch-item { border:1px solid #e7edf6; border-radius:10px; padding:10px 14px; margin-bottom:8px; background:#fff; }
+        .lm-batch-item.ok { border-color:#c9ecd4; }
+        .lm-batch-item.err { border-color:#f3cccc; background:#fdf8f8; }
+        .lm-batch-item pre { margin:6px 0 0; font-size:12px; white-space:pre-wrap; word-break:break-all; }
     </style>
 </head>
 <body>
@@ -225,6 +277,7 @@ HTML_PAGE = """
         <div class="lib-tabs">
             <button class="lib-tab on" id="tabLocal" onclick="switchLib('local')">本地素材库</button>
             <button class="lib-tab" id="tabUpload" onclick="switchLib('upload')">上传素材库</button>
+            <button class="ghost batch-btn" id="batchLaunchBtn" onclick="openBatchLaunchModal()" style="display:none">批量投放(0)</button>
         </div>
         <div id="libLocal">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
@@ -257,12 +310,15 @@ HTML_PAGE = """
         </div>
         <div class="row">
             <label class="muted">店铺</label>
-            <select id="matAdvertiser" onchange="onMatAdvertiserChange()" style="min-width:230px"></select>
+            <select id="matAdvertiser" onchange="onMatAdvertiserChange()" style="min-width:210px"></select>
+            <label class="muted">商品</label>
+            <select id="productSelect" onchange="onProductChange()" style="min-width:190px"><option value="">全部商品</option></select>
             <input type="text" id="materialSearch" placeholder="输入关键词筛选素材…"
-                   oninput="filterMaterials()" style="width:240px">
-            <select id="materialSelect" style="flex:1;min-width:260px" onchange="loadMaterialDetail()"></select>
+                   oninput="filterMaterials()" style="width:200px">
+            <select id="materialSelect" style="flex:1;min-width:240px" onchange="loadMaterialDetail()"></select>
             <button class="ghost" onclick="loadMaterialList(true)" title="从千川重新拉取最新数据（约40秒）">刷新素材</button>
         </div>
+        <div id="productAgg" style="margin-top:12px"></div>
         <div id="matDetail" style="margin-top:14px;"></div>
     </div>
 </div>
@@ -328,6 +384,8 @@ HTML_PAGE = """
                 <div class="lm-field">
                     <div class="lm-label">投放计划 <span class="lm-hint">素材将追加到所选计划，不会新建</span></div>
                     <div class="lm-line">
+                        <input type="text" id="popPlanSearch" placeholder="输入关键词筛选计划…"
+                               oninput="filterPopPlans()" class="lm-search">
                         <select id="popPlanSelect"></select>
                         <button class="ghost lm-refresh" onclick="loadPopPlans(true)" title="从千川重新拉取该店铺全部投放计划（约10-30秒）">刷新计划</button>
                     </div>
@@ -358,6 +416,16 @@ HTML_PAGE = """
                 <pre id="popLaunchResult" class="lm-result" style="display:none"></pre>
             </div>
         </div>
+    </div>
+</div>
+
+<div class="modal-mask" id="aiCtxModal" onclick="if(event.target===this)closeAiCtxModal()">
+    <div class="modal modal-launch" style="max-width:580px">
+        <div class="lm-head">
+            <div class="lm-title" id="aiCtxTitle">竞品链接</div>
+            <button class="lm-close" onclick="closeAiCtxModal()" title="关闭">×</button>
+        </div>
+        <div class="lm-body" id="aiCtxBody"></div>
     </div>
 </div>
 
@@ -403,6 +471,7 @@ async function loadAdvertiserSelects(){
     });
     if(hasAccounts){
         loadMaterialList();
+        loadProducts();
     }else{
         document.getElementById("materialSelect").innerHTML = "<option>请先添加广告主账户</option>";
         document.getElementById("matDetail").innerHTML = "";
@@ -411,6 +480,8 @@ async function loadAdvertiserSelects(){
 
 function onMatAdvertiserChange(){
     document.getElementById("matDetail").innerHTML = "";
+    document.getElementById("productAgg").innerHTML = "";
+    loadProducts();
     loadMaterialList();
 }
 
@@ -420,7 +491,7 @@ function setBusy(btn, busy, busyText){
     btn.innerText = busy ? busyText : btn.dataset.normalText;
 }
 
-// ===== ①·本地素材库（遍历 C:\test素材，预览 + 弹窗投放） =====
+// ===== ①·本地素材库（遍历 C:\\test素材，预览 + 弹窗投放） =====
 function fmtSize(b){
     if(b >= 1024*1024){ return (b/1024/1024).toFixed(1) + " MB"; }
     if(b >= 1024){ return (b/1024).toFixed(0) + " KB"; }
@@ -430,6 +501,7 @@ async function loadLocalMaterials(){
     const box = document.getElementById("localMaterialBox");
     box.innerHTML = "<p class='spin'>遍历目录中…</p>";
     try{
+        await loadLaunchStatus();
         const resp = await fetch("/api/local_materials");
         const res = await resp.json();
         if(!res.success){ box.innerHTML = "<p style='color:red'>"+(res.error||"加载失败")+"</p>"; return; }
@@ -499,7 +571,10 @@ function renderMaterialGrid(box, items, urlPrefix){
     grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;";
     items.forEach(it=>{
         const url = urlPrefix + encodeURIComponent(it.name);
+        const sel = selectedMaterials.some(x=>x.path===it.path);
         const card = document.createElement("div");
+        card.className = "mat-card" + (sel ? " sel" : "");
+        card.setAttribute("data-path", it.path);
         card.style.cssText = "border:1px solid #e5e6eb;border-radius:8px;overflow:hidden;background:#fff;display:flex;flex-direction:column;";
         let mediaHtml = "";
         if(it.type === "video"){
@@ -509,7 +584,11 @@ function renderMaterialGrid(box, items, urlPrefix){
         }
         const tag = it.type === "video" ? "<span style='color:#c96442'>视频</span>" : "<span style='color:#3370ff'>图片</span>";
         const timeTxt = fmtTime(it.mtime);
+        const badge = launchBadge(it);
         card.innerHTML =
+            `<span class="mat-check${sel ? " on" : ""}" title="勾选后批量投放"
+                  onclick='event.stopPropagation();toggleMaterial(${JSON.stringify({path:it.path,name:it.name,type:it.type})})'>${sel ? "✓" : ""}</span>` +
+            (badge ? `<span class="launch-badge ${badge.cls}" title="${badge.tip}">${badge.text}</span>` : "") +
             mediaHtml +
             `<div style="padding:8px 10px;flex:1;display:flex;flex-direction:column;gap:4px">
                 <div style="font-size:13px;word-break:break-all" title="${esc(it.name)}">${esc(it.name)}</div>
@@ -525,10 +604,60 @@ function renderMaterialGrid(box, items, urlPrefix){
 function renderLocalMaterials(items){
     renderMaterialGrid(document.getElementById("localMaterialBox"), items, "/api/local_media/");
 }
+// 素材投放状态徽标：未投放返回空；否则按最近一次结果显示
+function launchBadge(it){
+    const st = launchStatusMap[it.path];
+    if(!st){ return ""; }
+    const cnt = st.count > 1 ? " " + st.count + "次" : "";
+    const t = st.time ? " · " + st.time : "";
+    let cls, text;
+    if(st.status === "fail"){
+        cls = "fail"; text = "投放失败" + (st.mode === "test" ? "（测试）" : "") + t;
+    }else if(st.mode === "test"){
+        cls = "test"; text = "测试投放" + cnt + t;
+    }else{
+        cls = "ok"; text = "已投放" + cnt + t;
+    }
+    const tip = "最近投放：" + (st.time || "—") +
+        (st.plan_name ? "，计划：" + st.plan_name : "") +
+        (st.product_id ? "，商品：" + st.product_id : "") +
+        (st.detail ? "，" + st.detail : "");
+    return {cls: cls, text: text, tip: tip};
+}
+// ===== 素材勾选（跨本地/上传库）与批量投放入口 =====
+function toggleMaterial(it){
+    const i = selectedMaterials.findIndex(x=>x.path===it.path);
+    if(i >= 0){ selectedMaterials.splice(i, 1); }
+    else{ selectedMaterials.push({path:it.path, name:it.name, type:it.type||""}); }
+    updateBatchBtn();
+    refreshCardSel(it.path);
+}
+function refreshCardSel(path){
+    document.querySelectorAll(".mat-card[data-path]").forEach(c=>{
+        if(c.getAttribute("data-path") === path){
+            const on = selectedMaterials.some(x=>x.path===path);
+            c.classList.toggle("sel", on);
+            const chk = c.querySelector(".mat-check");
+            if(chk){ chk.classList.toggle("on", on); chk.textContent = on ? "✓" : ""; }
+        }
+    });
+}
+function updateBatchBtn(){
+    const btn = document.getElementById("batchLaunchBtn");
+    if(!btn) return;
+    const n = selectedMaterials.length;
+    btn.style.display = n ? "" : "none";
+    btn.textContent = "批量投放(" + n + ")";
+}
+function openBatchLaunchModal(){
+    if(!selectedMaterials.length){ alert("请先在素材库勾选要投放的素材（点击卡片左上角圆圈）"); return; }
+    openLaunchModalWith(selectedMaterials.slice());
+}
 async function loadUploadedMaterials(){
     const box = document.getElementById("uploadedMaterialBox");
     box.innerHTML = "<p class='spin'>加载中…</p>";
     try{
+        await loadLaunchStatus();
         const res = await (await fetch("/api/uploaded_materials")).json();
         if(!res.success){ box.innerHTML = "<p style='color:#e02424'>"+(res.error||"加载失败")+"</p>"; return; }
         renderMaterialGrid(box, res.data || [], "/api/uploaded_media/");
@@ -539,11 +668,26 @@ async function loadUploadedMaterials(){
 
 // ===== 弹窗：选择商品并投放 =====
 let popLocalFilePath = "";
+let popLocalFilePaths = []; // 批量投放：本次选中的全部素材 [{path,name,type}]
+let launchStatusMap = {};   // 素材投放状态：{file_path: {status,mode,count,time,...}}
+async function loadLaunchStatus(){
+    try{
+        const res = await (await fetch("/api/material_launch_status")).json();
+        launchStatusMap = (res.success && res.data) ? res.data : {};
+    }catch(e){ launchStatusMap = {}; }
+}
+let selectedMaterials = []; // 素材库中已勾选的素材（跨本地/上传两个库）
 let popTagList = [];        // 标签设置里的全部标签
 let popSelectedTags = [];   // 本次投放选中的标签（多选）
 function openLaunchModal(path, name){
-    popLocalFilePath = path;
-    document.getElementById("popFileName").textContent = name;
+    openLaunchModalWith([{path:path, name:name, type:""}]);
+}
+function openLaunchModalWith(mats){
+    popLocalFilePaths = mats;
+    popLocalFilePath = mats.length ? mats[0].path : "";
+    document.getElementById("popFileName").textContent = mats.length > 1
+        ? `共 ${mats.length} 个素材`
+        : (mats[0] ? mats[0].name : "");
     document.getElementById("popLaunchResult").style.display = "none";
     document.getElementById("launchModal").classList.add("show");
     if(advertiserAccounts.length && !document.getElementById("popAdvertiser").value){
@@ -600,6 +744,153 @@ async function loadPopMarks(){
 function closeLaunchModal(){
     document.getElementById("launchModal").classList.remove("show");
 }
+
+// ===== AI 分析上下文：竞品链接 + 行业市场数据（保存到后台，分析时拼入提示词） =====
+let aiCtxData = {links: [], market_data: "", updated: ""};
+let aiCtxMode = "links";
+
+async function loadAiCtx(){
+    const aid = document.getElementById("matAdvertiser").value;
+    try{
+        const r = await fetch("/api/ai_context?advertiser_id=" + encodeURIComponent(aid));
+        const j = await r.json();
+        if(j.success){
+            aiCtxData = {links: j.links || [], market_data: j.market_data || "", updated: j.updated || ""};
+        }
+    }catch(e){}
+    updateAiCtxBadge();
+}
+function updateAiCtxBadge(){
+    const b = document.getElementById("aiCtxBadge");
+    if(!b) return;
+    const n = (aiCtxData.links || []).length + (aiCtxData.market_data ? 1 : 0);
+    b.textContent = n
+        ? "已加载：竞品 " + (aiCtxData.links||[]).length + " 条" + (aiCtxData.market_data ? " · 行业数据 1 份" : "")
+        : "未加载参考资料";
+    b.style.color = n ? "#16a34a" : "#9aa7ba";
+}
+function openAiCtxModal(mode){
+    aiCtxMode = mode;
+    document.getElementById("aiCtxTitle").textContent = mode === "links" ? "竞品链接" : "行业市场数据";
+    const body = document.getElementById("aiCtxBody");
+    if(mode === "links"){
+        body.innerHTML = `
+            <div class="lm-field">
+                <div class="lm-label">竞品链接 <span class="lm-hint">每行一条，供 AI 对比分析</span></div>
+                <textarea id="aiCtxLinksInput" rows="7" style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #e7edf6;border-radius:10px;font-size:13px;line-height:1.8;resize:vertical" placeholder="https://xxx.douyin.com/...\\nhttps://xxx.taobao.com/..."></textarea>
+            </div>
+            <div style="font-size:12px;color:#8a97ab" id="aiCtxLinksSaved">已保存：0 条</div>
+            <div class="lm-actions">
+                <button class="ghost" onclick="clearAiCtx()">清空</button>
+                <button class="lm-launch" onclick="saveAiCtx()">保存</button>
+            </div>`;
+        document.getElementById("aiCtxLinksInput").value = (aiCtxData.links || []).join("\\n");
+        document.getElementById("aiCtxLinksSaved").textContent = "已保存：" + (aiCtxData.links || []).length + " 条";
+    }else{
+        body.innerHTML = `
+            <div class="lm-field">
+                <div class="lm-label">行业市场数据 <span class="lm-hint">粘贴文本或上传 .txt/.csv 文件（\u226450KB）</span></div>
+                <textarea id="aiCtxMarketInput" rows="7" style="width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #e7edf6;border-radius:10px;font-size:13px;line-height:1.8;resize:vertical" placeholder="如：行业平均 CTR/CVR、大盘消耗趋势、竞对投放策略…"></textarea>
+                <div style="margin-top:8px"><input type="file" id="aiCtxMarketFile" accept=".txt,.csv" onchange="readAiCtxFile(this)"></div>
+            </div>
+            <div style="font-size:12px;color:#8a97ab" id="aiCtxMarketSaved">已保存：${aiCtxData.market_data ? (aiCtxData.market_data.length + " 字") : "0 字"}${aiCtxData.updated ? "（更新于 " + aiCtxData.updated + "）" : ""}</div>
+            <div class="lm-actions">
+                <button class="ghost" onclick="clearAiCtx()">清空</button>
+                <button class="lm-launch" onclick="saveAiCtx()">保存</button>
+            </div>`;
+        document.getElementById("aiCtxMarketInput").value = aiCtxData.market_data || "";
+    }
+    document.getElementById("aiCtxModal").classList.add("show");
+}
+function readAiCtxFile(inp){
+    const f = inp.files && inp.files[0];
+    if(!f) return;
+    if(f.size > 51200){ alert("文件过大，请控制在 50KB 以内"); inp.value = ""; return; }
+    const rd = new FileReader();
+    rd.onload = e => { document.getElementById("aiCtxMarketInput").value = e.target.result; };
+    rd.readAsText(f, "utf-8");
+}
+async function saveAiCtx(){
+    const aid = document.getElementById("matAdvertiser").value;
+    if(aiCtxMode === "links"){
+        const links = document.getElementById("aiCtxLinksInput").value.split(/\\n|,|;|；/).map(s=>s.trim()).filter(s=>s);
+        aiCtxData.links = links;
+    }else{
+        aiCtxData.market_data = document.getElementById("aiCtxMarketInput").value.trim();
+    }
+    try{
+        const r = await fetch("/api/ai_context", {
+            method: "POST", headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({advertiser_id: aid, links: aiCtxData.links || [], market_data: aiCtxData.market_data || ""})
+        });
+        const j = await r.json();
+        if(j.success){
+            aiCtxData.updated = new Date().toLocaleString("zh-CN");
+            updateAiCtxBadge();
+            alert("已保存。重新点击「深度分析」将结合参考资料输出更针对性的建议。");
+            closeAiCtxModal();
+        }else{
+            alert("保存失败：" + (j.error || "未知错误"));
+        }
+    }catch(e){
+        alert("保存失败：" + e);
+    }
+}
+function clearAiCtx(){
+    if(!confirm("确定清空已保存的" + (aiCtxMode === "links" ? "竞品链接" : "行业数据") + "？")) return;
+    if(aiCtxMode === "links"){ aiCtxData.links = []; }
+    else{ aiCtxData.market_data = ""; }
+    openAiCtxModal(aiCtxMode);
+}
+function closeAiCtxModal(){
+    document.getElementById("aiCtxModal").classList.remove("show");
+}
+
+// ===== 同一素材跨店铺分析：集合数据 + 店铺对比 =====
+function fmtNum(x){ return Number(x||0).toLocaleString("zh-CN"); }
+function trendTag(v){
+    if(v === "上升") return "<span style='color:#16a34a;font-weight:700'>↑ 上升</span>";
+    if(v === "下滑") return "<span style='color:#dc2626;font-weight:700'>↓ 下滑</span>";
+    if(v === "数据不足") return "<span style='color:#9aa7ba'>—</span>";
+    return "<span style='color:#1f6feb'>→ 平稳</span>";
+}
+async function loadMultiShop(mid, aid){
+    const box = document.getElementById("multiShopBox");
+    if(!box) return;
+    try{
+        const r = await fetch("/api/material_multi_shop?material_id=" + encodeURIComponent(mid) + (aid ? ("&advertiser_id="+encodeURIComponent(aid)) : ""));
+        const j = await r.json();
+        if(!j.success){ box.innerHTML = "<div class='muted' style='margin-top:12px'>跨店铺对比加载失败：" + esc(j.error||"") + "</div>"; return; }
+        const shops = j.shops || [];
+        let h = "<div style='margin-top:16px'>";
+        // 同一素材跨店铺对比
+        const okShops = shops.filter(s=>s.ok);
+        if(okShops.length > 1){
+            h += "<h4 style='font-size:14px;margin:14px 0 8px'>同一素材 · 各店铺对比</h4>";
+            h += "<div style='max-height:320px;overflow-y:auto;border:1px solid #e7edf6;border-radius:10px'><table class='data' style='margin:0;width:100%;font-size:12.5px'><tr><th>店铺</th><th>素材ID</th><th>素材名称</th><th>消耗</th><th>净成交金额</th><th>总成交金额</th><th>ROI</th><th>环比</th><th>同比</th></tr>";
+            okShops.forEach(s=>{
+                const hl = (s.advertiser_id === String(aid));
+                h += "<tr" + (hl ? " style='background:#eef4ff;font-weight:700'" : "") + ">";
+                h += "<td>" + esc(s.name) + (hl ? "（当前）" : "") + "</td>";
+                h += "<td style='font-family:monospace;font-size:11px'>" + esc(s.material_id || "") + "</td>";
+                h += "<td style='max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' title='" + esc(s.素材名称 || "") + "'>" + esc(s.素材名称 || "—") + "</td>";
+                h += "<td>" + fmtMoney(s.消耗) + "</td>";
+                h += "<td>" + fmtMoney(s.净成交金额) + "</td>";
+                h += "<td>" + fmtMoney(s.成交金额) + "</td>";
+                h += "<td>" + (s.支付ROI||0).toFixed(2) + "</td>";
+                h += "<td>" + trendTag(s.trend) + "</td>";
+                h += "<td>" + trendTag(s.yoy_trend) + "</td></tr>";
+            });
+            h += "</table></div>";
+        }else{
+            h += "<div class='muted' style='margin-top:8px'>当前仅 1 个店铺有该素材数据" + (shops.some(s=>!s.ok) ? "（其余店铺未授权或查询失败）" : "") + "</div>";
+        }
+        h += "</div>";
+        box.innerHTML = h;
+    }catch(e){
+        box.innerHTML = "<div class='muted' style='margin-top:12px'>跨店铺对比加载失败：" + esc(String(e)) + "</div>";
+    }
+}
 function onPopAdvertiserChange(){
     loadPopProducts();
     loadPopPlans();
@@ -640,18 +931,26 @@ async function loadPopPlans(force){
 }
 function renderPopPlanOptions(){
     const sel = document.getElementById("popPlanSelect");
+    const kw = (document.getElementById("popPlanSearch").value||"").trim().toLowerCase();
     sel.innerHTML = "";
+    const matched = kw ? popPlans.filter(p=>(p.name||"").toLowerCase().includes(kw)) : popPlans;
     const ph = document.createElement("option");
     ph.value = "";
-    ph.textContent = `共${popPlans.length}个投放计划`;
+    ph.textContent = `共${popPlans.length}个投放计划`+(kw?`，筛选出${matched.length}个`:"");
     sel.appendChild(ph);
-    popPlans.forEach(p=>{
+    matched.slice(0, 500).forEach(p=>{
         const o = document.createElement("option");
         o.value = p.ad_id;
         o.textContent = `[${p.status_text}] ${p.name}（日预算${fmtMoney(p.budget)}，消耗${fmtMoney(p.cost)}）`;
         sel.appendChild(o);
     });
+    if(matched.length > 500){
+        const tip = document.createElement("option");
+        tip.value = ""; tip.textContent = `…共${matched.length}个，仅显示前500个，请输入关键词筛选`;
+        sel.appendChild(tip);
+    }
 }
+function filterPopPlans(){ renderPopPlanOptions(); }
 function renderPopPlanSummary(res){
     const sum = document.getElementById("popPlanSummary");
     sum.innerHTML =
@@ -708,6 +1007,8 @@ async function popLaunchAd(){
     if(!planId){ alert("请先选择投放计划（素材必须投放到所选计划下，不会新建计划）"); return; }
     const btn = document.getElementById("popLaunchBtn");
     if(btn.disabled) return;
+    const mats = (popLocalFilePaths && popLocalFilePaths.length) ? popLocalFilePaths : [];
+    if(!mats.length){ alert("未选择素材"); return; }
     const testMode = document.getElementById("popTestMode").checked;
     setBusy(btn, true, testMode ? "测试模式：模拟投放中…" : "投放中，请稍候…");
     const lr = document.getElementById("popLaunchResult");
@@ -716,36 +1017,53 @@ async function popLaunchAd(){
     lr.style.color = "#55637a";
     lr.style.background = "#f6f8fb";
     lr.style.border = "1px solid #e4ebf4";
-    lr.innerText = testMode ? "【测试模式】正在本地模拟投放链路，不会创建真实计划…"
-                            : "正在把素材追加到所选投放计划，请稍候（约10-30秒）…";
-    try{
-        const payload = {
-            "platform":"douyin",
-            "local_file_path": popLocalFilePath,
-            "product_ids": [pid],
-            "advertiser_id": document.getElementById("popAdvertiser").value || null,
-            "plan_id": planId,
-            "tags": popSelectedTags,
-            "test_mode": testMode
-        };
-        const resp = await fetch("/api/ad/launch", {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify(payload)
-        });
-        const res = await resp.json();
-        lr.removeAttribute("style");
-        lr.className = "lm-result " + (res.success ? "ok" : "err");
-        lr.innerText = JSON.stringify(res,null,2);
+    lr.style.whiteSpace = "normal";
+    const total = mats.length;
+    const results = [];
+    for(let i=0;i<total;i++){
+        const m = mats[i];
+        lr.innerText = (testMode ? "【测试模式】" : "") + `正在投放素材 ${i+1}/${total}：${m.name} ${testMode ? "（模拟）" : "（约10-30秒）"}…`;
         lr.scrollIntoView({block:"nearest"});
-    }catch(e){
-        lr.removeAttribute("style");
-        lr.className = "lm-result err";
-        lr.innerText = "投放请求失败：" + e;
-        lr.scrollIntoView({block:"nearest"});
-    }finally{
-        setBusy(btn, false);
+        try{
+            const payload = {
+                "platform":"douyin",
+                "local_file_path": m.path,
+                "product_ids": [pid],
+                "advertiser_id": document.getElementById("popAdvertiser").value || null,
+                "plan_id": planId,
+                "tags": popSelectedTags,
+                "test_mode": testMode
+            };
+            const resp = await fetch("/api/ad/launch", {
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify(payload)
+            });
+            const res = await resp.json();
+            results.push({name:m.name, ok:!!res.success, res:res});
+        }catch(e){
+            results.push({name:m.name, ok:false, res:{success:false, error:String(e)}});
+        }
     }
+    const okN = results.filter(r=>r.ok).length;
+    let html = `<div class="lm-batch-summary">批量投放完成：成功 ${okN}/${total}${testMode ? "（测试模式，未产生真实费用）" : ""}</div>`;
+    results.forEach((r,i)=>{
+        const brief = r.ok && r.res && r.res.data ? (r.res.data.error_msg || r.res.msg || "") : (r.res.error || "");
+        html += `<div class="lm-batch-item ${r.ok?"ok":"err"}">
+            <b>${i+1}. ${esc(r.name)}</b> — ${r.ok ? "✅ 成功" : "❌ 失败"}${brief ? `　<span style="color:#8a97ab">${esc(brief)}</span>` : ""}
+            <pre>${esc(JSON.stringify(r.res,null,2))}</pre>
+        </div>`;
+    });
+    lr.removeAttribute("style");
+    lr.className = "lm-result " + (okN===total ? "ok" : "err");
+    lr.innerHTML = html;
+    lr.scrollIntoView({block:"nearest"});
+    setBusy(btn, false);
+    // 投放完成后刷新素材库中的投放状态徽标
+    await loadLaunchStatus();
+    const localTab = document.getElementById("tabLocal");
+    if(localTab && localTab.classList.contains("on")){ loadLocalMaterials(); }
+    else{ loadUploadedMaterials(); }
 }
 
 // ===== 单素材深度分析 =====
@@ -796,6 +1114,73 @@ function renderMaterialOptions(){
 
 function filterMaterials(){ renderMaterialOptions(); }
 
+// ===== 商品下拉框：店铺→商品→素材联动 =====
+let productOptions = [];
+async function loadProducts(){
+    const sel = document.getElementById("productSelect");
+    const aid = document.getElementById("matAdvertiser").value;
+    sel.innerHTML = "<option value=''>加载商品中…</option>";
+    try{
+        const res = await (await fetch("/api/products" + (aid ? ("?advertiser_id="+encodeURIComponent(aid)) : ""))).json();
+        productOptions = (res.success && res.data) ? res.data : [];
+        sel.innerHTML = "";
+        const all = document.createElement("option");
+        all.value = ""; all.textContent = "全部商品（素材为全部）";
+        sel.appendChild(all);
+        productOptions.forEach(p=>{
+            const o = document.createElement("option");
+            o.value = p.id;
+            o.textContent = p.name + (p.material_count ? `（${p.material_count}素材）` : "");
+            sel.appendChild(o);
+        });
+    }catch(e){
+        sel.innerHTML = "<option value=''>商品加载失败</option>";
+    }
+}
+function onProductChange(){
+    document.getElementById("matDetail").innerHTML = "";
+    const pid = document.getElementById("productSelect").value;
+    if(pid){
+        loadMaterialsByProduct(pid);
+    }else{
+        document.getElementById("productAgg").innerHTML = "";
+        loadMaterialList();
+    }
+}
+async function loadMaterialsByProduct(pid){
+    const sel = document.getElementById("materialSelect");
+    const aggBox = document.getElementById("productAgg");
+    sel.innerHTML = "<option>加载该商品素材…</option>";
+    aggBox.innerHTML = "<p class='spin' style='margin:8px 0 0'>正在汇总该商品所有素材的投放数据…</p>";
+    const aid = document.getElementById("matAdvertiser").value;
+    try{
+        const res = await (await fetch("/api/materials_by_product?advertiser_id=" + encodeURIComponent(aid) + "&product_id=" + encodeURIComponent(pid))).json();
+        if(!res.success){ sel.innerHTML = "<option>加载失败：" + (res.error||"") + "</option>"; aggBox.innerHTML = ""; return; }
+        const items = res.data || [];
+        materialOptions = items;
+        renderMaterialOptions();
+        const agg = res.agg;
+        if(agg){
+            let h = "<h4 style='font-size:14px;margin:0 0 8px'>该商品所有素材投放数据</h4>";
+            h += "<div class='kpi' style='margin-bottom:4px'>";
+            h += kpi("素材数", fmtNum(agg.素材数));
+            h += kpi("总消耗", fmtMoney(agg.消耗));
+            h += kpi("净成交金额", agg.净成交金额 ? fmtMoney(agg.净成交金额) : "—");
+            h += kpi("总成交金额", fmtMoney(agg.成交金额));
+            h += kpi("成交单数", fmtNum(agg.成交单数));
+            h += kpi("ROI", (agg.支付ROI||0).toFixed(2));
+            h += "</div>";
+            h += "<div class='muted' style='font-size:12px'>下拉框仅展示该商品下 " + items.length + " 个素材；数据来源为该商品在投计划挂载的素材。</div>";
+            aggBox.innerHTML = h;
+        }else{
+            aggBox.innerHTML = "";
+        }
+    }catch(e){
+        sel.innerHTML = "<option>加载失败</option>";
+        aggBox.innerHTML = "";
+    }
+}
+
 async function loadMaterialDetail(){
     const mid = document.getElementById("materialSelect").value;
     const box = document.getElementById("matDetail");
@@ -843,16 +1228,23 @@ async function loadMaterialDetail(){
                 html += `<div class='bar' title="${d.date} 消耗${d.cost} 成交${d.orders}单" style="height:${h}px"></div>`;
             });
             html += "</div>";
-            html += "<details style='margin-top:10px'><summary class='muted'>逐日明细（点击展开）</summary>";
-            html += "<table class='data'><tr><th>日期</th><th>消耗</th><th>展示</th><th>点击</th><th>成交单</th><th>成交金额</th></tr>";
+            html += "<details open style='margin-top:10px'><summary class='muted'>逐日明细（点击展开）</summary>";
+            html += "<div style='max-height:260px;overflow-y:auto;border:1px solid #e7edf6;border-radius:8px;'><table class='data' style='margin:0;width:100%'><tr><th>日期</th><th>消耗</th><th>展示</th><th>点击</th><th>成交单</th><th>成交金额</th></tr>";
             daily.forEach(d=>{
                 html += `<tr><td>${d.date}</td><td>${d.cost}</td><td>${d.show}</td><td>${d.click}</td><td>${d.orders}</td><td>${d.gmv}</td></tr>`;
             });
-            html += "</table></details>";
+            html += "</table></div></details>";
         }
-        html += "<div class='ai-head'>AI 点评与修改建议</div>";
-        html += "<div class='ai-box'>" + renderAiTabs(res.ai) + "</div>";
+        html += "<div id='multiShopBox'><p class='spin' style='margin:14px 0 0'>正在加载跨店铺对比与素材集合数据…</p></div>";
+        html += "<div class='ai-head' style='justify-content:space-between'>AI 点评与修改建议";
+        html += "<span style='display:flex;align-items:center;gap:8px;font-weight:400'>";
+        html += "<button class='ghost' style='font-weight:400' onclick='openAiCtxModal(\\"links\\")'>竞品链接</button>";
+        html += "<button class='ghost' style='font-weight:400' onclick='openAiCtxModal(\\"market\\")'>行业数据</button>";
+        html += "<span id='aiCtxBadge' style='font-size:12px;color:#8a97ab'></span></span></div>";
+        html += "<div class='ai-box'>" + renderAiViz(res.ai, s) + "</div>";
         box.innerHTML = html;
+        loadAiCtx();
+        loadMultiShop(mid, aid);
     }catch(e){
         box.innerHTML = "<p style='color:#e02424'>请求失败："+e+"</p>";
     }
@@ -865,6 +1257,118 @@ function aiInline(s){
     // 已 esc 后的文本里再把 **加粗** 转成 <b>（esc 已转义 < >，此处安全）
     // Python 层写双反斜杠，输出到 JS 为正则字面量（匹配字面双星号）
     return esc(s).replace(/\\*\\*(.+?)\\*\\*/g, "<b>$1</b>");
+}
+// ===== AI 点评可视化：诊断概览（评分条+阶段徽章） + 建议卡片 =====
+function judgeStage(s){
+    const days = Number(s.active_days) || 0;
+    const roi = parseFloat(s.支付ROI) || 0;
+    const trend = s.trend || "";
+    if(days <= 3){ return {name:"冷启动", cls:"cold"}; }
+    if(trend === "上升" && roi >= 1){ return {name:"起量期", cls:"up"}; }
+    if(trend === "下滑" && roi < 1){ return {name:"衰退期", cls:"down"}; }
+    return {name:"稳定期", cls:"stable"};
+}
+function gradeOf(v, t1, t2, t3){
+    if(v >= t1){ return {g:"优", c:"#16a34a"}; }
+    if(v >= t2){ return {g:"良", c:"#1f6feb"}; }
+    if(v >= t3){ return {g:"中", c:"#d97706"}; }
+    return {g:"差", c:"#dc2626"};
+}
+function scoreBar(label, val, pct, grade, color, unit){
+    return `<div class="viz-bar" title="${label} ${val}${unit||""}">
+        <div class="viz-lab">${label}</div>
+        <div class="viz-track"><div class="viz-fill" style="width:${Math.max(4, Math.min(100, pct))}%;background:${color}"></div></div>
+        <div class="viz-grade" style="color:${color}">${grade}</div>
+        <div class="viz-val">${val}${unit||""}</div>
+    </div>`;
+}
+function renderAiViz(text, s){
+    // 1) AI 结论 → 纯可视化：阶段徽章 + 六维健康度面板（全部由真实数据计算，无文字分析）
+    const stage = judgeStage(s);
+    const ctr = parseFloat(s.点击率) || 0;
+    const cvr = parseFloat(s.转化率) || 0;
+    const roi = parseFloat(s.支付ROI) || 0;
+    const cost = parseFloat(s.消耗) || 0;
+    const days = Number(s.active_days) || 0;
+    const trend = s.trend || "平稳";
+    const trendMeta = trend === "上升" ? {c:"#16a34a", p:100}
+        : (trend === "下滑" ? {c:"#dc2626", p:30} : {c:"#1f6feb", p:60});
+    const gCtr  = gradeOf(ctr, 3, 1.5, 0.8);
+    const gCvr  = gradeOf(cvr, 2, 1, 0.5);
+    const gRoi  = gradeOf(roi, 1.5, 1.2, 0.8);
+    const gRun  = gradeOf(cost, 2000, 800, 200);      // 跑量能力：按累计消耗分档
+    const gDays = gradeOf(days, 30, 15, 7);           // 投放稳定：按投放天数分档
+    let html = `<div class="viz-head">
+        <span class="viz-stage ${stage.cls}">${stage.name}</span>
+        <span class="viz-note" style="margin:0">累计投放 <b>${days}</b> 天 · 近7天消耗 <b>${fmtMoney(s.recent7_cost||0)}</b>${s.trend ? " · 趋势 <b>"+esc(s.trend)+"</b>" : ""}</span>
+    </div>`;
+    html += `<div class="viz-grid">`;
+    html += scoreBar("跑量能力", fmtMoney(cost), cost/3000*100, gRun.g, gRun.c, "");
+    html += scoreBar("点击率CTR", ctr.toFixed(2), ctr/4*100, gCtr.g, gCtr.c, "%");
+    html += scoreBar("转化率CVR", cvr.toFixed(2), cvr/3*100, gCvr.g, gCvr.c, "%");
+    html += scoreBar("投资回报ROI", roi.toFixed(2), roi/2*100, gRoi.g, gRoi.c, "");
+    html += scoreBar("消耗趋势", trend, trendMeta.p, trend, trendMeta.c, "");
+    html += scoreBar("投放稳定", days + "天", days/30*100, gDays.g, gDays.c, "");
+    html += `</div>`;
+    // 2) AI 修改建议 → 建议卡片网格（行动项，保留精炼文字）
+    html += renderAiVisual(text);
+    return html;
+}
+// 把 AI 文本解析为可视化元素：建议章节→卡片网格；解析不到建议章节时保底全部显示，避免空白
+function renderAiVisual(text){
+    const raw = String(text==null?"":text).trim();
+    if(!raw) return "<div class='muted'>（无返回）</div>";
+    if(/失败|error/i.test(raw) && raw.length < 160){
+        return `<div class="muted" style="color:#c0392b">${esc(raw)}</div>`;
+    }
+    const lines = raw.split(/\\r?\\n/).map(l=>l.trim()).filter(l=>l.length>0);
+    if(!lines.length) return "<div class='muted'>（无返回）</div>";
+    const secs = [];
+    let cur = null;
+    lines.forEach(line=>{
+        // 兼容多种章节写法：**一、xxx** / ## xxx / 1. xxx / 一、xxx
+        let rl = line.replace(/^\\*{1,2}/, "").replace(/\\*{1,2}$/, "").trim();
+        // 章节仅认中文序号或 markdown 标题；数字编号条目（1. xxx）归入上一章节的卡片
+        const m = rl.match(/^(第?[一二三四五六七八九十百]+)[、.．:：)）]\\s*(.+)$/)
+               || rl.match(/^#{1,6}\\s*(.+)$/);
+        if(m){
+            let title = (m[2] || m[1] || "").trim();
+            const cm = title.match(/^([^：:]{1,10})[：:]\\s*(.+)$/);
+            if(cm){ title = cm[1].trim(); }
+            else{ title = title.replace(/[：:]\\s*$/, ""); }
+            cur = {title: title, items: []};
+            secs.push(cur);
+            if(cm && cm[2].trim()){ cur.items.push(cm[2].trim()); }
+        }else{
+            if(!cur){ cur = {title: "AI 结论", items: []}; secs.push(cur); }
+            cur.items.push(line);
+        }
+    });
+    if(!secs.length){ secs.push({title: "AI 结论", items: lines}); }
+    const ADV = /建议|优化|修改|改法|方向|行动|提升|加强|关注/;
+    // 保底：解析不到任何建议章节时，全部章节都渲染为卡片，保证"点评与修改建议"区域有内容
+    const hasAdvice = secs.some(sec=>ADV.test(sec.title));
+    let html = "";
+    secs.forEach(sec=>{
+        if(hasAdvice && !ADV.test(sec.title)){ return; }
+        html += `<div class="viz-sec"><span class="viz-sec-tag">${esc(sec.title)}</span></div>`;
+        const cards = [];
+        sec.items.forEach(line=>{
+            const num = line.match(/^(\\d+)[、.．:：)）]\\s*(.+)$/);
+            const circle = line.match(/^([①②③④⑤⑥⑦⑧⑨⑩])\\s*(.+)$/);
+            const bold = line.match(/^\\*\\*(.+?)\\*\\*$/);
+            if(num){ cards.push({t: num[2].trim()}); }
+            else if(circle){ cards.push({t: circle[2].trim()}); }
+            else if(bold){ cards.push({t: bold[1].trim()}); }
+            else if(line.length){ cards.push({t: line}); }
+        });
+        html += `<div class="viz-cards">`;
+        cards.forEach((c,i)=>{
+            html += `<div class="viz-card"><span class="viz-no">${i+1}</span><span class="viz-txt">${aiInline(c.t)}</span></div>`;
+        });
+        html += `</div>`;
+    });
+    return html;
 }
 // Tab 内容区行渲染：编号条目 / 圆号条目 / 普通行
 function renderAiTabLines(lines){
