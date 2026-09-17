@@ -310,12 +310,15 @@ HTML_PAGE = """
         </div>
         <div class="row">
             <label class="muted">店铺</label>
-            <select id="matAdvertiser" onchange="onMatAdvertiserChange()" style="min-width:230px"></select>
+            <select id="matAdvertiser" onchange="onMatAdvertiserChange()" style="min-width:210px"></select>
+            <label class="muted">商品</label>
+            <select id="productSelect" onchange="onProductChange()" style="min-width:190px"><option value="">全部商品</option></select>
             <input type="text" id="materialSearch" placeholder="输入关键词筛选素材…"
-                   oninput="filterMaterials()" style="width:240px">
-            <select id="materialSelect" style="flex:1;min-width:260px" onchange="loadMaterialDetail()"></select>
+                   oninput="filterMaterials()" style="width:200px">
+            <select id="materialSelect" style="flex:1;min-width:240px" onchange="loadMaterialDetail()"></select>
             <button class="ghost" onclick="loadMaterialList(true)" title="从千川重新拉取最新数据（约40秒）">刷新素材</button>
         </div>
+        <div id="productAgg" style="margin-top:12px"></div>
         <div id="matDetail" style="margin-top:14px;"></div>
     </div>
 </div>
@@ -476,6 +479,8 @@ async function loadAdvertiserSelects(){
 
 function onMatAdvertiserChange(){
     document.getElementById("matDetail").innerHTML = "";
+    document.getElementById("productAgg").innerHTML = "";
+    loadProducts();
     loadMaterialList();
 }
 
@@ -1107,6 +1112,73 @@ function renderMaterialOptions(){
 }
 
 function filterMaterials(){ renderMaterialOptions(); }
+
+// ===== 商品下拉框：店铺→商品→素材联动 =====
+let productOptions = [];
+async function loadProducts(){
+    const sel = document.getElementById("productSelect");
+    const aid = document.getElementById("matAdvertiser").value;
+    sel.innerHTML = "<option value=''>加载商品中…</option>";
+    try{
+        const res = await (await fetch("/api/products" + (aid ? ("?advertiser_id="+encodeURIComponent(aid)) : ""))).json();
+        productOptions = (res.success && res.data) ? res.data : [];
+        sel.innerHTML = "";
+        const all = document.createElement("option");
+        all.value = ""; all.textContent = "全部商品（素材为全部）";
+        sel.appendChild(all);
+        productOptions.forEach(p=>{
+            const o = document.createElement("option");
+            o.value = p.id;
+            o.textContent = p.name + (p.material_count ? `（${p.material_count}素材）` : "");
+            sel.appendChild(o);
+        });
+    }catch(e){
+        sel.innerHTML = "<option value=''>商品加载失败</option>";
+    }
+}
+function onProductChange(){
+    document.getElementById("matDetail").innerHTML = "";
+    const pid = document.getElementById("productSelect").value;
+    if(pid){
+        loadMaterialsByProduct(pid);
+    }else{
+        document.getElementById("productAgg").innerHTML = "";
+        loadMaterialList();
+    }
+}
+async function loadMaterialsByProduct(pid){
+    const sel = document.getElementById("materialSelect");
+    const aggBox = document.getElementById("productAgg");
+    sel.innerHTML = "<option>加载该商品素材…</option>";
+    aggBox.innerHTML = "<p class='spin' style='margin:8px 0 0'>正在汇总该商品所有素材的投放数据…</p>";
+    const aid = document.getElementById("matAdvertiser").value;
+    try{
+        const res = await (await fetch("/api/materials_by_product?advertiser_id=" + encodeURIComponent(aid) + "&product_id=" + encodeURIComponent(pid))).json();
+        if(!res.success){ sel.innerHTML = "<option>加载失败：" + (res.error||"") + "</option>"; aggBox.innerHTML = ""; return; }
+        const items = res.data || [];
+        materialOptions = items;
+        renderMaterialOptions();
+        const agg = res.agg;
+        if(agg){
+            let h = "<h4 style='font-size:14px;margin:0 0 8px'>该商品所有素材投放数据</h4>";
+            h += "<div class='kpi' style='margin-bottom:4px'>";
+            h += kpi("素材数", fmtNum(agg.素材数));
+            h += kpi("总消耗", fmtMoney(agg.消耗));
+            h += kpi("净成交金额", agg.净成交金额 ? fmtMoney(agg.净成交金额) : "—");
+            h += kpi("总成交金额", fmtMoney(agg.成交金额));
+            h += kpi("成交单数", fmtNum(agg.成交单数));
+            h += kpi("ROI", (agg.支付ROI||0).toFixed(2));
+            h += "</div>";
+            h += "<div class='muted' style='font-size:12px'>下拉框仅展示该商品下 " + items.length + " 个素材；数据来源为该商品在投计划挂载的素材。</div>";
+            aggBox.innerHTML = h;
+        }else{
+            aggBox.innerHTML = "";
+        }
+    }catch(e){
+        sel.innerHTML = "<option>加载失败</option>";
+        aggBox.innerHTML = "";
+    }
+}
 
 async function loadMaterialDetail(){
     const mid = document.getElementById("materialSelect").value;

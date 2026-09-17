@@ -262,6 +262,37 @@ async def material_list(advertiser_id: str = "", refresh: bool = False):
         return {"success": False, "error": str(e), "data": []}
 
 
+@router.get("/api/materials_by_product")
+async def materials_by_product(advertiser_id: str = "", product_id: str = ""):
+    """返回指定商品下的素材列表（来自该商品在投全域计划挂载的素材，去重），
+    并聚合该商品所有素材的投放数据（素材数/消耗/净成交/总成交/ROI/成交单数）。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        if not product_id:
+            return {"success": True, "data": [], "agg": None, "total": 0, "note": "未选择商品"}
+        mat_ids = set(svc.get_product_material_ids(product_id))
+        mats = svc.get_all_materials_report()[0]["materials"]
+        items = [m for m in mats if m["id"] in mat_ids]
+        agg = {"素材数": len(items),
+               "消耗": round(sum(float(m.get("消耗") or 0) for m in items), 2),
+               "成交金额": round(sum(float(m.get("成交金额") or 0) for m in items), 2),
+               "成交单数": int(sum(float(m.get("成交单数") or 0) for m in items)),
+               "净成交金额": round(sum(float(
+                   next((x["value"] for x in (m.get("metrics_all") or [])
+                        if x["field"] == "total_order_settle_amount_for_roi2_1h"), 0))
+                   for m in items), 2)}
+        if agg["消耗"]:
+            agg["支付ROI"] = round(agg["成交金额"] / agg["消耗"], 2)
+        out = [{"id": m["id"], "name": m["name"], "type": m["type"],
+                "消耗": m["消耗"], "成交金额": m["成交金额"], "支付ROI": m["支付ROI"]}
+               for m in items]
+        out.sort(key=lambda x: -float(x["消耗"] or 0))
+        return {"success": True, "data": out, "agg": agg, "total": len(out)}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": [], "agg": None}
+
+
 @router.get("/api/material_detail")
 async def material_detail(material_id: str, advertiser_id: str = ""):
     """单个素材：汇总+逐日曲线+DeepSeek点评与建议。可指定 advertiser_id 查询对应账户的素材。"""

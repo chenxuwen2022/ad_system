@@ -628,6 +628,127 @@ class DouYinAdService:
         _cache_set(cache_key, result, 600)
         return result
 
+    def _build_video_id_map(self, force: bool = False) -> dict:
+        """建立 素材库video_id(v开头) → 报表material_id(数字) 映射表。缓存 1 小时。
+        千川两套素材ID：素材报表/素材库用数字 material_id；投放计划详情 video_material 用 v 开头 video_id。
+        素材库 video/get 按数字批量查（单次上限20个），返回 item.id(v开头) 与 material_id(数字)。"""
+        cache_key = ("vidmap", str(self.advertiser_id))
+        if not force:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+        vmap = {}
+        try:
+            mats = self.get_all_materials_report()[0]["materials"]
+            mids = [m["id"] for m in mats if m.get("type") == "视频" and str(m["id"]).isdigit()]
+            import concurrent.futures as _cf, time as _t
+
+            def _batch(ids):
+                for attempt in range(3):
+                    try:
+                        r = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/video/get/",
+                                         headers=self.headers,
+                                         params={"advertiser_id": int(self.advertiser_id),
+                                                 "filtering": json.dumps({"material_ids": [int(x) for x in ids]})},
+                                         timeout=60).json()
+                        if r.get("code") == 0:
+                            out = {}
+                            for it in (r.get("data", {}) or {}).get("list", []) or []:
+                                if it.get("id") and it.get("material_id"):
+                                    out[str(it["id"])] = str(it["material_id"])
+                            return out
+                        if r.get("code") == 40100:
+                            _t.sleep(6)
+                            continue
+                        return {}
+                    except Exception:
+                        _t.sleep(2)
+                return {}
+
+            # 串行分批：千川 video/get 并发易触发限流(40100)，串行+批间小间隔最稳
+            batches = [mids[i:i + 20] for i in range(0, len(mids), 20)]
+            for b in batches:
+                vmap.update(_batch(b))
+                _t.sleep(0.2)
+        except Exception:
+            pass
+        # 空结果不缓存，避免 1 小时内一直用空映射
+        if vmap:
+            _cache_set(cache_key, vmap, 3600)
+        return vmap
+
+    def get_product_material_ids(self, product_id, force: bool = False) -> list:
+        """该商品在投全域计划下挂载的素材ID（报表数字ID，去重）。缓存 10 分钟。
+        计划详情 multi_product_creative_list 含 video_material（v开头 video_id），
+        经 video_id→material_id 映射后返回；仅覆盖在投全域计划，未投计划的素材不计入。"""
+        cache_key = ("prod_matids", str(self.advertiser_id), str(product_id))
+        if not force:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+        ids = set()
+        try:
+            # 在投全域计划列表
+            url = f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/list/"
+            params = {
+                "advertiser_id": int(self.advertiser_id),
+                "start_time": (datetime.datetime.now() - datetime.timedelta(days=90)).strftime("%Y-%m-%d 00:00:00"),
+                "end_time": datetime.datetime.now().strftime("%Y-%m-%d 23:59:59"),
+                "marketing_goal": "VIDEO_PROM_GOODS",
+                "filtering": json.dumps({"status": "DELIVERY_OK"}),
+                "fields": json.dumps(["stat_cost"]),
+                "page": 1, "page_size": 100,
+            }
+            import time as _t
+            for attempt in range(3):
+                try:
+                    rj = requests.get(url, headers=self.headers, params=params, timeout=30).json()
+                except Exception:
+                    rj = {}
+                if rj.get("code") == 0 and (rj.get("data", {}) or {}).get("ad_list"):
+                    break
+                _t.sleep(2)
+            if rj.get("code") == 0:
+                plan_ids = [str((p.get("ad_info") or {}).get("id"))
+                            for p in (rj.get("data", {}) or {}).get("ad_list", []) or []
+                            if (p.get("ad_info") or {}).get("id")]
+                import concurrent.futures as _cf
+                with _cf.ThreadPoolExecutor(max_workers=12) as ex:
+                    futs = [ex.submit(self._fetch_plan_detail_mids, pid, product_id) for pid in plan_ids]
+                    for fu in _cf.as_completed(futs):
+                        ids.update(fu.result())
+            # v开头 video_id → 报表数字 material_id
+            vmap = self._build_video_id_map()
+            ids = {vmap.get(v) for v in ids if vmap.get(v)}
+        except Exception:
+            pass
+        out = sorted(ids)
+        _cache_set(cache_key, out, 600)
+        return out
+
+    def _fetch_plan_detail_mids(self, ad_id: str, product_id: str = "") -> list:
+        """读单个全域计划详情，返回该计划下（指定商品）所有素材 video_id 列表。
+        product_id 为空时返回计划下全部素材。"""
+        for _ in (1, 2):
+            try:
+                d = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/ad/detail/",
+                                 headers=self.headers,
+                                 params={"advertiser_id": int(self.advertiser_id), "ad_id": int(ad_id)},
+                                 timeout=8).json()
+                if d.get("code") != 0:
+                    continue
+                mids = []
+                for c in (d.get("data", {}) or {}).get("multi_product_creative_list", []) or []:
+                    if product_id and str(c.get("product_id") or "") != str(product_id):
+                        continue
+                    for v in (c.get("video_material") or []) or []:
+                        if v.get("video_id"):
+                            mids.append(str(v["video_id"]))
+                return mids
+            except Exception:
+                continue
+        return []
+
     # 千川全域计划状态 → 中文
     _PLAN_STATUS_TEXT = {
         0: "已删除", 1: "投放中", 2: "已暂停", 3: "已超预算",
