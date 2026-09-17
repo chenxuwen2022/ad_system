@@ -360,10 +360,10 @@ class OfoxGateway(BaseLLMClient):
                             delta_obj = choice0.get("delta", {})
 
                             # 简要日志：keys + 是否有 thinking/content
-                            if delta_obj:
-                                has_rd = bool(delta_obj.get("reasoning_details"))
-                                has_content = bool(delta_obj.get("content"))
-                                print(f"[llm-stream] keys={list(delta_obj.keys())} rd={has_rd} content={has_content}", flush=True)
+                            # if delta_obj:
+                            #     has_rd = bool(delta_obj.get("reasoning_details"))
+                            #     has_content = bool(delta_obj.get("content"))
+                            #     print(f"[llm-stream] keys={list(delta_obj.keys())} rd={has_rd} content={has_content}", flush=True)
 
                             # ── 累积到缓冲区（不再每个 chunk 直接 yield）──
                             # ofox 的 thinking 通过 reasoning_details list 返回：

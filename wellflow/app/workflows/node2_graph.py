@@ -165,9 +165,16 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
             print(f"[node2] ⚠️ schemes 不是 list，实际是 {type(schemes)}", flush=True)
             schemes = []
 
+        # 空 schemes 必须抛错：静默写入 state 会用 [] 覆盖旧 schemes（reducer 字段级合并），
+        # 导致 c2 无方案可选、node3 "没有选中的方案"。抛错让 graph 走 error 分支，前端可重试。
+        if not schemes:
+            raise RuntimeError(
+                f"[node2] VLM 未返回任何方案（raw_content len={len(raw_content)}），请重试"
+            )
+
         if len(schemes) > scheme_count:
             schemes = schemes[:scheme_count]
-        elif len(schemes) < scheme_count and schemes:
+        elif len(schemes) < scheme_count:
             print(f"[node2] ⚠️ VLM 只返回 {len(schemes)}/{scheme_count} 套，补齐空方案", flush=True)
             schemes.extend([
                 {"scheme_index": len(schemes), "scheme_name": "方案待补充", "_placeholder": True}
