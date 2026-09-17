@@ -208,6 +208,21 @@ HTML_PAGE = """
         .lm-tag.on { background:#e8f1ff; border-color:#1f6feb; color:#1f6feb; font-weight:600; }
         .lm-tag.on .dot { box-shadow:0 0 0 2px #fff inset; }
         .lm-tags-empty { font-size:12.5px; color:#9aa7ba; }
+        .mat-card { position:relative; }
+        .mat-check { position:absolute; top:8px; left:8px; width:22px; height:22px; border-radius:50%;
+            background:rgba(255,255,255,.92); border:2px solid #c2cad6; display:flex; align-items:center;
+            justify-content:center; font-size:13px; color:#fff; cursor:pointer; z-index:2; transition:.15s;
+            user-select:none; line-height:1; }
+        .mat-check:hover { border-color:#1f6feb; }
+        .mat-check.on { background:#1f6feb; border-color:#1f6feb; }
+        .mat-card.sel { border-color:#1f6feb; box-shadow:0 0 0 2px rgba(31,111,235,.15); }
+        .lib-tabs { display:flex; align-items:center; gap:10px; }
+        .batch-btn { margin-left:auto; }
+        .lm-batch-summary { font-size:15px; font-weight:700; margin-bottom:10px; }
+        .lm-batch-item { border:1px solid #e7edf6; border-radius:10px; padding:10px 14px; margin-bottom:8px; background:#fff; }
+        .lm-batch-item.ok { border-color:#c9ecd4; }
+        .lm-batch-item.err { border-color:#f3cccc; background:#fdf8f8; }
+        .lm-batch-item pre { margin:6px 0 0; font-size:12px; white-space:pre-wrap; word-break:break-all; }
     </style>
 </head>
 <body>
@@ -225,6 +240,7 @@ HTML_PAGE = """
         <div class="lib-tabs">
             <button class="lib-tab on" id="tabLocal" onclick="switchLib('local')">本地素材库</button>
             <button class="lib-tab" id="tabUpload" onclick="switchLib('upload')">上传素材库</button>
+            <button class="ghost batch-btn" id="batchLaunchBtn" onclick="openBatchLaunchModal()" style="display:none">批量投放(0)</button>
         </div>
         <div id="libLocal">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
@@ -501,7 +517,10 @@ function renderMaterialGrid(box, items, urlPrefix){
     grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;";
     items.forEach(it=>{
         const url = urlPrefix + encodeURIComponent(it.name);
+        const sel = selectedMaterials.some(x=>x.path===it.path);
         const card = document.createElement("div");
+        card.className = "mat-card" + (sel ? " sel" : "");
+        card.setAttribute("data-path", it.path);
         card.style.cssText = "border:1px solid #e5e6eb;border-radius:8px;overflow:hidden;background:#fff;display:flex;flex-direction:column;";
         let mediaHtml = "";
         if(it.type === "video"){
@@ -512,6 +531,8 @@ function renderMaterialGrid(box, items, urlPrefix){
         const tag = it.type === "video" ? "<span style='color:#c96442'>视频</span>" : "<span style='color:#3370ff'>图片</span>";
         const timeTxt = fmtTime(it.mtime);
         card.innerHTML =
+            `<span class="mat-check${sel ? " on" : ""}" title="勾选后批量投放"
+                  onclick='event.stopPropagation();toggleMaterial(${JSON.stringify({path:it.path,name:it.name,type:it.type})})'>${sel ? "✓" : ""}</span>` +
             mediaHtml +
             `<div style="padding:8px 10px;flex:1;display:flex;flex-direction:column;gap:4px">
                 <div style="font-size:13px;word-break:break-all" title="${esc(it.name)}">${esc(it.name)}</div>
@@ -527,6 +548,35 @@ function renderMaterialGrid(box, items, urlPrefix){
 function renderLocalMaterials(items){
     renderMaterialGrid(document.getElementById("localMaterialBox"), items, "/api/local_media/");
 }
+// ===== 素材勾选（跨本地/上传库）与批量投放入口 =====
+function toggleMaterial(it){
+    const i = selectedMaterials.findIndex(x=>x.path===it.path);
+    if(i >= 0){ selectedMaterials.splice(i, 1); }
+    else{ selectedMaterials.push({path:it.path, name:it.name, type:it.type||""}); }
+    updateBatchBtn();
+    refreshCardSel(it.path);
+}
+function refreshCardSel(path){
+    document.querySelectorAll(".mat-card[data-path]").forEach(c=>{
+        if(c.getAttribute("data-path") === path){
+            const on = selectedMaterials.some(x=>x.path===path);
+            c.classList.toggle("sel", on);
+            const chk = c.querySelector(".mat-check");
+            if(chk){ chk.classList.toggle("on", on); chk.textContent = on ? "✓" : ""; }
+        }
+    });
+}
+function updateBatchBtn(){
+    const btn = document.getElementById("batchLaunchBtn");
+    if(!btn) return;
+    const n = selectedMaterials.length;
+    btn.style.display = n ? "" : "none";
+    btn.textContent = "批量投放(" + n + ")";
+}
+function openBatchLaunchModal(){
+    if(!selectedMaterials.length){ alert("请先在素材库勾选要投放的素材（点击卡片左上角圆圈）"); return; }
+    openLaunchModalWith(selectedMaterials.slice());
+}
 async function loadUploadedMaterials(){
     const box = document.getElementById("uploadedMaterialBox");
     box.innerHTML = "<p class='spin'>加载中…</p>";
@@ -541,11 +591,19 @@ async function loadUploadedMaterials(){
 
 // ===== 弹窗：选择商品并投放 =====
 let popLocalFilePath = "";
+let popLocalFilePaths = []; // 批量投放：本次选中的全部素材 [{path,name,type}]
+let selectedMaterials = []; // 素材库中已勾选的素材（跨本地/上传两个库）
 let popTagList = [];        // 标签设置里的全部标签
 let popSelectedTags = [];   // 本次投放选中的标签（多选）
 function openLaunchModal(path, name){
-    popLocalFilePath = path;
-    document.getElementById("popFileName").textContent = name;
+    openLaunchModalWith([{path:path, name:name, type:""}]);
+}
+function openLaunchModalWith(mats){
+    popLocalFilePaths = mats;
+    popLocalFilePath = mats.length ? mats[0].path : "";
+    document.getElementById("popFileName").textContent = mats.length > 1
+        ? `共 ${mats.length} 个素材`
+        : (mats[0] ? mats[0].name : "");
     document.getElementById("popLaunchResult").style.display = "none";
     document.getElementById("launchModal").classList.add("show");
     if(advertiserAccounts.length && !document.getElementById("popAdvertiser").value){
@@ -718,6 +776,8 @@ async function popLaunchAd(){
     if(!planId){ alert("请先选择投放计划（素材必须投放到所选计划下，不会新建计划）"); return; }
     const btn = document.getElementById("popLaunchBtn");
     if(btn.disabled) return;
+    const mats = (popLocalFilePaths && popLocalFilePaths.length) ? popLocalFilePaths : [];
+    if(!mats.length){ alert("未选择素材"); return; }
     const testMode = document.getElementById("popTestMode").checked;
     setBusy(btn, true, testMode ? "测试模式：模拟投放中…" : "投放中，请稍候…");
     const lr = document.getElementById("popLaunchResult");
@@ -726,36 +786,48 @@ async function popLaunchAd(){
     lr.style.color = "#55637a";
     lr.style.background = "#f6f8fb";
     lr.style.border = "1px solid #e4ebf4";
-    lr.innerText = testMode ? "【测试模式】正在本地模拟投放链路，不会创建真实计划…"
-                            : "正在把素材追加到所选投放计划，请稍候（约10-30秒）…";
-    try{
-        const payload = {
-            "platform":"douyin",
-            "local_file_path": popLocalFilePath,
-            "product_ids": [pid],
-            "advertiser_id": document.getElementById("popAdvertiser").value || null,
-            "plan_id": planId,
-            "tags": popSelectedTags,
-            "test_mode": testMode
-        };
-        const resp = await fetch("/api/ad/launch", {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify(payload)
-        });
-        const res = await resp.json();
-        lr.removeAttribute("style");
-        lr.className = "lm-result " + (res.success ? "ok" : "err");
-        lr.innerText = JSON.stringify(res,null,2);
+    lr.style.whiteSpace = "normal";
+    const total = mats.length;
+    const results = [];
+    for(let i=0;i<total;i++){
+        const m = mats[i];
+        lr.innerText = (testMode ? "【测试模式】" : "") + `正在投放素材 ${i+1}/${total}：${m.name} ${testMode ? "（模拟）" : "（约10-30秒）"}…`;
         lr.scrollIntoView({block:"nearest"});
-    }catch(e){
-        lr.removeAttribute("style");
-        lr.className = "lm-result err";
-        lr.innerText = "投放请求失败：" + e;
-        lr.scrollIntoView({block:"nearest"});
-    }finally{
-        setBusy(btn, false);
+        try{
+            const payload = {
+                "platform":"douyin",
+                "local_file_path": m.path,
+                "product_ids": [pid],
+                "advertiser_id": document.getElementById("popAdvertiser").value || null,
+                "plan_id": planId,
+                "tags": popSelectedTags,
+                "test_mode": testMode
+            };
+            const resp = await fetch("/api/ad/launch", {
+                method:"POST",
+                headers:{"Content-Type":"application/json"},
+                body:JSON.stringify(payload)
+            });
+            const res = await resp.json();
+            results.push({name:m.name, ok:!!res.success, res:res});
+        }catch(e){
+            results.push({name:m.name, ok:false, res:{success:false, error:String(e)}});
+        }
     }
+    const okN = results.filter(r=>r.ok).length;
+    let html = `<div class="lm-batch-summary">批量投放完成：成功 ${okN}/${total}${testMode ? "（测试模式，未产生真实费用）" : ""}</div>`;
+    results.forEach((r,i)=>{
+        const brief = r.ok && r.res && r.res.data ? (r.res.data.error_msg || r.res.msg || "") : (r.res.error || "");
+        html += `<div class="lm-batch-item ${r.ok?"ok":"err"}">
+            <b>${i+1}. ${esc(r.name)}</b> — ${r.ok ? "✅ 成功" : "❌ 失败"}${brief ? `　<span style="color:#8a97ab">${esc(brief)}</span>` : ""}
+            <pre>${esc(JSON.stringify(r.res,null,2))}</pre>
+        </div>`;
+    });
+    lr.removeAttribute("style");
+    lr.className = "lm-result " + (okN===total ? "ok" : "err");
+    lr.innerHTML = html;
+    lr.scrollIntoView({block:"nearest"});
+    setBusy(btn, false);
 }
 
 // ===== 单素材深度分析 =====
