@@ -374,7 +374,7 @@ def _call_vlm_recognize(raw: bytes):
             "要求:\n1. 按从上到下、从外到内排列\n"
             "2. 不要包含人物本身特征(发型、肤色、身材)\n3. 只输出 JSON,不要任何解释"
         )
-        client = get_llm_client("vlm", model_override=settings.llm_model_vlm)
+        client = get_llm_client("vlm", model_override=settings.llm_model_node3)  # 识别 VLM(网关已部署 gemini-3.7-flash)
         resp = await client.chat_with_images(
             system="你是专业的电商服饰单品识别专家。",
             user=prompt,
