@@ -1209,7 +1209,9 @@ class DouYinAdService:
             }
 
         with ThreadPoolExecutor(max_workers=min(5, len(tasks))) as ex:
-            futures = {ex.submit(self._fetch_report_topic, topic, dims, filters, start_s, end_s): (tname, name_dim, has_mid)
+            # 列表也请求 25 项全量指标（metrics_all 覆盖店铺行/聚合卡/跨店铺对比），页面"全部报表指标"统一 25 项
+            futures = {ex.submit(self._fetch_report_topic, topic, dims, filters, start_s, end_s,
+                                 metrics=_MATERIAL_STATS_FIELDS): (tname, name_dim, has_mid)
                        for tname, topic, dims, filters, name_dim, has_mid in tasks}
             for fu in as_completed(futures):
                 tname, name_dim, has_mid = futures[fu]
@@ -1488,6 +1490,7 @@ class DouYinAdService:
         if not row:
             raise Exception(f"素材 {material_id} 近3个月无投放数据")
         topic = self._TYPE_TOPIC.get(row["type"], "SITE_PROMOTION_PRODUCT_POST_DATA_VIDEO")
+        name_dim = {"视频": "roi2_material_video_name", "图片": "roi2_material_image_name"}.get(row["type"])
 
         # 2. 逐日曲线（标题类无material_id，跳过；抽取公共方法便于跨店铺轻量复用）
         daily = self._fetch_material_daily(material_id, row, days=90)
