@@ -40,9 +40,15 @@ from wellflow.app.api.tasks import router as wf_tasks_router
 from wellflow.app.api.products import router as wf_products_router
 from wellflow.app.api.mannequins import router as wf_mannequins_router
 from wellflow.app.api.chat import router as wf_chat_router
+from wellflow.app.api.conversations import router as wf_conversations_router
 from wellflow.app.sse import router as wf_sse_router
 from wellflow.app.config import settings as wf_settings
-from wellflow.app.main import init_wellflow_runtime
+from wellflow.app.runtime import (
+    init_wellflow_runtime,
+    get_checkpointer as wf_get_checkpointer,
+    get_graph as wf_get_graph,
+    shutdown_wellflow_runtime,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,6 +62,7 @@ async def lifespan(app: FastAPI):
     await init_wellflow_runtime()
     print("✅ 商拍子系统（WellFlow）就绪")
     yield
+    await shutdown_wellflow_runtime()
 
 
 app = FastAPI(title="AI 电商运营中台（广告投放 + 电商商拍）", lifespan=lifespan)
@@ -89,6 +96,9 @@ app.include_router(wf_uploads_router, prefix="/api")
 # WellFlow 对话入口（意图路由 —— 把自然语言映射到 LangGraph 节点）
 app.include_router(wf_chat_router, prefix="/api")
 
+# WellFlow 会话管理（Conversation-centric 历史列表 + 详情 + 删除）
+app.include_router(wf_conversations_router, prefix="/api")
+
 app.include_router(wf_sse_router)
 _wf_upload_dir = Path(wf_settings.upload_dir).resolve()
 _wf_upload_dir.mkdir(parents=True, exist_ok=True)
@@ -97,13 +107,12 @@ app.mount("/uploads", StaticFiles(directory=_wf_upload_dir), name="wellflow_uplo
 
 @app.get("/health", tags=["系统"], summary="健康检查（含两个子系统状态）")
 def health():
-    from wellflow.app.main import get_checkpointer, get_graph
     return {
         "status": "ok",
         "ad_system": "ok",
         "wellflow": "ok",
-        "langgraph_available": get_graph() is not None,
-        "checkpointer_available": get_checkpointer() is not None,
+        "langgraph_available": wf_get_graph() is not None,
+        "checkpointer_available": wf_get_checkpointer() is not None,
     }
 
 

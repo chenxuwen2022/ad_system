@@ -49,7 +49,7 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 
 def _get_graph():
-    from wellflow.app.main import get_graph as _gg
+    from wellflow.app.runtime import get_graph as _gg
     g = _gg()
     if g is None:
         raise RuntimeError("LangGraph 未初始化")
@@ -128,7 +128,7 @@ def classify_images(
 
 
 async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
-    from wellflow.app.main import get_graph as _gg
+    from wellflow.app.runtime import get_graph as _gg
     g = _gg()
     if g is None:
         return None

@@ -14,8 +14,5 @@ COPY .env .
 
 EXPOSE 8000
 
-# 启动前先跑 Alembic 迁移，再起 uvicorn
-# 容器内 wellflow/ 位于 /app/wellflow，从 /app/wellflow 内部找不到 wellflow 包
-# （会变成 /app/wellflow/wellflow/ 不存在），需要 PYTHONPATH=/app 让 Python 从 /app 找 wellflow/
-# alembic.ini 已有 prepend_sys_path=.. 做了同样的事，这里显式加 PYTHONPATH 统一保证
-CMD ["sh", "-c", "cd wellflow && PYTHONPATH=/app alembic upgrade head && PYTHONPATH=/app uvicorn wellflow.app.main:app --host 0.0.0.0 --port 8000"]
+# 启动前先跑 Alembic 迁移，再起 uvicorn（统一入口 main.py 会同时挂载广告投放 + WellFlow）
+CMD ["sh", "-c", "cd wellflow && PYTHONPATH=/app alembic upgrade head && cd /app && PYTHONPATH=/app uvicorn main:app --host 0.0.0.0 --port 8000"]
