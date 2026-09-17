@@ -349,21 +349,36 @@ async def material_multi_shop(material_id: str, advertiser_id: str = ""):
     aid = str(advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID"))
 
     def _shop_row(a):
-        """单店铺：该素材汇总 + 集合数据（该店铺全部素材聚合）"""
+        """单店铺（轻量）：报表缓存行 + 近60天趋势，不拉90天逐日/AI/全量指标，大幅提速"""
         try:
             svc = DouYinAdService(advertiser_id=str(a["advertiser_id"]))
-            detail = svc.get_material_detail(material_id, with_ai=False)
-            s = detail.get("summary", {})
+            mats = svc.get_all_materials_report()[0]["materials"]
+            r = next((m for m in mats if m["id"] == str(material_id)), None)
+            if r is None:
+                return {"advertiser_id": str(a["advertiser_id"]), "name": a.get("name") or str(a["advertiser_id"]),
+                        "ok": False, "error": "该素材近3个月无投放数据"}
+            daily = svc._fetch_material_daily(material_id, r, days=60)
+            recent7 = sum(x["cost"] for x in daily[-7:])
+            prev7 = sum(x["cost"] for x in daily[-14:-7]) if len(daily) >= 7 else 0
+            trend = ("上升" if recent7 > prev7 * 1.15
+                     else ("下滑" if prev7 and recent7 < prev7 * 0.85 else "平稳")) if prev7 else "—"
+            r30 = sum(x["cost"] for x in daily[-30:])
+            p30 = sum(x["cost"] for x in daily[-60:-30]) if len(daily) >= 60 else 0
+            yoy = ("上升" if p30 and r30 > p30 * 1.15
+                   else ("下滑" if p30 and r30 < p30 * 0.85
+                         else ("平稳" if p30 else "数据不足")))
+            net = next((x["value"] for x in (r.get("metrics_all") or [])
+                        if x["field"] == "total_order_settle_amount_for_roi2_1h"), 0)
             row = {
                 "advertiser_id": str(a["advertiser_id"]), "name": a.get("name") or str(a["advertiser_id"]),
-                "material_id": material_id, "素材名称": s.get("name", ""),
+                "material_id": material_id, "素材名称": r.get("name", ""),
                 "ok": True,
-                "消耗": s.get("消耗", 0), "成交金额": s.get("成交金额", 0),
-                "净成交金额": s.get("净成交金额", 0), "支付ROI": s.get("支付ROI", 0),
-                "成交单数": s.get("成交单数", 0), "trend": s.get("trend", "—"),
-                "recent7_cost": s.get("recent7_cost", 0), "prev7_cost": s.get("prev7_cost", 0),
-                "yoy_trend": s.get("yoy_trend", "—"),
-                "recent30_cost": s.get("recent30_cost", 0), "prev30_cost": s.get("prev30_cost", 0),
+                "消耗": r.get("消耗", 0), "成交金额": r.get("成交金额", 0),
+                "净成交金额": net, "支付ROI": r.get("支付ROI", 0),
+                "成交单数": r.get("成交单数", 0), "trend": trend,
+                "recent7_cost": round(recent7, 2), "prev7_cost": round(prev7, 2),
+                "yoy_trend": yoy,
+                "recent30_cost": round(r30, 2), "prev30_cost": round(p30, 2),
             }
             # 集合数据：该店铺全部素材聚合（消耗/成交/净成交/ROI 加权）
             agg = {"消耗": 0, "成交金额": 0, "净成交金额": 0, "成交单数": 0, "素材数": 0}

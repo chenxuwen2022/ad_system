@@ -63,6 +63,21 @@ async def lifespan(app: FastAPI):
     # 第二步：商拍子系统初始化（checkpointer + graph，PG 不可用时自动降级）
     await init_wellflow_runtime()
     print("✅ 商拍子系统（WellFlow）就绪")
+    # 第三步：后台预热千川数据（素材报表 + 商品→素材映射），避免用户首次点击等待 40-80s
+    try:
+        import threading as _th
+        def _prewarm():
+            try:
+                from douyin_api import DouYinAdService, DOUYIN_CONFIG
+                svc = DouYinAdService(advertiser_id=str(DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")))
+                svc.get_all_materials_report()          # 素材报表（千川 90 天，约 40s）
+                svc.get_products_material_map()          # 商品→素材映射（约 20s）
+                print("[预热] 千川素材报表与商品映射已就绪")
+            except Exception as e:
+                print(f"[预热] 后台预热失败（不影响使用，用户首次点击时会自动拉取）: {e}")
+        _th.Thread(target=_prewarm, daemon=True).start()
+    except Exception:
+        pass
     yield
     await shutdown_wellflow_runtime()
 
