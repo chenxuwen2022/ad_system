@@ -24,16 +24,26 @@ class Settings(BaseSettings):
     llm_timeout: float = 60.0                # VLM / 文本 LLM 超时（秒）
     image_timeout: float = 180.0             # 生图超时（秒）——大 body 上传 + 生图处理比 VLM 慢得多
 
-    # 模型名（role → 默认模型；factory._resolve_model 动态 getattr 读取）
-    #   vlm   → Node1 商品识别 + Node2 商拍策划（多模态 VLM）
-    #   image → Node3 图像生成（模特库 + LangGraph 主工作流）
-    #   text  → research_agent 纯文本调研（LangGraph Node1 tool-calling）
-    llm_model_vlm: str = "google/gemini-3.7-flash"
+    # ── Node 级别模型分配（核心业务节点，可独立调优）────────────────────────
+    #   Node1 → Google gemini-3.8-flash（商品识别，多模态 VLM）
+    #   Node2 → OpenAI gpt-5.6-sol（商拍方案策划，多模态 VLM + JSON 输出）
+    #   Node3 → Google gemini-3.7-flash（生图 prompt 生成，多模态 VLM + JSON 输出）
+    # factory.get_llm_client(..., node_name="nodeX") 优先读取这些常量
+    llm_model_node1: str = "google/gemini-3.8-flash"
+    llm_model_node2: str = "openai/gpt-5.6-sol"
+    llm_model_node3: str = "google/gemini-3.7-flash"
+
+    # ── Role 级别默认模型（兜底；未指定 node_name 时使用）─────────────────────
+    #   image  → Node4 图像生成（模特库 + LangGraph 主工作流）
+    #   text   → research_agent 纯文本调研（LangGraph tool-calling）
     llm_model_image: str = "openai/gpt-image-2"
     llm_model_text: str = "qwen/qwen-turbo"
 
     # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool；base.py 动态 getattr）
     llm_model_responses: str = "openai/gpt-5.4-mini"
+
+    # /api/chat 意图识别模型 —— 轻量快模型足够（qwen-turbo 稳定 500ms 内）
+    llm_model_chat: str = "qwen/qwen-turbo"
 
     # Responses 端点 /v1/responses 专用分辨率（只认这 3 种固定格式 + auto）
     # 9:16 / 16:9 降级到最接近的格式
@@ -96,7 +106,8 @@ class Settings(BaseSettings):
     # Gemini 3.1+ 等推理模型支持，通过 OpenAI 协议 reasoning_effort 参数透传
     # ------------------------------------------------------------------
     llm_reasoning_effort: str | None = "medium"     # Node1 商品识别需要深度思考
-    node2_reasoning_effort: str | None = "none"      # Node2 生成 prompt，关 Deep Thinking 但走流式
+    node2_reasoning_effort: str | None = "none"      # Node2 生成方案，关 Deep Thinking 但走流式
+    node3_reasoning_effort: str | None = "none"      # Node3 生成生图 prompt，关 Deep Thinking 但走流式
 
     # ------------------------------------------------------------------
     # 规范化：环境变量传空字符串时 Pydantic 不会自动转 None，

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json as json_mod
-import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
 from wellflow.app.config import settings
@@ -15,16 +14,14 @@ from wellflow.app.database import get_db
 from wellflow.app.api.utils import ok, StandardResponse
 from wellflow.app.repositories.mannequin_repo import MannequinRepo, MANNEQUIN_DIMENSION_GROUPS
 from wellflow.app.schemas.asset_schemas import (
-    MannequinCreateRequest, MannequinUpdateRequest,
+    MannequinUpdateRequest,
     MannequinListItem, MannequinListResponse,
     MannequinDetailResponse, MannequinDimensionsResponse,
     MannequinTagIn,
-    # 新增：创建流程交互端点的 schema
-    UploadedImage,
-    MannequinOptimizePromptRequest, MannequinOptimizePromptResponse,
-    GeneratedImage, MannequinGenerateRequest, MannequinGenerateResponse,
-    MannequinFineTuneRequest, MannequinFineTuneResponse,
-    MannequinAutoTagRequest, MannequinAutoTagResponse,
+    MannequinOptimizePromptResponse,
+    GeneratedImage, MannequinGenerateResponse,
+    MannequinFineTuneResponse,
+    MannequinAutoTagResponse,
 )
 
 
@@ -140,45 +137,119 @@ def get_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
 @router.post(
     "",
     response_model=StandardResponse[MannequinDetailResponse],
-    summary="确认入库（写 Mannequin + Tag + GenerateLog，路径A/B 最终都走到这里）",
+    summary="确认入库（唯一落盘点：cover_image + input_refs 二进制落盘 → 事务写 Mannequin + Tag + GenerateLog）",
     tags=["模特创建流程 · 入库端点"],
 )
-def create_mannequin(body: MannequinCreateRequest, db: Session = Depends(get_db)):
-    """模特最终入库。
+async def create_mannequin(
+    # ── 必填字段 ──
+    name: str = Form(...),
+    cover_image: UploadFile = File(...),
+    # ── 可选字段 ──
+    en_name: str | None = Form(None),
+    scope: str = Form("mine"),
+    origin: str = Form("upload"),          # "upload" | "ai_generate"
+    description: str | None = Form(None),
+    tags: str | None = Form(None),          # JSON 字符串: [{group_key, dim_key, tag_values}, ...]
+    # AI 生成上下文（路径 B 时传入）
+    input_desc: str | None = Form(None),
+    final_prompt: str | None = Form(None),
+    generate_model: str | None = Form(None),
+    num_output: int = Form(1),
+    fine_tune_from: str | None = Form(None),
+    fine_tune_prompt: str | None = Form(None),
+    # input_refs（路径 B 的参考图，二进制数组）
+    input_refs: list[UploadFile] = File(default_factory=list),
+    db: Session = Depends(get_db),
+):
+    """模特最终入库 —— **整个流程唯一做文件落盘 + 写 DB 的端点**。
 
-    **流程定位**：模特创建流程的 **终点**，只有用户点了「确认入库」才调用。
+    **流程定位**：Stage 2 点「确认入库」才调用。
+
+    **落盘策略**：先用 `uploads/mannequins/{uuid}/` 目录存 cover_image（封面图）
+    和 input_refs（参考图），拿到 storage_uri 后传给 repo.create()。
+    事务 commit 失败则 shutil.rmtree 清理已落盘目录。
 
     **落库**：一次事务写三张表：
     - `mannequin`：主表（name, cover_storage_uri, description, origin 等）
     - `mannequin_tag`：N 条标签（group_key / dim_key / tag_values）
-    - `mannequin_generate_log`：AI 生成上下文（路径 A 时自动跳过；路径 B 时首轮 + 微调各写一条）
-
-    **路径 A vs B**：
-    - **路径 A（只上传）**：`origin=upload`，AI 字段全为 None
-    - **路径 B（AI 生成）**：`origin=ai_generate`，传 AI 字段；如果走了微调同时传 `fine_tune_from` + `fine_tune_prompt`
+    - `mannequin_generate_log`：路径 B 首轮 + 微调各一条（路径 A 跳过）
     """
+    import uuid as _uuid
+    from wellflow.app.utils.image_store import save_upload
+
+    # ── 1. 解析 tags JSON ──
+    parsed_tags: list[dict] | None = None
+    if tags:
+        try:
+            parsed_tags = json_mod.loads(tags)
+        except Exception:
+            raise HTTPException(400, "tags 字段必须是合法 JSON")
+
+    # ── 2. 先把所有文件读入内存（后续 try 里统一落盘，失败则清理） ──
+    # save_upload 元组签名: (original_filename: str, raw_bytes: bytes, content_type: str | None)
+    raw_cover = (
+        cover_image.filename or "cover",
+        await cover_image.read(),
+        cover_image.content_type,
+    )
+    raw_refs = [
+        (f.filename or "ref", await f.read(), f.content_type)
+        for f in input_refs
+    ]
+
+    # ── 3. 落盘 ──
+    dir_id = f"mq_{_uuid.uuid4().hex[:8]}"  # mq = mannequin pending
+    storage_dir = f"uploads/mannequins/{dir_id}"
+    try:
+        # 封面图: uploads/mannequins/{uuid}/cover0.{ext}
+        cover_paths = save_upload(f"mannequins/{dir_id}", [raw_cover], prefix="cover")
+        cover_storage_uri = cover_paths[0] if cover_paths else None
+
+        # 参考图
+        ref_storage_uris: list[str] = []
+        if raw_refs:
+            ref_paths = save_upload(f"mannequins/{dir_id}", raw_refs, prefix="ref")
+            ref_storage_uris = ref_paths
+
+        if not cover_storage_uri:
+            raise HTTPException(400, "封面图落盘失败")
+
+        print(f"[mannequin/create] 💾 落盘目录 {storage_dir}, "
+              f"cover={cover_storage_uri}, refs={len(ref_storage_uris)}", flush=True)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 落盘失败，清理
+        _cleanup_storage_dir(storage_dir)
+        raise HTTPException(500, f"图片落盘失败: {e}")
+
+    # ── 4. 写 DB ──
     repo = MannequinRepo(db)
     try:
         m = repo.create(
-            name=body.name,
-            en_name=body.en_name,
-            scope=body.scope,
-            origin=body.origin,
-            cover_storage_uri=body.cover_storage_uri,
-            description=body.description,
-            tags=[t.model_dump() for t in body.tags] if body.tags else None,
-            # AI 生成上下文
-            input_desc=body.input_desc,
-            input_refs=body.input_refs,
-            final_prompt=body.final_prompt,
-            generate_model=body.generate_model,
-            num_output=body.num_output,
-            fine_tune_from=body.fine_tune_from,
-            fine_tune_prompt=body.fine_tune_prompt,
+            name=name,
+            en_name=en_name,
+            scope=scope,
+            origin=origin,
+            cover_storage_uri=cover_storage_uri,
+            description=description,
+            tags=parsed_tags,
+            input_desc=input_desc,
+            input_refs=ref_storage_uris or None,
+            final_prompt=final_prompt,
+            generate_model=generate_model,
+            num_output=num_output,
+            fine_tune_from=fine_tune_from,
+            fine_tune_prompt=fine_tune_prompt,
         )
         db.commit()
+        print(f"[mannequin/create] ✅ 入库成功 {m.mannequin_no} (id={m.id})", flush=True)
     except Exception as e:
         db.rollback()
+        # DB 失败，清理已落盘的文件
+        _cleanup_storage_dir(storage_dir)
+        print(f"[mannequin/create] ❌ DB 写入失败，已清理 {storage_dir}: {e}", flush=True)
         raise HTTPException(400, f"创建失败: {e}")
 
     tag_rows = repo.list_tags(m.id)
@@ -235,135 +306,140 @@ def delete_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
 
 
 # ============================================================================
-# 模特创建流程 —— 交互端点（无状态，不落库，只操作文件 + 调 LLM）
+# 模特创建流程 —— 交互端点（全 multipart，无落盘，只读二进制喂 LLM）
 # ============================================================================
 
-def _short_session_id() -> str:
-    """生成 8 字符的 session id（用于组织上传的临时文件目录）。"""
-    return "mne_" + uuid.uuid4().hex[:8]
+def _cleanup_storage_dir(storage_uri: str) -> None:
+    """安全清理 storage_uri 对应的上传目录（入库失败时回滚文件落盘用）。"""
+    import shutil as _shutil
+    from pathlib import Path
+    from wellflow.app.utils.image_store import _get_upload_dir
+    abs_path = (_get_upload_dir().parent / storage_uri).resolve()
+    upload_dir = _get_upload_dir().resolve()
+    # 安全校验：目录必须在 upload_dir 之下
+    if upload_dir in abs_path.parents and abs_path.exists() and abs_path.is_dir():
+        _shutil.rmtree(abs_path, ignore_errors=True)
+        print(f"[mannequin] 🗑️ 清理落盘目录 {abs_path}", flush=True)
 
 
-def _uris_to_data_uris(uris: list[str]) -> list[str]:
-    """把存储路径/URI → data URI（给 LLM 调用用）。"""
-    from wellflow.app.utils.image_store import paths_to_data_uris
-    return paths_to_data_uris(uris)
-
-
-# ───────────────────────────────────────────────────────────────────────────
-# 0. 上传图片（只存文件不落库）
-# ───────────────────────────────────────────────────────────────────────────
-
-@router.post(
-    "/upload",
-    summary="0. 上传模特图片（只存文件不落库，返回 session_id + storage_uri 给后续端点用）",
-    tags=["模特创建流程 · 交互端点"],
-)
-async def upload_mannequin_images(
-    session_id: str | None = Query(
-        default=None,
-        description="前端自己生成的 session_id（任意唯一字符串）；不传则后端自动生成并返回",
-    ),
-    files: list[UploadFile] = File(
-        default_factory=list,
-        description="可一次多张；路径A的原图 或 路径B的参考图都走这个端点",
-    ),
-):
-    """上传模特图片（路径 A 原图 / 路径 B 参考图通用）。
-
-    **流程定位**：模特创建流程的 **第 0 步**，所有后续端点都依赖这里返回的 `session_id` 和 `storage_uri`。
-
-    **落库策略**：**只落盘**，不写任何数据库记录。等「确认入库」时才一次性写 Mannequin + Tag + GenerateLog。
-
-    **目录结构**：`uploads/{session_id}/m0.jpg, m1.webp, ...`
-    """
-    if not files:
-        raise HTTPException(400, "至少要上传 1 张图片")
-
-    sid = session_id or _short_session_id()
-    raw_files = [(f.filename or "image", await f.read(), f.content_type) for f in files]
-
-    from wellflow.app.utils.image_store import save_upload
-    paths = save_upload(sid, raw_files, prefix="m")
-
-    uploaded: list[UploadedImage] = []
-    for i, p in enumerate(paths):
-        uploaded.append(UploadedImage(
-            storage_uri=p,
-            url=_storage_uri_url(p),
-            filename=files[i].filename or f"image{i}",
-        ))
-
-    return ok({
-        "session_id": sid,
-        "count": len(uploaded),
-        "images": uploaded,
-    })
+async def _files_to_data_uris(files: list[UploadFile]) -> list[str]:
+    """把 multipart UploadFile 列表 → data URI 列表（不落盘）。"""
+    from wellflow.app.utils.image_store import bytes_items_to_data_uris
+    items: list[tuple[bytes, str]] = []
+    for f in files:
+        raw = await f.read()
+        mime = f.content_type or "image/jpeg"
+        items.append((raw, mime))
+    return bytes_items_to_data_uris(items)
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# 1. 优化提示词（纯文本 LLM，可选）
+# 废弃的上传端点 —— 不再需要了
 # ───────────────────────────────────────────────────────────────────────────
+
+# 原 POST /reference/mannequins/upload 已废弃。
+# 整个模特创建流程不再调用任何图片上传端点（包括通用 /api/wellflow/image/uploads）。
+# 所有图片都以二进制流形式在前端和交互端点之间「过路」，只在最终 POST /reference/mannequins
+# 入库端点里统一落盘。
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# 1. 优化提示词（multipart，可选，LLM 读参考图 + 文本 → 生成英文 prompt）
+# ───────────────────────────────────────────────────────────────────────────
+
+PROMPT_REF_FIX_SUFFIX = "\n\nStrictly follow the facial features of the current model reference images."  # 生成模型是英文的，所以 suffix 也用英文；用户要求中文"严格参照当前模特参考图的五官"的语义已包含在其中
+
 
 @router.post(
     "/optimize-prompt",
     response_model=StandardResponse[MannequinOptimizePromptResponse],
-    summary="1. 优化提示词（可选，bailian/qwen-turbo 纯文本，把原始提示词整合成适合生图的英文 prompt）",
+    summary="1. 优化提示词（multipart，读 ref_images 二进制 + 文本 → 带固定话术的英文 prompt）",
     tags=["模特创建流程 · 交互端点"],
 )
-async def optimize_prompt(body: MannequinOptimizePromptRequest):
-    """把用户原始描述 + 维度标签整合成结构化、细节丰富的英文生图 prompt。
+async def optimize_prompt(
+    raw_prompt: str = Form(...),
+    tags: str | None = Form(None),                    # JSON 字符串: [{group_key, dim_key, tag_values}, ...]
+    ref_images: list[UploadFile] = File(default_factory=list),
+):
+    """把用户原始描述 + 维度标签 + 参考图 → 结构化英文生图 prompt。
 
-    **流程定位**：路径 B（AI 生成）的 **可选步骤**。点击前端「优化提示词」按钮才调用。
-    如果用户不点这个按钮，可以跳过，直接用原始提示词调 `/generate`。
+    **流程定位**：路径 B（AI 生成）的 **可选步骤**。前端点「✨ 优化提示词」才调用。
+    不点可以跳过，直接用原始 prompt 调 `/generate`。
 
-    **模型**：`qwen/qwen-turbo`（纯文本 chat.completions）。
+    **入参**：全部 multipart。参考图以二进制形式传入，后端直接转 data URI 喂 LLM（不落盘）。
 
-    **返回**：优化后的英文 prompt（前端展示给用户，可以继续手动编辑后再传给 `/generate`）。
+    **固定话术**：返回的 final_prompt 末尾会自动拼接
+    `"Strictly follow the facial features of the current model reference images."`
+    确保生成图五官严格参照参考图。
     """
     from wellflow.app.llm.factory import get_llm_client
 
-    # 把标签转成可读的中文描述（给 LLM 理解）
+    # 解析 tags JSON
+    parsed_tags: list[dict] = []
+    if tags:
+        try:
+            parsed_tags = json_mod.loads(tags)
+        except Exception:
+            raise HTTPException(400, "tags 必须是合法 JSON")
+
+    # 参考图 → data URI（不落盘）
+    ref_data_uris = await _files_to_data_uris(ref_images) if ref_images else []
+
+    # 把标签转成可读的中文描述
     tag_lines: list[str] = []
-    for t in body.tags:
-        vals = " / ".join(t.tag_values)
-        tag_lines.append(f"  - {t.group_key} > {t.dim_key}: {vals}")
+    for t in parsed_tags:
+        gk, dk = t.get("group_key", ""), t.get("dim_key", "")
+        vals = " / ".join(t.get("tag_values", []))
+        if gk and dk and vals:
+            tag_lines.append(f"  - {gk} > {dk}: {vals}")
     tags_text = "\n".join(tag_lines) if tag_lines else "（未选择任何维度标签）"
 
     system = (
-        "你是一个专业的电商模特形象提示词优化专家。"
-        "你的任务是把用户的原始描述 + 维度标签整合成一段结构化、细节丰富、"
-        "适合 AI 图像生成模型（如 GPT Image 系列）的英文提示词。\n\n"
-        "规则：\n"
-        "1. 保留用户的核心意图，不要创造新的属性。\n"
-        "2. 把维度标签自然融入描述中，注意描述的连贯性。\n"
-        "3. 输出英文，直接给生图模型用，不要带解释性文字、不要带前缀/后缀。\n"
-        "4. 如果用户原始描述中提到了具体的商品（如某件衬衫），请将其与模特描述融合，"
-        "说明模特正在如何展示该商品。"
+        "You are a professional e-commerce model image prompt optimization expert. "
+        "Your task is to integrate the user's raw description and dimension tags into a structured, "
+        "detailed English prompt suitable for AI image generation models like GPT Image.\n\n"
+        "Rules:\n"
+        "1. Preserve the user's core intent. Do not invent new attributes.\n"
+        "2. Naturally incorporate dimension tags into the description.\n"
+        "3. Output ONLY the English prompt. No explanations, no prefixes, no suffixes.\n"
+        "4. Describe clothing display naturally if the user mentions specific garments."
     )
 
     user_text = (
-        f"原始描述：{body.raw_prompt}\n\n"
-        f"维度标签：\n{tags_text}\n\n"
-        f"参考图数量：{len(body.ref_uris)}张\n\n"
-        f"请输出优化后的英文提示词："
+        f"Raw description: {raw_prompt}\n\n"
+        f"Dimension tags:\n{tags_text}\n\n"
+        f"Reference images provided: {len(ref_data_uris)} image(s)\n\n"
+        f"Please output the optimized English prompt:"
     )
 
     model_name = settings.llm_model_text
-    print(f"[mannequin/optimize-prompt] 📤 调用 {model_name} 优化提示词", flush=True)
+    print(f"[mannequin/optimize-prompt] 📤 {model_name}, refs={len(ref_data_uris)}", flush=True)
 
     try:
-        # 纯文本 → 用 chat，不需要 chat_with_images
         client = get_llm_client("vlm", model_override=model_name)
-        resp = await client.chat(
-            system=system,
-            user=user_text,
-            temperature=0.3,
-        )
+
+        # 有参考图 → 用 chat_with_images（让 LLM 看图理解用户要的模特五官）
+        if ref_data_uris:
+            resp = await client.chat_with_images(
+                system=system,
+                user=user_text,
+                image_uris=ref_data_uris,
+            )
+        else:
+            resp = await client.chat(
+                system=system,
+                user=user_text,
+                temperature=0.3,
+            )
+
         final_prompt = (resp.content or "").strip()
         if not final_prompt:
             raise RuntimeError("LLM 返回空内容")
 
-        print(f"[mannequin/optimize-prompt] ✅ 优化完成 ({len(final_prompt)} chars)", flush=True)
+        # 末尾拼固定话术
+        final_prompt = final_prompt + PROMPT_REF_FIX_SUFFIX
+
+        print(f"[mannequin/optimize-prompt] ✅ {len(final_prompt)} chars", flush=True)
         return ok(MannequinOptimizePromptResponse(final_prompt=final_prompt))
 
     except Exception as e:
@@ -372,88 +448,76 @@ async def optimize_prompt(body: MannequinOptimizePromptRequest):
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# 2. 首轮批量生图（n 张，路径 B 必须步骤）
+# 2. 首轮批量生图（multipart，不落盘，只返回 base64）
 # ───────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/generate",
     response_model=StandardResponse[MannequinGenerateResponse],
-    summary="2. 首轮批量生图（路径B必须，gpt-image-2 生成 n 张模特图并自动落盘）",
+    summary="2. 首轮批量生图（multipart，不落盘，只返回 base64）",
     tags=["模特创建流程 · 交互端点"],
 )
-async def generate_mannequin_images(body: MannequinGenerateRequest):
-    """根据最终提示词 + 参考图，调用生图模型批量生成 n 张模特图。
+async def generate_mannequin_images(
+    prompt: str = Form(...),
+    generate_model: str = Form("gpt-image-2"),
+    num_output: int = Form(3),
+    size: str = Form("1024x1536"),
+    ref_images: list[UploadFile] = File(default_factory=list),
+):
+    """调用生图模型批量生成 n 张模特图 —— **不落盘**，只返回 base64。
 
-    **流程定位**：路径 B（AI 生成）的 **必须步骤**。路径 A（只上传）跳过这个端点。
+    **流程定位**：路径 B（AI 生成）的 **必须步骤**。
 
-    **模型**：前端下拉选择 → 后端映射后走 `openai/gpt-image-2`（或其他前端选定的模型）。
+    **入参**：全部 multipart。参考图二进制 → data URI 直接喂生图模型。
 
-    **落盘**：每张图自动保存到 `uploads/{session_id}/outputs/gen-01.png` 等，返回完整的
-    `storage_uri` + `url` + `base64` 三联，后续 `/fine-tune` 和 `/auto-tag` 用 `storage_uri` 引用。
-
-    **并发**：内部用 Semaphore（默认 10）限流，防止 new-api 429。
-
-    **参考图**：路径 A 上传的图通过 `ref_uris` 数组传入，作为生图的视觉参考。
+    **返回**：images[] 每项只有 index + base64。**没有 storage_uri / url / revised_prompt**。
+    生成图在整个准备阶段都只活在前端内存里。
     """
     import asyncio as _asyncio
     from wellflow.app.llm.factory import get_llm_client
-    from wellflow.app.utils.image_store import save_output_image
 
-    # 前端直接传 new-api 可识别的短名（如 gpt-image-2），后端透传
-    backend_model = body.generate_model.strip()
+    backend_model = generate_model.strip()
+    num_output = max(1, min(num_output, 6))
     client = get_llm_client("image", model_override=backend_model)
 
-    # 参考图 → data URI（生图模型需要）
-    ref_data_uris = _uris_to_data_uris(body.ref_uris) if body.ref_uris else None
+    ref_data_uris = await _files_to_data_uris(ref_images) if ref_images else None
 
-    # 并发限流（防止 new-api 429）
     sem = _asyncio.Semaphore(settings.node3_gen_concurrency)
 
-    print(f"[mannequin/generate] 📤 model={backend_model} n={body.num_output} "
-          f"refs={len(ref_data_uris) if ref_data_uris else 0} size={body.size} "
-          f"session={body.session_id}", flush=True)
+    print(f"[mannequin/generate] 📤 model={backend_model} n={num_output} "
+          f"refs={len(ref_data_uris) if ref_data_uris else 0} size={size}", flush=True)
 
     async def _one(i: int):
         async with sem:
             r = await client.generate_image(
-                prompt=body.prompt,
+                prompt=prompt,
                 image_uris=ref_data_uris,
-                size=body.size,
+                size=size,
                 n=1,
                 response_format="b64_json",
             )
             img = r.all_images[0]
-            # 落盘
-            data_uri = f"data:image/png;base64,{img.b64_json}"
-            storage_uri = save_output_image(body.session_id, f"gen-{i:02d}", data_uri)
-            url = _storage_uri_url(storage_uri) if storage_uri else None
-            return GeneratedImage(
-                index=i,
-                base64=img.b64_json,
-                storage_uri=storage_uri,
-                url=url,
-                revised_prompt=getattr(img, "revised_prompt", None),
-            )
+            return GeneratedImage(index=i, base64=img.b64_json)
 
     try:
-        tasks = [_one(i + 1) for i in range(body.num_output)]
+        tasks = [_one(i + 1) for i in range(num_output)]
         results = await _asyncio.gather(*tasks, return_exceptions=True)
 
         images: list[GeneratedImage] = []
-        for i, r in enumerate(results):
+        for r in results:
             if isinstance(r, Exception):
-                print(f"[mannequin/generate] ⚠️ 第{i+1}张生成失败: {r}", flush=True)
+                print(f"[mannequin/generate] ⚠️ 一张失败: {r}", flush=True)
                 continue
             images.append(r)
 
         if not images:
             raise HTTPException(502, "全部生图失败")
 
-        print(f"[mannequin/generate] ✅ 成功 {len(images)}/{body.num_output}", flush=True)
+        print(f"[mannequin/generate] ✅ {len(images)}/{num_output}", flush=True)
         return ok(MannequinGenerateResponse(
             images=images,
             model=backend_model,
-            final_prompt=body.prompt,
+            final_prompt=prompt,
         ))
 
     except HTTPException:
@@ -464,66 +528,65 @@ async def generate_mannequin_images(body: MannequinGenerateRequest):
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# 3. 单张微调（可选，图生图）
+# 3. 单张微调（multipart，不落盘，图生图）
 # ───────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/fine-tune",
     response_model=StandardResponse[MannequinFineTuneResponse],
-    summary="3. 单张微调（可选，图生图，对选中的一张模特图做局部/风格微调）",
+    summary="3. 单张微调（multipart，不落盘，图生图）",
     tags=["模特创建流程 · 交互端点"],
 )
-async def fine_tune_mannequin(body: MannequinFineTuneRequest):
-    """对选中的一张模特图做图生图微调，保持身份一致性 + 应用微调描述。
+async def fine_tune_mannequin(
+    target_image: UploadFile = File(...),
+    tune_prompt: str = Form(...),
+    original_prompt: str | None = Form(None),
+    generate_model: str = Form("gpt-image-2"),
+    size: str = Form("1024x1536"),
+    ref_images: list[UploadFile] = File(default_factory=list),
+):
+    """对选中的一张模特图做图生图微调 —— **不落盘**，只返回 base64。
 
-    **流程定位**：路径 B（AI 生成）的 **可选步骤**。用户从首轮 n 张里选 1 张 + 输入微调词后调用。
-    最终入库的图 = 微调结果（如果走了微调）or 选中的那张生成图（如果没走微调）。
+    **流程定位**：路径 B（AI 生成）的 **可选步骤**。
 
-    **模型**：同 `/generate`，前端选的生图模型。
+    **入参**：全部 multipart。target_image 是前端选中的那张生成图（base64 → 二进制），
+    ref_images 是原始参考图（可选保留）。
 
-    **原理**：把 `target_uri` 作为唯一参考图 + 微调提示词组合（保持身份 + 修改内容）传给模型。
-
-    **落盘**：微调结果保存到 `uploads/{session_id}/outputs/fine-tuned.png`，返回三联。
+    **微调 prompt 组合**：保持身份一致性 + 用户描述的修改内容。
     """
     from wellflow.app.llm.factory import get_llm_client
-    from wellflow.app.utils.image_store import save_output_image
 
-    # 前端直接传 new-api 可识别的短名（如 gpt-image-2），后端透传
-    backend_model = body.generate_model.strip()
+    backend_model = generate_model.strip()
     client = get_llm_client("image", model_override=backend_model)
 
-    # 目标图必须是 data URI
-    target_data_uris = _uris_to_data_uris([body.target_uri])
+    # target_image + ref_images → data URI（不落盘）
+    target_data_uris = await _files_to_data_uris([target_image])
+    ref_data_uris = await _files_to_data_uris(ref_images) if ref_images else []
+
     if not target_data_uris:
-        raise HTTPException(400, f"无法读取 target_uri: {body.target_uri}")
+        raise HTTPException(400, "target_image 读取失败")
 
-    # 微调 prompt = 维持身份 + 修改内容
-    identity = body.original_prompt or "保持模特面部特征、发型、整体气质和身份一致性"
-    tune_prompt = f"{identity}, 修改内容：{body.tune_prompt}"
+    # 微调 prompt = 身份维持 + 修改内容
+    identity = original_prompt or "Maintain the model's facial features, hairstyle, overall temperament and identity."
+    tune_prompt_final = f"{identity}, modifications: {tune_prompt}"
 
-    print(f"[mannequin/fine-tune] 📤 model={backend_model} "
-          f"target={body.target_uri[:40]}... session={body.session_id}", flush=True)
+    all_data_uris = target_data_uris + ref_data_uris
+
+    print(f"[mannequin/fine-tune] 📤 model={backend_model} images={len(all_data_uris)}", flush=True)
 
     try:
         r = await client.generate_image(
-            prompt=tune_prompt,
-            image_uris=target_data_uris,
-            size=body.size,
+            prompt=tune_prompt_final,
+            image_uris=all_data_uris,
+            size=size,
             n=1,
             response_format="b64_json",
         )
         img = r.all_images[0]
-        # 落盘
-        data_uri = f"data:image/png;base64,{img.b64_json}"
-        storage_uri = save_output_image(body.session_id, "fine-tuned", data_uri)
-        url = _storage_uri_url(storage_uri) if storage_uri else None
-        print(f"[mannequin/fine-tune] ✅ 成功 → {storage_uri}", flush=True)
+        print(f"[mannequin/fine-tune] ✅", flush=True)
         return ok(MannequinFineTuneResponse(
             base64=img.b64_json,
-            storage_uri=storage_uri,
-            url=url,
             model=backend_model,
-            revised_prompt=getattr(img, "revised_prompt", None),
         ))
     except Exception as e:
         print(f"[mannequin/fine-tune] ❌ 失败: {e}", flush=True)
@@ -531,35 +594,37 @@ async def fine_tune_mannequin(body: MannequinFineTuneRequest):
 
 
 # ───────────────────────────────────────────────────────────────────────────
-# 4. VLM 自动打标（读图 → 15 维度标签建议）
+# 4. VLM 自动打标（multipart，读图 → 15 维度标签建议）
 # ───────────────────────────────────────────────────────────────────────────
 
 @router.post(
     "/auto-tag",
     response_model=StandardResponse[MannequinAutoTagResponse],
-    summary="4. VLM 读图自动打标签（gemini-3.7-flash，入库前必须步骤）",
+    summary="4. VLM 读图自动打标签（multipart，不落盘，入库前必须步骤）",
     tags=["模特创建流程 · 交互端点"],
 )
-async def auto_tag_mannequin(body: MannequinAutoTagRequest):
+async def auto_tag_mannequin(
+    files: list[UploadFile] = File(...),
+    extra_context: str | None = Form(None),
+):
     """VLM 读图，按 15 维度枚举自动打标 + 生成一句话描述。
 
     **流程定位**：**入库前必须步骤**，路径 A 和路径 B 都要走这个端点。
 
-    **模型**：`google/gemini-3.7-flash`（多模态 VLM，chat_with_images）。
+    **入参**：全部 multipart。files[0] 作为目标图（路径 A 原图 or 路径 B 选中图），
+    二进制 → data URI → VLM（不落盘）。
 
-    **原理**：把最终入库的图（路径 A 原图 or 路径 B 微调/选中图）+ `MANNEQUIN_DIMENSION_GROUPS`
-    枚举一起传给 VLM，让它按枚举值打标。返回的标签是**建议值**，前端必须展示给用户确认/修改后再入库。
-
-    **安全**：返回的标签已经过后端校验——只保留在枚举里真实存在的值，不会有 VLM 幻觉。
+    **安全**：返回的标签已经过后端白名单校验 —— 只保留 MANNEQUIN_DIMENSION_GROUPS 枚举内真实存在的值。
     """
     from wellflow.app.llm.factory import get_llm_client
 
-    # 目标图 → data URI
-    data_uris = _uris_to_data_uris([body.image_uri])
-    if not data_uris:
-        raise HTTPException(400, f"无法读取 image_uri: {body.image_uri}")
+    if not files:
+        raise HTTPException(400, "至少要传 1 张图片")
 
-    # 把维度枚举序列化成 JSON 给 VLM 参考
+    # 目标图 → data URI（不落盘）
+    data_uris = await _files_to_data_uris(files[:1])
+
+    # 把维度枚举序列化成 JSON
     dims_json = json_mod.dumps(MANNEQUIN_DIMENSION_GROUPS, ensure_ascii=False, indent=2)
 
     system = (
@@ -574,7 +639,7 @@ async def auto_tag_mannequin(body: MannequinAutoTagRequest):
 
     user_text = (
         f"以下是维度枚举（JSON）：\n{dims_json}\n\n"
-        f"{'用户补充意图：' + body.extra_context if body.extra_context else ''}\n\n"
+        f"{'用户补充意图：' + extra_context if extra_context else ''}\n\n"
         "请为这张模特图打标，严格按以下 JSON 格式返回：\n"
         "{\n"
         '  "tags": [\n'
@@ -585,8 +650,8 @@ async def auto_tag_mannequin(body: MannequinAutoTagRequest):
         "}"
     )
 
-    model_name = settings.llm_model_vlm
-    print(f"[mannequin/auto-tag] 📤 调用 {model_name} 读图打标", flush=True)
+    model_name = settings.llm_model_node3
+    print(f"[mannequin/auto-tag] 📤 {model_name}", flush=True)
 
     try:
         client = get_llm_client("vlm", model_override=model_name)
@@ -598,7 +663,6 @@ async def auto_tag_mannequin(body: MannequinAutoTagRequest):
         )
 
         content = (resp.content or "").strip()
-        # 容错：去掉 markdown 代码块
         if content.startswith("```"):
             lines = content.split("\n")
             content = "\n".join(l for l in lines if not l.startswith("```"))
@@ -606,7 +670,7 @@ async def auto_tag_mannequin(body: MannequinAutoTagRequest):
         data = json_mod.loads(content)
         raw_tags = data.get("tags", [])
 
-        # 校验 + 过滤：只保留合法的 group_key / dim_key / tag_value
+        # 白名单校验
         valid_groups = MANNEQUIN_DIMENSION_GROUPS
         validated_tags: list[MannequinTagIn] = []
         for t in raw_tags:
@@ -625,8 +689,7 @@ async def auto_tag_mannequin(body: MannequinAutoTagRequest):
         description = str(data.get("description", "")).strip()
         suggested_name = data.get("suggested_name")
 
-        print(f"[mannequin/auto-tag] ✅ 标签 {len(validated_tags)} 组, "
-              f"描述 {len(description)} chars", flush=True)
+        print(f"[mannequin/auto-tag] ✅ tags={len(validated_tags)} desc={len(description)}", flush=True)
 
         return ok(MannequinAutoTagResponse(
             tags=validated_tags,

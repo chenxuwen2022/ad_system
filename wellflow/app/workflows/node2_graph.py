@@ -1,9 +1,11 @@
-"""Node 2 子图：PlanningAgent（VLM 多模态生成多屏服饰电商模特图 prompt）。
+"""Node 2 子图：PlanningScheme — VLM 多模态一次产出 N 套结构化商拍方案。
 
-流式/非流式策略（根据 reasoning_effort 预先选择，不做运行时降级）：
-  - effort == "low"        → 非流式 plan()（强制 JSON，response_format=json_object）
-  - effort == None / "none" / "medium" / "high" → 流式 stream_plan()（自然输出 JSON，末尾解析）
-流式路径下 thinking + content 每个 delta 立即 publish SSE，前端实时逐字输出。
+流式/非流式策略（和 Node1 一致）：
+  - effort == "low"        → 非流式 plan_schemes()（强制 JSON，response_format=json_object）
+  - effort == None / "none" / "medium" / "high" → 流式 stream_plan_schemes()
+三套方案要求在方案定位、视觉主题、场景设定、模特气质、光影风格上有显著差异。
+
+输出写入 state.node2（SchemeState）。
 """
 
 from __future__ import annotations
@@ -24,57 +26,42 @@ def build_graph():
 
     graph = StateGraph(TaskState)
 
-    graph.add_node("planning_agent", _plan)
-    graph.add_edge(START, "planning_agent")
-    graph.add_edge("planning_agent", END)
+    graph.add_node("planning_scheme", _plan_schemes)
+    graph.add_edge(START, "planning_scheme")
+    graph.add_edge("planning_scheme", END)
 
     return graph.compile()
 
 
-async def _plan(state: dict[str, Any]) -> dict[str, Any]:
-    """VLM 流式多模态生成 N 屏服饰电商模特图 prompt。"""
+async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
+    """VLM 一次产出 N 套 12 维商拍方案（非流式 or 流式，根据 reasoning_effort）。"""
     import asyncio
-    from wellflow.app.nodes import planning_agent
+    from wellflow.app.nodes import planning_scheme as _ps
     from wellflow.app.event_bus import publish
 
     node1 = state.get("node1", {})
-    node2 = state.get("node2", {})
+    node3 = state.get("node3", {})
     req = state.get("request", {})
     task_id = state.get("task_id", "")
 
     product_insight = node1.get("product_insight", "")
-    product_image_paths: list[str] = req.get("product_images") or []
-    model_image_paths: list[str] = node2.get("model_images") or []
-    ratio: str = node2.get("ratio") or "9:16"
-    count: int = int(node2.get("count") or 3)
+    user_requirement: str = req.get("user_requirement", "")
 
-    # 🔑 先推 phase，前端立即看到 Node 2 启动状态
+    # 默认生成 3 套方案，可通过 request.scheme_count 覆盖
+    scheme_count: int = int(req.get("scheme_count") or 3)
+
     if task_id:
-        publish(task_id, "phase", {"phase": "node2_planning"})
+        publish(task_id, "phase", {"phase": "node2_plan_scheme"})
 
-    # 商品图：优先复用 Node1 已缓存的压缩结果，跳过重复 PIL（省 ~1.2s）
-    from wellflow.app.utils.image_store import paths_to_data_uris
+    # 🔑 Node1 已缓存商品图压缩结果（供 node3 复用，避免重复 PIL）
     cached = node1.get("compressed_images") or []
     if cached:
-        print(f"[node2] 🔁 复用 Node1 已压缩的 {len(cached)} 张商品图（跳过 PIL）", flush=True)
-        product_images = cached
-    else:
-        # 兜底：老任务没有缓存，现场压（PIL 放 to_thread，不阻塞 event loop）
-        product_images = await asyncio.to_thread(paths_to_data_uris, product_image_paths)
-        print(f"[node2] 🔨 Node1 无缓存，现场压缩 {len(product_image_paths)} 张商品图", flush=True)
+        print(f"[node2] 🔁 Node1 已有 {len(cached)} 张商品图缓存（node3 将复用）", flush=True)
 
-    # 模特图（C1 resume 时刚上传的，Node1 没见过）：按 ≤6MB 规则现场压缩
-    model_images = await asyncio.to_thread(paths_to_data_uris, model_image_paths) if model_image_paths else []
+    print(f"[node2] _plan_schemes 输入: scheme_count={scheme_count}, "
+          f"user_requirement={'有' if user_requirement else '无'} (不传图片给 VLM)", flush=True)
 
-    print(f"[node2] _plan 输入: count={count}, ratio={ratio}, "
-          f"product_images={len(product_images)}(paths={len(product_image_paths)}), "
-          f"model_images={len(model_images)}(paths={len(model_image_paths)})",
-          flush=True)
-
-    # --- 根据 reasoning_effort 预先选择流式/非流式 ---
-    #   low → 非流式 plan()（强制 JSON）
-    #   none / medium / high → 流式 stream_plan()（自然输出 JSON）
-    # ⚠️ Node2 用独立的 node2_reasoning_effort，默认 "low"，省掉 Deep Thinking
+    # 根据 reasoning_effort 选流式/非流式
     from wellflow.app.config import settings
     effort = settings.node2_reasoning_effort
     use_non_stream = (effort == "low")
@@ -90,43 +77,45 @@ async def _plan(state: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] | None = None
 
     if use_non_stream:
-        # ---- 非流式路径（reasoning_effort=low）----
-        print(f"[node2] 📌 reasoning_effort={effort} → 使用非流式 plan()", flush=True)
-        result = await planning_agent.plan(
+        # ---- 非流式 ----
+        print(f"[node2] 📌 reasoning_effort={effort} → 非流式 plan_schemes()", flush=True)
+        result = await _ps.plan_schemes(
             product_insight=product_insight,
-            product_images=product_images,
-            model_images=model_images or None,
-            count=count,
+            user_requirement=user_requirement,
+            scheme_count=scheme_count,
             reasoning_effort=effort,
         )
-        full_text = result.get("raw_text", "")
-        non_stream_thinking = result.get("thinking_text")
         content_chunk_index = 1
+        raw_text = result.get("raw_text", "")
+        thinking_text = result.get("thinking_text")
 
-        # 如果非流式返回了 thinking_text，先发出来让前端有东西看
-        if task_id and non_stream_thinking:
-            publish(task_id, "thinking_chunk", {"chunk": non_stream_thinking, "index": 1, "node": "node2"})
+        # 🔍 非流式路径诊断
+        print(f"[node2] 🔍 非流式 raw_text 前 500 字: {raw_text[:500]}", flush=True)
+        print(f"[node2] 🔍 非流式 result keys={list(result.keys())}, "
+              f"schemes count={len(result.get('schemes', []))}", flush=True)
+
+        if task_id and thinking_text:
+            publish(task_id, "thinking_chunk", {"chunk": thinking_text, "index": 1, "node": "node2"})
         if task_id:
-            publish(task_id, "report_chunk", {"chunk": full_text, "index": 1, "node": "node2"})
-            publish(task_id, "report_chunk_done", {
+            publish(task_id, "scheme_chunk", {"chunk": raw_text, "index": 1, "node": "node2"})
+            publish(task_id, "scheme_chunk_done", {
                 "total_chunks": 1,
-                "thinking_total_chunks": 1 if non_stream_thinking else 0,
-                "thinking_text": non_stream_thinking,
+                "thinking_total_chunks": 1 if thinking_text else 0,
+                "thinking_text": thinking_text,
                 "node": "node2",
+                "scheme_count": len(result.get("schemes", [])),
             })
     else:
-        # ---- 流式路径（reasoning_effort=none/medium/high）----
-        print(f"[node2] 📌 reasoning_effort={effort} → 使用流式 stream_plan()", flush=True)
-        async for item in planning_agent.stream_plan(
+        # ---- 流式 ----
+        print(f"[node2] 📌 reasoning_effort={effort} → 流式 stream_plan_schemes()", flush=True)
+        async for item in _ps.stream_plan_schemes(
             product_insight=product_insight,
-            product_images=product_images,
-            model_images=model_images or None,
-            count=count,
+            user_requirement=user_requirement,
+            scheme_count=scheme_count,
             reasoning_effort=effort,
         ):
             if not item:
                 continue
-            # item = {"type": "thinking"|"content", "text": "..."}
             if isinstance(item, dict):
                 item_type = item.get("type", "content")
                 text = item.get("text", "")
@@ -152,61 +141,60 @@ async def _plan(state: dict[str, Any]) -> dict[str, Any]:
                           , flush=True)
                 content_parts.append(text)
                 content_chunk_index += 1
-                publish(task_id, "report_chunk", {"chunk": text, "index": content_chunk_index, "node": "node2"})
+                publish(task_id, "scheme_chunk", {"chunk": text, "index": content_chunk_index, "node": "node2"})
 
         # 流式结束，解析 JSON
         raw_content = "".join(content_parts)
         print(f"[node2] 🎬 流式 VLM 完成: content len={len(raw_content)}, "
-              f"thinking len={len(''.join(think_parts))}, "
-              f"content_chunks={content_chunk_index}, think_chunks={think_chunk_index}, "
-              f"总耗时={time.time() - t0:.2f}s", flush=True)
+              f"thinking len={len(''.join(think_parts))}, 总耗时={time.time() - t0:.2f}s", flush=True)
 
-        parsed = planning_agent._extract_json(raw_content)
-        prompts = parsed.get("generate_prompts", [])
+        # 🔍 诊断：打印原始输出前 800 字，确认 gpt-5.6-sol 输出格式
+        print(f"[node2] 🔍 raw_content 前 800 字:\n{raw_content[:800]}", flush=True)
+        print(f"[node2] 🔍 raw_content 后 200 字:\n{raw_content[-200:]}", flush=True)
 
-        if not isinstance(prompts, list):
-            print(f"[node2] ⚠️ generate_prompts 不是 list，实际是 {type(prompts)}", flush=True)
-            prompts = []
+        parsed = _ps._extract_json(raw_content)
+        print(f"[node2] 🔍 _extract_json 解析结果: keys={list(parsed.keys())}, "
+              f"type(schemes)={type(parsed.get('schemes')).__name__}", flush=True)
 
-        # 兜底：截断或补空
-        if len(prompts) > count:
-            prompts = prompts[:count]
-        elif len(prompts) < count and prompts:
-            print(f"[node2] ⚠️ VLM 只返回 {len(prompts)}/{count} 屏，补齐空 prompt", flush=True)
-            prompts.extend([""] * (count - len(prompts)))
+        schemes = parsed.get("schemes", [])
 
-        prompts = [p for p in prompts if p and str(p).strip()]
+        if not isinstance(schemes, list):
+            print(f"[node2] ⚠️ schemes 不是 list，实际是 {type(schemes)}", flush=True)
+            schemes = []
+
+        if len(schemes) > scheme_count:
+            schemes = schemes[:scheme_count]
+        elif len(schemes) < scheme_count and schemes:
+            print(f"[node2] ⚠️ VLM 只返回 {len(schemes)}/{scheme_count} 套，补齐空方案", flush=True)
+            schemes.extend([
+                {"scheme_index": len(schemes), "scheme_name": "方案待补充", "_placeholder": True}
+            ] * (scheme_count - len(schemes)))
 
         result = {
-            "generate_prompts": prompts,
+            "schemes": schemes,
             "raw_text": raw_content,
         }
-        print(f"[node2] ✅ 流式解析 generate_prompts={len(prompts)} 屏", flush=True)
 
-    # 推 done（带上 thinking 汇总）
+    # 推 done
     if task_id:
-        publish(task_id, "report_chunk_done", {
+        publish(task_id, "scheme_chunk_done", {
             "total_chunks": content_chunk_index,
             "thinking_total_chunks": think_chunk_index,
             "thinking_text": "".join(think_parts) if think_parts else None,
             "node": "node2",
+            "scheme_count": len(result.get("schemes", [])),
         })
 
-    # result 一定有值（要么流式要么降级非流式）
-    prompts = result.get("generate_prompts", [])
+    schemes = result.get("schemes", [])
     raw_text = result.get("raw_text", "")
 
-    # 用全新 dict 返回，避免 in-place 修改导致 merge 丢失
-    new_node2 = dict(node2)
-    new_node2["generate_prompts"] = prompts               # JSON 数组，Node 3 直接用
-    new_node2["planning_result"] = raw_text               # 原始文本，前端展示用
-    new_node2["ratio"] = ratio
-    new_node2["count"] = count
-    # 🔁 缓存模特图压缩结果，供 Node3 复用（避免重复 PIL 压缩）
-    new_node2["compressed_model_images"] = model_images
+    # 用全新 dict 返回，避免 merge 丢失
+    new_node2: dict[str, Any] = {
+        "schemes": schemes,
+        "scheme_raw": raw_text,
+        "selected_scheme_indices": [],  # C2 interrupt 后写入
+    }
 
-    output = {"phase": "node2_planning", "node2": new_node2}
-    print(f"[node2] _plan 输出 node2 keys={list(new_node2.keys())}, "
-          f"generate_prompts={len(prompts)} 屏, "
-          f"总耗时={time.time() - t0:.2f}s", flush=True)
+    output = {"phase": "node2_plan_scheme", "node2": new_node2}
+    print(f"[node2] _plan_schemes 输出: schemes={len(schemes)} 套, 总耗时={time.time() - t0:.2f}s", flush=True)
     return output
