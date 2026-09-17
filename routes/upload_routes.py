@@ -141,6 +141,20 @@ HTML_PAGE = """
         .viz-note { font-size:12px; color:#8a97ab; background:#fff; border:1px solid #e7edf6;
             border-radius:8px; padding:6px 10px; margin-bottom:12px; }
         .viz-note b { color:#1f6feb; }
+        .viz-sec { display:flex; align-items:center; gap:8px; margin:12px 0 8px; }
+        .viz-sec-tag { font-size:13px; font-weight:700; color:#fff; padding:4px 12px; border-radius:8px;
+            background:linear-gradient(120deg,#1f6feb,#3b82f6); box-shadow:0 1px 3px rgba(31,111,235,.25); }
+        .viz-chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:4px; }
+        .viz-chip { background:#eef4ff; border:1px solid #d5e2ff; color:#2b5bff; font-size:12.5px;
+            padding:6px 12px; border-radius:14px; line-height:1.5; }
+        .viz-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }
+        .viz-card { background:#fff; border:1px solid #e7edf6; border-radius:10px; padding:10px 12px;
+            display:flex; gap:10px; align-items:flex-start; box-shadow:0 1px 2px rgba(31,111,235,.05); }
+        .viz-no { flex:none; min-width:22px; height:22px; line-height:22px; text-align:center;
+            background:linear-gradient(135deg,#4aa3ff,#1f6feb); color:#fff; border-radius:6px;
+            font-size:12.5px; font-weight:700; margin-top:1px; }
+        .viz-txt { font-size:13px; color:#1f2329; line-height:1.7; }
+        .viz-txt b { color:#d25f00; }
         .muted { color:#8a97ab; font-size:13px; }
         .spin { color:#1f6feb; }
         .settings-btn {
@@ -1053,8 +1067,64 @@ function renderAiViz(text, s){
     html += scoreBar("ROI", roi.toFixed(2), roi/2*100, gRoi.g, gRoi.c, "");
     html += scoreBar("消耗趋势", trend, trendMeta.p, trend, trendMeta.c, "");
     html += `</div>`;
-    // 2) AI 建议与修改方向（章节卡片）
-    html += renderAiTabs(text);
+    // 2) AI 结论 → 全可视化：诊断要点标签流 + 建议卡片网格（无段落文字）
+    html += renderAiVisual(text);
+    return html;
+}
+// 把 AI 文本解析为可视化元素：结论章节→彩色标签流，建议章节→卡片网格
+function renderAiVisual(text){
+    const raw = String(text==null?"":text).trim();
+    if(!raw) return "<div class='muted'>（无返回）</div>";
+    const lines = raw.split(/\\r?\\n/).map(l=>l.trim()).filter(l=>l.length>0);
+    if(!lines.length) return "<div class='muted'>（无返回）</div>";
+    const secs = [];
+    let cur = null;
+    lines.forEach(line=>{
+        const m = line.match(/^(第?[一二三四五六七八九十百]+)[、.．:：)）]\s*(.+)$/);
+        if(m){
+            let title = m[2].trim();
+            // 长标题拆分：冒号前作为章节标签，冒号后内容作为要点 chip
+            const cm = title.match(/^([^\uFF1A:]{1,10})[\uFF1A:]\s*(.+)$/);
+            if(cm){ title = cm[1].trim(); }
+            else{ title = title.replace(/[\uFF1A:]\s*$/, ""); }
+            cur = {title: title, items: []};
+            secs.push(cur);
+            if(cm && cm[2].trim()){ cur.items.push(cm[2].trim()); }
+        }else{
+            if(!cur){ cur = {title: "AI 结论", items: []}; secs.push(cur); }
+            cur.items.push(line);
+        }
+    });
+    if(!secs.length){ secs.push({title: "AI 结论", items: lines}); }
+    let html = "";
+    secs.forEach(sec=>{
+        html += `<div class="viz-sec"><span class="viz-sec-tag">${esc(sec.title)}</span></div>`;
+        // 提取条目
+        const cards = [];
+        sec.items.forEach(line=>{
+            const num = line.match(/^(\d+)[、.．:：)）]\s*(.+)$/);
+            const circle = line.match(/^([①②③④⑤⑥⑦⑧⑨⑩])\s*(.+)$/);
+            const bold = line.match(/^\*\*(.+?)\*\*$/);
+            if(num){ cards.push({t: num[2].trim()}); }
+            else if(circle){ cards.push({t: circle[2].trim()}); }
+            else if(bold){ cards.push({t: bold[1].trim()}); }
+            else if(line.length){ cards.push({t: line}); }
+        });
+        const isAdvice = /建议|优化|修改|改法|方向|行动|提升|加强|关注/.test(sec.title);
+        if(isAdvice){
+            html += `<div class="viz-cards">`;
+            cards.forEach((c,i)=>{
+                html += `<div class="viz-card"><span class="viz-no">${i+1}</span><span class="viz-txt">${aiInline(c.t)}</span></div>`;
+            });
+            html += `</div>`;
+        }else{
+            html += `<div class="viz-chips">`;
+            cards.forEach(c=>{
+                html += `<span class="viz-chip">${aiInline(c.t)}</span>`;
+            });
+            html += `</div>`;
+        }
+    });
     return html;
 }
 // Tab 内容区行渲染：编号条目 / 圆号条目 / 普通行
