@@ -22,8 +22,14 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
-from wellflow.app.event_bus import publish, drain_and_subscribe, cleanup as _eb_cleanup
+from wellflow.app.event_bus import (
+    publish, drain_and_subscribe, cleanup as _eb_cleanup,
+    mark_running, mark_done, is_running,
+)
 from wellflow.app.repositories.task_repo import TaskRepo
+from wellflow.app.repositories.conversation_repo import (
+    ConversationRepo, ChatMessageRepo,
+)
 from wellflow.app.llm.intent_classifier import (
     classify,
     compute_completed_mask,
@@ -43,7 +49,7 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 
 def _get_graph():
-    from wellflow.app.main import get_graph as _gg
+    from wellflow.app.runtime import get_graph as _gg
     g = _gg()
     if g is None:
         raise RuntimeError("LangGraph 未初始化")
@@ -108,17 +114,21 @@ def classify_images(
     if not has_task:
         print(f"[classify_images] 无任务 → product ({len(images)} 张)", flush=True)
         return list(images), []
-    if current_node in ("c1", "c2", "c3", "c4"):
+    if current_node in ("c1", "c2"):
+        # C1/C2 阶段用户上传的图默认为商品参考图（可追加替换商品图）
+        print(f"[classify_images] 上下文 c={current_node} → product ({len(images)} 张)", flush=True)
+        return list(images), []
+    if current_node in ("c3", "c4"):
         print(f"[classify_images] 上下文 c={current_node} → model ({len(images)} 张)", flush=True)
         return [], list(images)
 
     # 兜底
-    print(f"[classify_images] 兜底 → model ({len(images)} 张)", flush=True)
-    return [], list(images)
+    print(f"[classify_images] 兜底 → product ({len(images)} 张)", flush=True)
+    return list(images), []
 
 
 async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
-    from wellflow.app.main import get_graph as _gg
+    from wellflow.app.runtime import get_graph as _gg
     g = _gg()
     if g is None:
         return None
@@ -189,6 +199,7 @@ def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
 async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None):
     import traceback as _tb
     try:
+        mark_running(task_id)
         if command is not None:
             stream_iter = graph.astream(command, config=config, stream_mode=["updates"])
         elif initial_state is not None:
@@ -206,6 +217,7 @@ async def _start_graph(task_id: str, graph, config, *, initial_state=None, comma
         except Exception:
             pass
     finally:
+        mark_done(task_id)
         _eb_cleanup(task_id)
 
 
@@ -253,6 +265,14 @@ def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
         return _sse("report_chunk", event_data)
     if event_type == "report_chunk_done":
         return _sse("report_chunk_done", event_data)
+    if event_type == "scheme_chunk":
+        return _sse("scheme_chunk", event_data)
+    if event_type == "scheme_chunk_done":
+        return _sse("scheme_chunk_done", event_data)
+    if event_type == "prompt_chunk":
+        return _sse("prompt_chunk", event_data)
+    if event_type == "prompt_chunk_done":
+        return _sse("prompt_chunk_done", event_data)
     if event_type == "node3_image_done":
         return _sse("node3_image_done", event_data)
     if event_type == "done":
@@ -271,6 +291,8 @@ def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
 async def chat(
     message: str = Form(default=""),
     task_id: str | None = Form(default=None),
+    # 新增：conversation 关联（可选，首次可不传；后端会从 task.conversation_id 反查或自动新建）
+    conversation_id: str | None = Form(default=None),
     platform: str = Form(default="taobao"),
     image_type: str = Form(default="ad"),
     marketing_goal: str = Form(default="acquisition"),
@@ -287,14 +309,37 @@ async def chat(
     existing_prompts: list[str] = []
     existing_model_images: list[str] = []
 
+    # conversation 关联解析：
+    # 1) 前端显式传了 conversation_id → 用它
+    # 2) 有 task → 从 task.conversation_id 反查
+    # 3) 都没有 → event_generator 里 start_task 时自动新建
+    conv_repo = ConversationRepo(db)
+    msg_repo = ChatMessageRepo(db)
+    resolved_conv_id: str | None = conversation_id
+
     if has_task:
         repo = TaskRepo(db)
         t_id = str(task_id)
         task = repo.get(t_id)
         if not task:
             raise HTTPException(404, f"task {t_id} 不存在")
+        # 反查 conversation_id（前端没传但 task 已有）
+        if not resolved_conv_id and task.conversation_id:
+            resolved_conv_id = task.conversation_id
+            print(f"[chat] 📎 从 task.conversation_id 反查 conversation={resolved_conv_id}", flush=True)
         interrupt = task.interrupt_json or {}
         current_node = interrupt.get("node")
+        # 兜底：如果 interrupt_json 缺失（异常中断），从 DB phase 反推
+        if not current_node and task.phase:
+            _PHASE_TO_NODE = {
+                "c1_confirm": "c1",
+                "c2_confirm": "c2",
+                "c3_confirm": "c3",
+                "c4_generating": "c4",
+            }
+            current_node = _PHASE_TO_NODE.get(task.phase)
+            if current_node:
+                print(f"[chat] interrupt_json 缺失，从 phase={task.phase} 反推 node={current_node}", flush=True)
         graph_state = await _aget_graph_state(t_id)
         if graph_state:
             completed_mask = compute_completed_mask(graph_state, current_node)
@@ -302,7 +347,8 @@ async def chat(
             existing_prompts = list(graph_state.get("node2", {}).get("generate_prompts", []) or [])
             existing_model_images = list(graph_state.get("node3", {}).get("model_images", []) or [])
         print(f"[chat] 上下文: task={t_id} node={current_node} completed={completed_mask}"
-              f" model_images_in_state={len(existing_model_images)}", flush=True)
+              f" model_images_in_state={len(existing_model_images)}"
+              f" conversation={resolved_conv_id}", flush=True)
 
     # 🔑 统一 images → 后端判断分流
     product_images, model_images = classify_images(
@@ -320,8 +366,79 @@ async def chat(
     intent = intent_result.get("intent", "chat_outside")
     print(f"[chat] 意图={intent} reason={intent_result.get('reasoning', '')[:60]}", flush=True)
 
+    # ------------------------------------------------------------------
+    # Conversation 关联 + user chat_message 持久化（在 event_generator 之外同步做）
+    # 新建 conversation（首次）或复用已解析的 resolved_conv_id
+    # ------------------------------------------------------------------
+    # 收集用户图片附件元数据（不重复读文件）
+    user_images_meta: list[dict[str, str]] = []
+    for img in images:
+        user_images_meta.append({
+            "name": img.filename or "image",
+            "content_type": img.content_type or "",
+        })
+
+    # start_task → 新建 conversation（优先用前端传的，否则后端生成）；否则用已解析的
+    conv_id_for_this_turn: str | None = resolved_conv_id
+    if intent == "start_task":
+        # 优先复用前端传的 conversation_id（前端用 createId() 生成，全局唯一）
+        if not conv_id_for_this_turn:
+            conv_id_for_this_turn = _short_uuid()
+            _title = message.strip()[:30] or "新对话"
+            conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
+            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title={_title}", flush=True)
+        else:
+            # 前端传了但还没建（首次 start_task，前端 generate 的 id 后端还没记录）
+            existing = conv_repo.get(conv_id_for_this_turn)
+            if not existing:
+                _title = message.strip()[:30] or "新对话"
+                conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
+                print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
+
+    # 写 user chat_message（无论什么 intent 都写，保留完整对话历史）
+    if conv_id_for_this_turn:
+        try:
+            msg_repo.create(
+                conversation_id=conv_id_for_this_turn,
+                role="user",
+                text=message,
+                images_json=user_images_meta,
+                intent=intent,
+                task_id=t_id,  # start_task 时 t_id 还没，是 None，后面会关联
+            )
+            conv_repo.touch(conv_id_for_this_turn)
+            print(f"[chat] 💬 user message 已持久化 conv={conv_id_for_this_turn} intent={intent}", flush=True)
+        except Exception as exc:
+            print(f"[chat] ⚠️ user message 持久化失败（不阻断主流程）: {exc}", flush=True)
+
+    async def _persist_assistant_msg(text: str, task_id_: str | None = None) -> None:
+        """fire-and-forget 写一条 assistant chat_message。
+
+        注意：这里的 db session 不能跨 event_generator 的 yield 持有，
+        所以用 session_scope 开新的上下文。
+        """
+        if not conv_id_for_this_turn or not text:
+            return
+        try:
+            def _sync_write():
+                from wellflow.app.repositories.conversation_repo import ChatMessageRepo as _CMR, ConversationRepo as _CR
+                with session_scope() as sdb:
+                    _cmr = _CMR(sdb)
+                    _cmr.create(
+                        conversation_id=conv_id_for_this_turn,
+                        role="assistant",
+                        text=text,
+                        intent=intent,
+                        task_id=task_id_,
+                    )
+                    _cr(sdb).touch(conv_id_for_this_turn)
+            await asyncio.to_thread(_sync_write)
+        except Exception as exc:
+            print(f"[chat] ⚠️ assistant message 持久化失败: {exc}", flush=True)
+
     async def event_generator() -> AsyncGenerator[str, None]:
         if intent == "chat_outside":
+            await _persist_assistant_msg("暂不支持与生图无关的对话。")
             yield _sse("message", {
                 "text": "暂不支持与生图无关的对话。",
             })
@@ -344,7 +461,20 @@ async def chat(
                 msg = reasoning
             elif not msg:
                 msg = "不支持跳过工作流中的步骤。"
+            await _persist_assistant_msg(msg)
             yield _sse("message", {"text": msg})
+            yield _sse("done", {"phase": "done"})
+            return
+
+        # ------------------------------------------------------------------
+        # 运行状态守卫：同一个 task 并发请求 → 直接返回，防止 graph 冲突
+        # ------------------------------------------------------------------
+        if has_task and t_id and intent != "start_task" and is_running(t_id):
+            print(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={intent}", flush=True)
+            await _persist_assistant_msg("任务正在执行中，请等待当前操作完成后再试。")
+            yield _sse("message", {
+                "text": "任务正在执行中，请等待当前操作完成后再试。",
+            })
             yield _sse("done", {"phase": "done"})
             return
 
@@ -359,9 +489,10 @@ async def chat(
             if intent == "start_task":
                 async for ev in _handle_start_task(
                     message, product_images, platform, image_type, marketing_goal, graph,
+                    conversation_id=conv_id_for_this_turn,
                 ):
                     yield ev
-            elif intent in ("backward_to_c1", "backward_to_c2"):
+            elif intent in ("backward_to_c1", "backward_to_c2", "backward_to_c3"):
                 async for ev in _handle_backward(intent, t_id or '', graph,
                                                   product_images=product_images):
                     yield ev
@@ -395,6 +526,8 @@ async def _handle_start_task(
     image_type: str,
     marketing_goal: str,
     graph,
+    *,
+    conversation_id: str | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
@@ -413,7 +546,7 @@ async def _handle_start_task(
     # 生成简短 description 供前端历史列表展示
     _desc = message.strip()[:30]
     if not _desc:
-        _desc = " ".join(n.rsplit(".", 1)[0] for n in image_names[:2]) or "新商拍任务"
+        _desc = "识别图片中的商品"
 
     request_json = {
         "description": _desc,
@@ -432,8 +565,18 @@ async def _handle_start_task(
     def _sync_write():
         with session_scope() as sdb:
             repo = TaskRepo(sdb)
-            repo.create(task_id=task_id, request_json=request_json, phase="input", brand_config_json={})
+            repo.create(
+                task_id=task_id,
+                request_json=request_json,
+                phase="input",
+                brand_config_json={},
+                conversation_id=conversation_id,
+            )
             repo.add_event(task_id, "task_created", phase="input", payload_json=request_json)
+            # 同步 conversation.current_task_id
+            if conversation_id:
+                from wellflow.app.repositories.conversation_repo import ConversationRepo as _CR
+                _CR(sdb).update_current_task(conversation_id, task_id)
     await asyncio.to_thread(_sync_write)
 
     config = _langgraph_config(task_id)
@@ -449,6 +592,7 @@ async def _handle_start_task(
 
     yield _sse("task_created", {
         "task_id": task_id, "phase": "input", "estimated_cost_range": [2.0, 10.0],
+        "description": _desc,
     })
     yield _sse("phase", {"phase": "input"})
 
@@ -466,20 +610,30 @@ async def _handle_backward(
     from wellflow.app.utils.image_store import save_upload
 
     if intent == "backward_to_c1":
-        goto_node = "c1_confirm"
+        # 跳到 Node1 执行节点（不是 interrupt 节点），跑完 VLM 自动流到 c1_confirm
+        goto_node = "node1_product_analyzer"
         goto_clean = "c1"
         clean_update: dict[str, Any] = {
             "node1": {}, "node2": {}, "node3": {},
             "phase": "c1_confirm", "interrupt": None,
         }
         step_num = 2
-    else:
-        goto_node = "c2_confirm"
+    elif intent == "backward_to_c2":
+        # 跳到 Node2 执行节点
+        goto_node = "node2_planning_scheme"
         goto_clean = "c2"
         clean_update: dict[str, Any] = {
             "node3": {}, "phase": "c2_confirm", "interrupt": None,
         }
         step_num = 4
+    else:  # backward_to_c3
+        # 跳到 Node3 执行节点
+        goto_node = "node3_prompt_generation"
+        goto_clean = "c3"
+        clean_update: dict[str, Any] = {
+            "node3": {}, "phase": "c3_confirm", "interrupt": None,
+        }
+        step_num = 6
 
     # 如果用户上传了新商品图 → 落盘 + 更新 request.product_images
     if product_images:
@@ -497,7 +651,24 @@ async def _handle_backward(
 
     q = await drain_and_subscribe(task_id)
     config = _langgraph_config(task_id)
-    cmd = Command(goto=goto_node, update=clean_update)
+
+    # 🔑 LangGraph 的 Command(goto=interrupt_node) 本质是"跳过下一次执行 + update state"，
+    # 而 Command(goto=execution_node) 只 update state，不自动跳过 checkpoint 的执行位置。
+    # 所以必须先显式更新 state（清掉旧 node 产物 + 把 next 指针拉到目标节点之前），
+    # 再用 Command(goto=...) 确保方向正确。
+    # update_state 先跑，Command(goto=...) 后跑，同一轮 astream 会先应用 update，
+    # 然后从 goto_node 开始执行。
+    try:
+        await graph.aupdate_state(
+            config,
+            clean_update,
+            as_node="__input__",
+        )
+        print(f"[backward] ✅ update_state 完成 task={task_id} goto={goto_node}", flush=True)
+    except Exception as exc:
+        print(f"[backward] ⚠️ update_state 失败，继续走 Command(task={task_id}): {exc}", flush=True)
+
+    cmd = Command(goto=goto_node)
 
     def _clear_interrupt():
         try:
@@ -613,13 +784,30 @@ async def _handle_resume(
     # 组装 Command：resume 是传给 interrupt 的值，update 是直接更新 state 的字段
     cmd_kwargs: dict[str, Any] = {"resume": resume_values}
     if product_image_paths:
-        # 读取旧 request 并 merge（保持其他字段不变）
+        # 读取旧 request 并合并（商品图追加合并，超过 3 张取最新）
         graph_state = await _aget_graph_state(task_id)
         old_request = (graph_state or {}).get("request", {}) if graph_state else {}
-        merged_request = {**old_request, "product_images": product_image_paths,
-                          "product_image_names": [f.filename for f in (product_images or [])],
-                          "image_count": len(product_image_paths),
-                          "has_images": True}
+
+        # 追加合并商品图：旧 + 新，取最后 3 张
+        old_products: list[str] = old_request.get("product_images") or []
+        merged_products = old_products + product_image_paths
+        if len(merged_products) > 3:
+            merged_products = merged_products[-3:]
+
+        # 文件名也同步追加
+        old_names: list[str] = old_request.get("product_image_names") or []
+        new_names = [f.filename for f in (product_images or [])]
+        merged_names = old_names + new_names
+        if len(merged_names) > 3:
+            merged_names = merged_names[-3:]
+
+        merged_request = {
+            **old_request,
+            "product_images": merged_products,
+            "product_image_names": merged_names,
+            "image_count": len(merged_products),
+            "has_images": True,
+        }
         cmd_kwargs["update"] = {"request": merged_request}
 
     cmd = Command(**cmd_kwargs)

@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # WellFlow 商拍系统 · 独立部署脚本
+#
+# 文件位置：项目根目录 wellflow-saas-backend/deploy.sh
+# （docker-compose.yml / Dockerfile / .env 也都在根目录）
+#
 # 用法：
 #   ./deploy.sh                # 完整部署：.env 校验 → [智能 build] → alembic → up
 #   ./deploy.sh --skip-build   # 跳过镜像构建（已构建过、只跑迁移时用）
@@ -41,21 +45,21 @@ for arg in "$@"; do
     esac
 done
 
-DEPLOY_DIR="$(cd "$(dirname "$0")" && pwd)"   # wellflow/deploy
-REPO_ROOT="$(cd "${DEPLOY_DIR}/../.." && pwd)"  # 项目根目录
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"   # 脚本在根目录，所以就是 repo root
 WELLFLOW_DIR="${REPO_ROOT}/wellflow"
 
 echo "=============================================="
 echo "  🚀  WellFlow 商拍部署脚本"
 echo "  📁  repo root  : ${REPO_ROOT}"
-echo "  �  选项       : build=$([ $SKIP_BUILD = true ] && echo "skip" || echo "run") $( [ $FORCE_BUILD = true ] && echo "(force)" || true )  alembic=$([ $SKIP_DB = true ] && echo "skip" || echo "run")  restart=$([ $MODE = "restart" ] && echo "yes" || echo "no")"
+echo "  🎯  compose    : docker-compose.yml + .env 已在同目录"
+echo "  🛠  选项       : build=$([ $SKIP_BUILD = true ] && echo "skip" || echo "run") $( [ $FORCE_BUILD = true ] && echo "(force)" || true )  alembic=$([ $SKIP_DB = true ] && echo "skip" || echo "run")  restart=$([ $MODE = "restart" ] && echo "yes" || echo "no")"
 echo "=============================================="
 
-cd "$DEPLOY_DIR"
+cd "$REPO_ROOT"
 
-# docker compose 自身解析 yml 里的 ${VAR} 时不读 env_file，
-# 必须显式 --env-file 指向根目录 .env，否则会用空值代替
-COMPOSE="docker compose --env-file ${REPO_ROOT}/.env"
+# 关键：docker-compose.yml 现在跟 .env 同目录
+# Compose 解析 ${VAR} 时会自动从同目录 .env 取值，不再需要 --env-file 参数
+COMPOSE="docker compose"
 
 # ---------- [restart 模式] 最快：直接重启 ----------
 if [ "$MODE" = "restart" ]; then
@@ -70,13 +74,8 @@ fi
 echo ""
 echo "==> 1/3 校验 .env…"
 if [ ! -f "${REPO_ROOT}/.env" ]; then
-    if [ -f "${REPO_ROOT}/wellflow/.env" ]; then
-        mv "${REPO_ROOT}/wellflow/.env" "${REPO_ROOT}/.env"
-        echo "  ↳ 从 wellflow/.env 迁到根目录"
-    else
-        echo "❌ 根目录 .env 不存在"
-        exit 1
-    fi
+    echo "❌ 根目录 .env 不存在"
+    exit 1
 fi
 grep -q "POSTGRES_PASSWORD" "${REPO_ROOT}/.env" || { echo "❌ .env 缺少 POSTGRES_PASSWORD"; exit 1; }
 echo "  ✅ .env 就绪"
@@ -106,7 +105,7 @@ if [ "$SKIP_BUILD" = false ]; then
                 [ -z "$f" ] && continue
                 t=$(stat_mtime "$f")
                 [ "$t" -gt "$NEWEST_SRC" ] && NEWEST_SRC=$t
-            done < <(find "${WELLFLOW_DIR}/deploy/Dockerfile" \
+            done < <(find "${REPO_ROOT}/Dockerfile" \
                            "${WELLFLOW_DIR}/requirements.txt" \
                            "${WELLFLOW_DIR}/app" \
                            "${WELLFLOW_DIR}/migration" \

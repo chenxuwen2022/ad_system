@@ -68,6 +68,7 @@ class OfoxGateway(BaseLLMClient):
         user_content: list[dict[str, Any]] = [{"type": "text", "text": user}]
         for uri in image_uris:
             user_content.append({"type": "image_url", "image_url": {"url": uri}})
+        self._log_payload_size(user_content)
 
         return await self._openai_chat(
             system=system,
@@ -95,6 +96,7 @@ class OfoxGateway(BaseLLMClient):
         user_content: list[dict[str, Any]] = [{"type": "text", "text": user}]
         for uri in image_uris:
             user_content.append({"type": "image_url", "image_url": {"url": uri}})
+        self._log_payload_size(user_content)
 
         async for delta in self._openai_chat_stream(
             system=system,
@@ -104,6 +106,30 @@ class OfoxGateway(BaseLLMClient):
             user_content=user_content,
         ):
             yield delta
+
+    def _log_payload_size(self, user_content: Any) -> None:
+        """打印多模态请求的 payload 尺寸摘要，方便排查模型 image_url 截断问题。"""
+        if not isinstance(user_content, list):
+            return
+        image_blocks = [b for b in user_content if isinstance(b, dict) and b.get("type") == "image_url"]
+        if not image_blocks:
+            return
+        total_b64_chars = 0
+        max_single_b64 = 0
+        for block in image_blocks:
+            url = block.get("image_url", {}).get("url", "")
+            comma_idx = url.find(",")
+            b64_len = len(url) - (comma_idx + 1) if comma_idx >= 0 else len(url)
+            total_b64_chars += b64_len
+            if b64_len > max_single_b64:
+                max_single_b64 = b64_len
+        est_raw_mb = total_b64_chars * 3 / 4 / 1024 / 1024
+        print(
+            f"[llm-payload] 📦 {len(image_blocks)} 张图, "
+            f"base64 合计 {total_b64_chars:,} chars (≈ {est_raw_mb:.2f}MB raw), "
+            f"单张最长 {max_single_b64:,} chars b64",
+            flush=True,
+        )
 
     # ------------------------------------------------------------------
     # OpenAI 协议核心实现

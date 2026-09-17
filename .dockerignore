@@ -25,27 +25,15 @@ venv/
 *.swo
 .DS_Store
 
-# 项目根 —— 广告投放子系统（不打进 WellFlow 镜像）
+# 非源码目录（不打进镜像）
 deploy/
-routes/
-static/
-templates/
 assets_data/
 media_storage/
 upload_materials/
 *.db
 *.log
-token_manager.py
-douyin_api.py
-db.py
-file_service.py
-models.py
-main.py
-config.py
-requirements.txt
 
-# WellFlow 子目录下排除的内容
-# （Dockerfile 会 COPY wellflow/ wellflow/，这些子路径会被跳过）
+# WellFlow 子目录下排除的内容（Dockerfile 会 COPY wellflow/ wellflow/，这些子路径跳过）
 wellflow/deploy/
 wellflow/scripts/
 wellflow/README.md

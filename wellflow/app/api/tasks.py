@@ -43,7 +43,7 @@ def _short_uuid() -> str:
 
 
 def _get_graph():
-    from wellflow.app.main import get_graph
+    from wellflow.app.runtime import get_graph
     g = get_graph()
     if g is None:
         raise RuntimeError("LangGraph 未初始化")
@@ -271,6 +271,7 @@ async def create_task(
             "task_id": task_id,
             "phase": TaskPhase.INPUT.value,
             "estimated_cost_range": [2.0, 10.0],
+            "description": _desc,
         })
 
         # 先推一个 phase=input（对齐旧版 SSE 契约）
@@ -686,7 +687,7 @@ async def delete_task(task_id: str):
 
     仅允许删除终态任务（done / failed / needs_retry），进行中的任务返回 409 Conflict。
     """
-    from wellflow.app.main import get_checkpointer
+    from wellflow.app.runtime import get_checkpointer
 
     # 1. 先查任务是否存在 + 是否处于可删除状态
     with session_scope() as db:

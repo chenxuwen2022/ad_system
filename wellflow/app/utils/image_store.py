@@ -6,8 +6,9 @@
 
 批量压缩策略（paths_to_data_uris）：
   - 最多取前 image_max_per_call 张（超出忽略）
-  - 逐张判断：单张原始 ≤ 5MB → 不压缩，保持原编码原质量
-  - 单张原始 > 5MB → PIL 压缩到 ≤ 5MB：quality 从 90 起步逐步降（最低 50），再超限才 resize 长边到 2800px
+  - 所有非 data URI 统一 PIL → JPEG q=90（格式归一化：PNG/WebP/HEIC 等 → JPEG，消除模型 image_url 兼容性问题）
+  - 归一化后若仍 > 1.5MB → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
+  - Pillow 不可用时安全降级（原样 base64，风险自负，由 ofox_gateway 重试 + 上层错误处理兜底）
 
 用法：
   from wellflow.app.utils.image_store import save_upload, path_to_data_uri, paths_to_data_uris
@@ -243,15 +244,14 @@ def path_to_data_uri(path: str) -> str:
 
 
 def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
-    """批量路径 → data URI，带逐张压缩决策。
+    """批量路径 → data URI，带格式归一化 + 渐进压缩。
 
     规则：
       - 已经是 data URI 的元素直接保留（老任务 checkpoint 兼容）
       - 最多取前 image_max_per_call 张（config 里配置）
-      - 每张独立判断：原始 ≤ threshold → 原样 base64；> threshold → PIL 压缩到 ≤ threshold
-
-    Pillow 不可用时安全降级（原样 base64，会恢复到原始 payload —
-    若此时代理仍断连，由 ofox_gateway 重试 + 上层错误处理兜底）。
+      - 所有文件路径一律 PIL → JPEG q=90（格式归一化，消除 PNG/WebP 等模型兼容问题）
+      - 归一化后若仍 > 1.5MB raw → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
+      - Pillow 不可用时安全降级（原样 base64，风险自负，由 ofox_gateway 重试 + 上层错误处理兜底）
     """
     constants = _image_constants()
     MAX_IMAGES_PER_CALL = constants["MAX_IMAGES_PER_CALL"]
@@ -281,60 +281,68 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
     if not path_items:
         return result
 
-    # 2) 确认 Pillow 可用（只在有图需要压缩时才警告）
+    # 2) 确认 Pillow 可用
     pil_available = True
     try:
         __import__("PIL.Image")
     except ImportError:
         pil_available = False
 
+    converted_count = 0
     compressed_count = 0
 
-    # 3) 逐张处理
+    # 3) 逐张处理 —— 一律走 PIL（格式归一化 + 渐进压缩）
     for p, raw in path_items:
         abs_path = _resolve_path(p)
-        mime, _ = mimetypes.guess_type(str(abs_path))
-        mime = mime or "image/jpeg"
+        orig_mime, _ = mimetypes.guess_type(str(abs_path))
+        orig_mime = orig_mime or "image/jpeg"
 
-        if len(raw) <= threshold_bytes:
-            # 小图：原样 base64，不走 PIL
-            b64 = base64.b64encode(raw).decode("ascii")
-            result.append(f"data:{mime};base64,{b64}")
-            continue
-
-        # 大图 → 需要压缩
         if not pil_available:
-            print(f"[image_store] ⚠️ 未安装 Pillow，无法压缩 {p} ({len(raw)/1024/1024:.1f}MB)，原样 base64", flush=True)
+            print(f"[image_store] ⚠️ 未安装 Pillow，无法转换 {p} ({len(raw)/1024/1024:.1f}MB)，原样 base64", flush=True)
             b64 = base64.b64encode(raw).decode("ascii")
-            result.append(f"data:{mime};base64,{b64}")
+            result.append(f"data:{orig_mime};base64,{b64}")
             continue
 
-        enc, final_q, used_resize = _compress_single(raw, threshold_bytes)
-        compressed_count += 1
+        # Step A: 格式归一化 —— PIL → JPEG q=90（不 resize）
+        try:
+            enc, _, w_orig, h_orig = _pil_compress(raw, quality=90)
+            converted_count += 1
+        except Exception as e:
+            print(f"[image_store] ⚠️ PIL 转换失败 ({e})，退回原样 base64", flush=True)
+            b64 = base64.b64encode(raw).decode("ascii")
+            result.append(f"data:{orig_mime};base64,{b64}")
+            continue
 
-        # 读取原图尺寸用于日志
-        w_orig, h_orig = 0, 0
+        final_q = 90
+        used_resize = False
+
+        # Step B: 若归一化后仍超限 → 渐进降 quality + resize 兜底
+        if len(enc) > threshold_bytes:
+            enc, final_q, used_resize = _compress_single(raw, threshold_bytes)
+            compressed_count += 1
+
+        # 读新尺寸
+        w_new, h_new = w_orig, h_orig
         try:
             from PIL import Image as _I
-            _im = _I.open(io.BytesIO(raw))
-            w_orig, h_orig = _im.size
+            with _I.open(io.BytesIO(enc)) as _im2:
+                w_new, h_new = _im2.size
         except Exception:
             pass
 
-        # 读新尺寸
-        try:
-            from PIL import Image as _I
-            _im2 = _I.open(io.BytesIO(enc))
-            w_new, h_new = _im2.size
-        except Exception:
-            w_new, h_new = w_orig, h_orig
-
+        # 只在有实际转换/压缩时打详细日志
+        is_reformat = orig_mime != "image/jpeg" or final_q != 90
         resize_tag = " [resize]" if used_resize else ""
-        print(
-            f"[image_store] 🗜️ {p}: {len(raw)/1024/1024:.1f}MB → {len(enc)/1024:.0f}KB "
-            f"({w_orig}x{h_orig} → {w_new}x{h_new}, q={final_q}){resize_tag}",
-            flush=True,
-        )
+        kb_orig = len(raw) / 1024
+        kb_new = len(enc) / 1024
+        if is_reformat or compressed_count == 0 and converted_count == 1:
+            print(
+                f"[image_store] 🗜️ {p}: {kb_orig:.0f}KB → {kb_new:.0f}KB "
+                f"({w_orig}x{h_orig} → {w_new}x{h_new}, q={final_q}){resize_tag} "
+                f"[format: {orig_mime} → JPEG]",
+                flush=True,
+            )
+
         b64 = base64.b64encode(enc).decode("ascii")
         result.append(f"data:image/jpeg;base64,{b64}")
 
@@ -342,7 +350,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
     total_raw = sum(len(raw) for _, raw in path_items)
     print(
         f"[image_store] ✅ {len(path_items)} 张图片处理完成 "
-        f"(原图合计 {total_raw/1024/1024:.1f}MB, 压缩 {compressed_count} 张, 阈值 {SINGLE_THRESHOLD_MB:.1f}MB/张)",
+        f"(原图合计 {total_raw/1024/1024:.1f}MB, 格式转换 {converted_count} 张, 渐进压缩 {compressed_count} 张, 阈值 {SINGLE_THRESHOLD_MB:.1f}MB/张)",
         flush=True,
     )
     return result
@@ -382,19 +390,13 @@ def _compress_single(raw: bytes, threshold_bytes: int) -> tuple[bytes, int, bool
 def bytes_items_to_data_uris(
     items: list[tuple[bytes, str]],
 ) -> list[str]:
-    """直接从 (raw_bytes, mime_type) 列表转 data URI，带逐张压缩决策。
+    """直接从 (raw_bytes, mime_type) 列表转 data URI，带格式归一化 + 渐进压缩。
 
     跳过文件落盘环节 —— 交互端点（optimize-prompt / generate / fine-tune / auto-tag）
     读 multipart 的文件字节后直接喂 LLM。
 
-    规则同 paths_to_data_uris：最多取前 image_max_per_call 张，单张 ≤ threshold 原样，
-    > threshold 走 PIL 压缩。
-
-    Args:
-        items: [(raw_bytes, mime_type), ...]
-
-    Returns:
-        data URI 列表
+    规则同 paths_to_data_uris：最多取前 image_max_per_call 张，
+    所有图片 PIL→JPEG q=90 归一化，超限再渐进压缩。
     """
     import base64 as _b64
 
@@ -411,25 +413,34 @@ def bytes_items_to_data_uris(
         pil_available = False
 
     for raw, mime in items[:MAX_IMAGES_PER_CALL]:
-        mime = mime or "image/jpeg"
-        if len(raw) <= threshold_bytes:
-            # 小图原样
-            b64 = _b64.b64encode(raw).decode("ascii")
-            result.append(f"data:{mime};base64,{b64}")
-            continue
+        orig_mime = mime or "image/jpeg"
 
         if not pil_available:
-            print(f"[image_store] ⚠️ 未安装 Pillow，无法压缩内存图片 ({len(raw)/1024/1024:.1f}MB)，原样 base64", flush=True)
+            print(f"[image_store] ⚠️ 未安装 Pillow，内存图片 ({len(raw)/1024/1024:.1f}MB) 原样 base64", flush=True)
             b64 = _b64.b64encode(raw).decode("ascii")
-            result.append(f"data:{mime};base64,{b64}")
+            result.append(f"data:{orig_mime};base64,{b64}")
             continue
 
-        enc, final_q, used_resize = _compress_single(raw, threshold_bytes)
-        compressed_count = 1
+        # Step A: 格式归一化 —— PIL → JPEG q=90
+        try:
+            enc, _, _, _ = _pil_compress(raw, quality=90)
+        except Exception as e:
+            print(f"[image_store] ⚠️ PIL 转换失败 ({e})，退回原样 base64", flush=True)
+            b64 = _b64.b64encode(raw).decode("ascii")
+            result.append(f"data:{orig_mime};base64,{b64}")
+            continue
+
+        final_q = 90
+        used_resize = False
+
+        # Step B: 归一化后仍超限 → 渐进降 quality + resize
+        if len(enc) > threshold_bytes:
+            enc, final_q, used_resize = _compress_single(raw, threshold_bytes)
+
         resize_tag = " [resize]" if used_resize else ""
         print(
-            f"[image_store] 🗜️ 内存图片: {len(raw)/1024/1024:.1f}MB → {len(enc)/1024:.0f}KB "
-            f"(q={final_q}){resize_tag}",
+            f"[image_store] 🗜️ 内存图片: {len(raw)/1024:.0f}KB → {len(enc)/1024:.0f}KB "
+            f"(q={final_q}){resize_tag} [format: {orig_mime} → JPEG]",
             flush=True,
         )
         b64 = _b64.b64encode(enc).decode("ascii")

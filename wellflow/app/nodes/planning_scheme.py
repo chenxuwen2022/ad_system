@@ -15,7 +15,7 @@ import json
 import re
 from typing import Any
 
-from wellflow.app.llm.factory import get_llm_client
+from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.prompt.constant import PLANNING_AGENT_SYSTEM_PROMPT
 
 
@@ -76,7 +76,7 @@ async def stream_plan_schemes(
     """流式生成 N 套风格迥异的商拍方案（仅基于商品识别报告文本，不传图片给 VLM）。"""
     from wellflow.app.config import settings
 
-    client = get_llm_client("vlm", node_name="node2")
+    pool = get_model_pool()
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
     system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
 
@@ -94,11 +94,11 @@ async def stream_plan_schemes(
         f"schemes 数组长度 = {scheme_count}。"
     )
 
-    print(f"[planning_scheme] 🎬 流式调用 VLM: scheme_count={scheme_count}, "
+    print(f"[planning_scheme] 🎬 流式调用: scheme_count={scheme_count}, "
           f"reasoning_effort={effort} (不传图片)",
           flush=True)
 
-    async for delta in client.stream_chat_with_images(
+    async for delta in pool.stream_chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
         image_uris=[],
@@ -129,7 +129,7 @@ async def plan_schemes(
     """
     from wellflow.app.config import settings
 
-    client = get_llm_client("vlm", node_name="node2")
+    pool = get_model_pool()
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
     system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
 
@@ -146,11 +146,11 @@ async def plan_schemes(
         f"schemes 数组长度 = {scheme_count}。"
     )
 
-    print(f"[planning_scheme] 调用 VLM: scheme_count={scheme_count}, "
+    print(f"[planning_scheme] 调用: scheme_count={scheme_count}, "
           f"reasoning_effort={effort} (不传图片)",
           flush=True)
 
-    resp = await client.chat_with_images(
+    resp, used_model = await pool.chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
         image_uris=[],

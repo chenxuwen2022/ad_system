@@ -15,13 +15,12 @@ import re
 from typing import Any, Literal
 
 from wellflow.app.config import settings
-from wellflow.app.llm.factory import _strip_provider
 
 
 INTENT = Literal[
     "start_task", "confirm_current", "edit_and_confirm_c1",
     "select_topics", "redo_generation", "confirm_generation",
-    "backward_to_c1", "backward_to_c2",
+    "backward_to_c1", "backward_to_c2", "backward_to_c3",
     "skip_forward", "chat_outside", "unknown",
 ]
 
@@ -69,19 +68,34 @@ _CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器�
 # ---------------------------------------------------------------------------
 
 _BACKWARD_TO_C1_PATTERNS = [
+    # 明确指向商品分析/报告
     r"回到.*报告", r"重新分析", r"报告.*改", r"报告.*重", r"报告重写",
     r"改.*报告", r"修改报告", r"再分析一次", r"重新做分析",
+    r"重做.*(第一|1).*步", r"回到.*(第一|1).*步", r"第.*(一|1).*步",
+    r"重做.*(商品|分析|识别)", r"换商品",
+    # 带后缀的重做（有明确目标）
+    r"^重做.*分析", r"^重新.*分析", r"^重跑.*分析", r"^重做.*识别", r"^重新.*识别",
 ]
 _BACKWARD_TO_C2_PATTERNS = [
+    # 明确指向方案/选题
     r"回到.*选题", r"重新选", r"选题.*改", r"改.*选题",
     r"调整方案", r"改方案", r"换方案", r"换方向", r"重新出方案",
+    r"重做.*(第二|2).*步", r"回到.*(第二|2).*步", r"第.*(二|2).*步",
+    r"重做.*(方案|选题)",
+]
+_BACKWARD_TO_C3_PATTERNS = [
+    # 指向 prompt/生图参数（c3 确认阶段）
+    r"回到.*提示词", r"重做.*提示词", r"重做.*(第三|3).*步",
+    r"回到.*(第三|3).*步", r"改.*提示词",
 ]
 _CONFIRM_PATTERNS = [
     r"^(继续|没问题|通过|ok|好的|就这样|确认|可以|行|过|没问题了|可以了|结束|保存|就这样吧|满意|确定|没错)$",
 ]
 _REDO_PATTERNS = [
-    r"重做", r"换一批", r"重新生成", r"再试", r"不满意", r"再画", r"重新画",
-    r"换一张", r"再来", r"不行.*重", r"不好.*重", r"不好看",
+    # 必须明确指向生图结果，不能用裸 "重做"
+    r"重做.*图", r"重做生图", r"重做图片", r"重做这张", r"重做这些",
+    r"重新生成.*图", r"重新画", r"再画", r"换一张", r"换一批.*图",
+    r"再来.*图", r"重画", r"不满意", r"不好看", r"不行",
 ]
 _SELECT_ALL_PATTERNS = [
     r"全选", r"都要", r"全部", r"所有方案", r"每个方案",
@@ -107,15 +121,46 @@ _C3_TUNE_PATTERNS = [
 
 
 def _match_backward_c1(text: str, current_node: str | None) -> bool:
-    if current_node not in ("c2", "c3"):
+    # c1 也允许（刚跑完 Node1 想重跑），加上之前的 c2/c3/c4
+    if current_node not in ("c1", "c2", "c3", "c4"):
         return False
     return any(re.search(p, text) for p in _BACKWARD_TO_C1_PATTERNS)
 
 
 def _match_backward_c2(text: str, current_node: str | None) -> bool:
-    if current_node != "c3":
+    if current_node not in ("c2", "c3", "c4"):
         return False
     return any(re.search(p, text) for p in _BACKWARD_TO_C2_PATTERNS)
+
+
+def _match_backward_c3(text: str, current_node: str | None) -> bool:
+    if current_node not in ("c3", "c4"):
+        return False
+    return any(re.search(p, text) for p in _BACKWARD_TO_C3_PATTERNS)
+
+
+# 任意节点下说 "重做/重新/重来" —— 目标是当前节点的前一步
+# c1 → backward_to_c1（重跑 Node1）
+# c2 → backward_to_c1（改报告影响方案）
+# c3 → backward_to_c2（改方案影响 prompt）
+# c4 → backward_to_c3（改 prompt 影响生图）
+_BACKWARD_BARE_REDO_PATTERNS = [r"^重做$", r"^重新$", r"^重来$", r"^重跑$", r"^重画$"]
+
+
+def _match_bare_redo(text: str, current_node: str | None) -> str | None:
+    """任意 interrupt 节点下的裸 '重做' → 返回目标 backward intent。"""
+    if current_node not in ("c1", "c2", "c3", "c4"):
+        return None
+    if not any(re.search(p, text) for p in _BACKWARD_BARE_REDO_PATTERNS):
+        return None
+    # 决定目标：从 c1/c2/c3/c4 分别后退到 c1
+    target_map = {
+        "c1": "backward_to_c1",  # c1 下重做 = 重跑 Node1
+        "c2": "backward_to_c1",  # c2 下重做 = 回到报告改
+        "c3": "backward_to_c2",  # c3 下重做 = 回到方案改
+        "c4": "backward_to_c3",  # c4 下重做 = 回到 prompt 改
+    }
+    return target_map[current_node]
 
 
 _TONE_SUFFIXES = ("吧", "啊", "哦", "啦", "呀", "哈", "呢", "咧", "咯", "嘞", "噻")
@@ -139,7 +184,7 @@ def _match_confirm(text: str, current_node: str | None) -> bool:
 
 
 def _match_redo(text: str, current_node: str | None) -> bool:
-    if current_node != "c3":
+    if current_node not in ("c3", "c4"):
         return False
     return any(re.search(p, text) for p in _REDO_PATTERNS)
 
@@ -228,18 +273,36 @@ def _try_keywords(
         return {"intent": "chat_outside", "reasoning": "空消息",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
-    # 1. backward 类（最高优先级，明确要回退）
+    # 0. 裸 "重做/重新" —— 根据当前节点动态决定目标（放在最前面，优先级最高）
+    bare_redo = _match_bare_redo(text, current_node)
+    if bare_redo:
+        targets = {
+            "backward_to_c1": "报告/商品分析",
+            "backward_to_c2": "选题/方案",
+            "backward_to_c3": "提示词",
+        }
+        return {"intent": bare_redo,
+                "reasoning": f"关键词: 裸重做 → 回到{targets[bare_redo]}",
+                "selected_indices": None, "blocked_step": None, "parsed_content": None}
+
+    # 1. backward 类（最高优先级，明确要回退 —— 必须在 redo 之前，避免被裸 "重做" 误吞）
     if _match_backward_c1(text, current_node):
-        return {"intent": "backward_to_c1", "reasoning": "关键词: 回到报告/重新分析",
+        return {"intent": "backward_to_c1", "reasoning": "关键词: 回到报告/重新分析/重做第一步",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
     if _match_backward_c2(text, current_node):
-        return {"intent": "backward_to_c2", "reasoning": "关键词: 回到选题/调整方案",
+        return {"intent": "backward_to_c2", "reasoning": "关键词: 回到选题/调整方案/重做第二步",
+                "selected_indices": None, "blocked_step": None, "parsed_content": None}
+    if _match_backward_c3(text, current_node):
+        return {"intent": "backward_to_c3", "reasoning": "关键词: 回到提示词/重做第三步",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
     # 2. confirm（极短的确认指令）
     if _match_confirm(text, current_node):
         if current_node == "c3":
             return {"intent": "confirm_generation", "reasoning": "关键词: 确认生图结果",
+                    "selected_indices": None, "blocked_step": None, "parsed_content": None}
+        if current_node == "c4":
+            return {"intent": "confirm_generation", "reasoning": "关键词: 确认最终生图并结束",
                     "selected_indices": None, "blocked_step": None, "parsed_content": None}
         if current_node == "c2":
             return {"intent": "confirm_current", "reasoning": "关键词: 确认选题（默认选中继续）",
@@ -277,21 +340,21 @@ def _try_keywords(
                     "blocked_step": {"index": step_idx, "name": step_name},
                     "parsed_content": None}
 
-    # 6. start_task 关键词兜底（无 task + 有图 + 非闲聊）
-    if not has_task and has_images and not _match_chat_outside(text):
+    # 7. chat_outside 关键词（最高优先级的闲聊拦截 —— 有任务/无任务都生效）
+    if _match_chat_outside(text):
+        return {"intent": "chat_outside",
+                "reasoning": "关键词拦截: 闲聊/非商拍",
+                "selected_indices": None, "blocked_step": None,
+                "parsed_content": None}
+
+    # 8. start_task 关键词兜底（无 task + 有图 + 非闲聊）
+    if not has_task and has_images:
         return {"intent": "start_task",
                 "reasoning": "关键词兜底: 无 task + 有图 → 开始任务",
                 "selected_indices": None, "blocked_step": None,
                 "parsed_content": text}
 
-    # 7. chat_outside 关键词兜底（常见闲聊触发词）
-    if not has_task and not has_images and _match_chat_outside(text):
-        return {"intent": "chat_outside",
-                "reasoning": "关键词兜底: 闲聊/非商拍",
-                "selected_indices": None, "blocked_step": None,
-                "parsed_content": None}
-
-    # 8. 节点兜底
+    # 9. 节点兜底
     if current_node == "c1":
         return {"intent": "edit_and_confirm_c1",
                 "reasoning": "c1 节点下的自然语言输入，当作编辑报告内容",
@@ -323,13 +386,7 @@ async def _classify_via_llm(
     completed_mask: list[bool] | None, has_images: bool,
     product_description: str | None,
 ) -> dict[str, Any]:
-    from wellflow.app.llm.factory import get_llm_client
-
-    client = get_llm_client(
-        "vlm",
-        node_name=None,  # 不走 node 分配，直接用 model_override
-        model_override=_strip_provider(settings.llm_model_chat),
-    )
+    from wellflow.app.llm.model_pool import get_model_pool
 
     ctx_lines = [
         f"has_task={has_task}",
@@ -348,12 +405,13 @@ async def _classify_via_llm(
         "请返回意图分类 JSON。"
     )
 
-    resp = await client.chat(
+    pool = get_model_pool()
+    resp, used_model = await pool.chat(
         system=_CLASSIFIER_SYSTEM,
         user=user_prompt,
         response_format={"type": "json_object"},
-        temperature=0.1,
-        reasoning_effort=None,  # 简单分类不需要深度思考，关掉以提速
+        temperature=0.3,             # 固定 0.3（有 temperature 参数的模型）
+        reasoning_effort=None,       # 简单分类不需要深度思考，关掉以提速
     )
 
     try:
@@ -361,7 +419,7 @@ async def _classify_via_llm(
     except Exception:
         return {
             "intent": "chat_outside",
-            "reasoning": f"LLM 输出非 JSON: {resp.content[:200]}",
+            "reasoning": f"LLM 输出非 JSON ({used_model}): {resp.content[:200]}",
             "selected_indices": None, "blocked_step": None, "parsed_content": None,
         }
 
@@ -369,7 +427,7 @@ async def _classify_via_llm(
     valid = {
         "start_task", "confirm_current", "edit_and_confirm_c1",
         "select_topics", "redo_generation", "confirm_generation",
-        "backward_to_c1", "backward_to_c2",
+        "backward_to_c1", "backward_to_c2", "backward_to_c3",
         "skip_forward", "chat_outside", "unknown",
     }
     if intent not in valid:
@@ -382,7 +440,7 @@ async def _classify_via_llm(
         "blocked_step": data.get("blocked_step"),
         "parsed_content": data.get("parsed_content"),
     }
-    print(f"[intent] LLM → {intent}: {result.get('reasoning', '')[:80]}", flush=True)
+    print(f"[intent] {used_model} → {intent}: {result.get('reasoning', '')[:80]}", flush=True)
     return result
 
 
