@@ -63,3 +63,7 @@ static/assets/
 static/outfit_ai/
 assets_data/*.bak_*
 static/*.html
+
+# 临时脚本
+_p*.py
+_page.js
