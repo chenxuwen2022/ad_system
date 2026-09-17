@@ -93,8 +93,10 @@ def _save_material_marks(file_path: str, tags):
 
 def _save_launch_record(file_path: str, status: str, mode: str,
                         plan_id: str = "", plan_name: str = "",
-                        product_id: str = "", detail: str = ""):
-    """记录一次素材投放历史，用于素材库展示投放状态"""
+                        product_id: str = "", detail: str = "",
+                        advertiser_id: str = "", budget: float = 0):
+    """记录一次素材投放历史，用于素材库展示投放状态。
+    SQLite material_launch（现有功能）+ PostgreSQL launch_record（投放记录表）双写。"""
     if not file_path:
         return
     db = SessionLocal()
@@ -107,6 +109,17 @@ def _save_launch_record(file_path: str, status: str, mode: str,
         db.commit()
     finally:
         db.close()
+    # 同步写 PostgreSQL 投放记录表（PG 不可用时静默跳过，不影响主流程）
+    try:
+        from ad.pg_db import save_launch_record
+        save_launch_record(
+            advertiser_id=advertiser_id or "", file_path=file_path,
+            status=status, mode=mode, plan_id=plan_id or "", plan_name=plan_name or "",
+            product_id=product_id or "", budget=float(budget or 0),
+            detail=(detail or "")[:1000],
+        )
+    except Exception:
+        pass
 
 
 @router.get("/api/advertisers")
@@ -168,7 +181,8 @@ async def ad_launch(req: AdLaunchRequest):
             _save_launch_record(f_path, "success", "test",
                                 plan_id=req.plan_id or "", plan_name=plan_ref,
                                 product_id=chosen_pid or "",
-                                detail="测试模式模拟投放")
+                                detail="测试模式模拟投放",
+                                advertiser_id=advertiser_id or "", budget=budget)
             return {
                 "success": True,
                 "test_mode": True,
@@ -221,12 +235,14 @@ async def ad_launch(req: AdLaunchRequest):
             _save_material_marks(req.local_file_path, req.tags)
             _save_launch_record(req.local_file_path, "success", "real",
                                 plan_id=req.plan_id, product_id=",".join(req.product_ids or []),
-                                detail="已追加到投放计划")
+                                detail="已追加到投放计划",
+                                advertiser_id=advertiser_id or "", budget=req.budget or 0)
             delete_media_file(req.local_file_path)
         else:
             _save_launch_record(req.local_file_path, "fail", "real",
                                 plan_id=req.plan_id or "", product_id=",".join(req.product_ids or []),
-                                detail=result.error_msg or "投放失败")
+                                detail=result.error_msg or "投放失败",
+                                advertiser_id=advertiser_id or "", budget=req.budget or 0)
         return result
 
     elif req.platform in ["jd", "taobao"]:
@@ -645,6 +661,17 @@ async def get_material_marks(file_path: str = ""):
         ]}
     finally:
         db.close()
+
+
+@router.get("/api/launch_records")
+async def get_launch_records(advertiser_id: str = "", limit: int = 100):
+    """查询 PostgreSQL 投放记录表（倒序）。PG 不可用时返回空列表。"""
+    try:
+        from ad.pg_db import query_launch_records
+        rows = query_launch_records(limit=min(int(limit), 500), advertiser_id=advertiser_id or "")
+        return {"success": True, "total": len(rows), "data": rows}
+    except Exception as e:
+        return {"success": False, "error": str(e), "data": []}
 
 
 @router.get("/api/material_launch_status")

@@ -71,6 +71,12 @@ class MaterialLaunchDB(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # 同时初始化 PostgreSQL 投放记录表（不可用时自动降级，不影响主流程）
+    try:
+        from ad.pg_db import init_pg_db
+        init_pg_db()
+    except Exception:
+        pass
 
 
 def get_db():
