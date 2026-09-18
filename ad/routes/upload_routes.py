@@ -1218,6 +1218,39 @@ async function loadMaterialDetail(){
         if(s.material_status || s.audit_status || (s.products && s.products.length)){
             html += `<div class='muted' style='margin-top:6px'>素材状态：${esc(s.material_status||"—")}　|　审核状态：${esc(s.audit_status||"—")}${s.material_types&&s.material_types.length?("　|　类型："+esc(s.material_types.join("/"))):""}${s.products&&s.products.length?("　|　关联商品 "+s.products.length+" 个"):""}</div>`;
         }
+        // 素材画像：素材来源 / 创意方式 / 素材样式（尺寸）+ AI 样式识别（场景图/模特图/白底图）
+        {
+            const mm = s.material_meta || {};
+            const srcCn = {E_COMMERCE:"本地上传",CREATIVE_CENTER:"巨量创意PC",STAR:"星图·即合",LIVE_HIGHLIGHT:"直播剪辑",JI_CHUANG:"即创",ARTHUR:"亚瑟",VIDEO_CAPTURE:"易拍APP",AGENT:"巨量方舟",AWEME:"抖音主页",SQUARE:"商品图",TADA:"tada"}[mm.source] || mm.source || "—";
+            const modeCn = {VIDEO_VERTICAL:"竖版视频",VIDEO_LARGE:"横版视频",LARGE:"横版大图",LARGE_VERTICAL:"竖版大图",SMALL:"横版小图",SQUARE:"方图",UNION_SPLASH:"开屏图"}[mm.image_mode] || mm.image_mode || "—";
+            const wayCn = {CUSTOM_CREATIVE:"自定义创意",PROGRAMMATIC_CREATIVE:"程序化创意"}[mm.creative_way] || mm.creative_way || "—";
+            const aiBadge = mm.is_ai_create === true ? "<span style='color:#1f6feb'>AI生成</span>" : (mm.is_ai_create === false ? "人工素材" : "—");
+            html += `<div style="display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px;font-size:12.5px;color:#1A1B1C;background:linear-gradient(135deg,rgba(139,200,234,0.08),rgba(139,200,234,0.02));border:1px solid #e7edf6;border-radius:10px;padding:8px 12px;">
+                <span>📦 素材来源：<b>${esc(srcCn)}</b></span>
+                <span>🎨 素材样式：<b>${esc(modeCn)}</b></span>
+                <span>🧩 创意方式：<b>${esc(wayCn)}</b></span>
+                <span>🤖 生成方式：${aiBadge}</span>
+                <span id="aiStyleTag" style="color:#8a97ab">🔍 AI 样式识别中…</span>
+            </div>`;
+            // 异步调 AI 识图打标（场景图/模特图/白底图）
+            (async function(){
+                try{
+                    const r = await fetch("/api/material_style?material_id=" + encodeURIComponent(mid) + "&mtype=" + encodeURIComponent(s.type) + (aid ? ("&advertiser_id="+encodeURIComponent(aid)) : ""));
+                    const j = await r.json();
+                    const tag = document.getElementById("aiStyleTag");
+                    if(tag && j.success && j.style && j.style !== "未知"){
+                        const colors = {"场景图":"#16a34a","模特图":"#7c3aed","白底图":"#1f6feb","其他":"#d97706"};
+                        const c = colors[j.style] || "#6B7280";
+                        tag.innerHTML = `AI 样式识别：<b style="color:${c}">${esc(j.style)}</b>` + (j.reason ? `<span class='muted' style='margin-left:6px'>（${esc(j.reason)}）</span>` : "");
+                    }else if(tag){
+                        tag.innerHTML = `AI 样式识别：<span class='muted'>${esc(j.note || j.style || "无法识别")}</span>`;
+                    }
+                }catch(e){
+                    const tag = document.getElementById("aiStyleTag");
+                    if(tag){ tag.innerHTML = "AI 样式识别：<span class='muted'>识别失败</span>"; }
+                }
+            })();
+        }
         if(s.metrics_all && s.metrics_all.length){
             html += "<details open style='margin-top:14px'><summary class='muted'>全部报表指标（点击收起，共 "+s.metrics_all.length+" 项）</summary>";
             html += "<div class='kpi kpi-all'>";

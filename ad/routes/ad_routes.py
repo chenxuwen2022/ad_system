@@ -463,6 +463,19 @@ async def material_export(material_id: str, advertiser_id: str = ""):
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/material_style")
+async def material_style(material_id: str, mtype: str = "视频", advertiser_id: str = "", refresh: bool = False):
+    """AI 识图打标：判断素材属于 场景图/模特图/白底图/其他（素材库无此字段，用 VLM 识别）。
+    material_id + mtype 定位素材（mtype: 视频/图片/标题），结果磁盘缓存 7 天。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.classify_material_style(material_id, mtype=mtype, force=bool(refresh))
+        return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/api/ad/report")
 async def get_report(advertiser_id: str, creative_id: str):
     ad_service = DouYinAdService(advertiser_id=advertiser_id)
