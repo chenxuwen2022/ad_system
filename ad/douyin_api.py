@@ -1622,6 +1622,29 @@ class DouYinAdService:
 
         # 5. 素材预览（视频取播放url+封面，图片取图片url）
         preview = self._get_material_preview(material_id, row["type"])
+
+        # 6. 素材来源 / 样式 / 是否AI生成（素材库接口原始字段）
+        lib = self._fetch_material_lib(material_id, row["type"])
+        meta = {}
+        if lib.get("kind"):
+            meta = {
+                "source": lib.get("source", ""),          # 素材来源：E_COMMERCE 本地上传等
+                "image_mode": lib.get("image_mode", ""),  # 素材样式：VIDEO_VERTICAL 竖版等
+                "is_ai_create": lib.get("is_ai_create", ""),  # 是否AI生成
+                "create_time": lib.get("create_time", ""),
+                "filename": lib.get("filename", ""),
+            }
+        # 创意方式：从素材→在投计划映射聚合（CUSTOM_CREATIVE/PROGRAMMATIC_CREATIVE）
+        # 注意：计划 detail 里素材标识是素材库 id（v0dc8eg...格式），不是报表 material_id
+        try:
+            _plan_key = str(lib.get("id") or material_id)
+            _plans = self.get_material_plan_map().get(_plan_key, [])
+            _ways = sorted({p.get("creative_way") for p in _plans if p.get("creative_way")})
+            meta["creative_way"] = "/".join(_ways)
+            meta["in_delivery_plans"] = len(_plans)
+        except Exception:
+            meta["creative_way"] = ""
+        summary["material_meta"] = meta
         return {"summary": summary, "daily": daily, "ai": ai_text, "preview": preview}
 
     def _fetch_material_lib(self, material_id: str, mtype: str) -> dict:
@@ -1719,6 +1742,14 @@ class DouYinAdService:
                     return []
                 data = d.get("data", {}) or {}
                 plan_name = data.get("name") or f"计划{ad_id}"
+                # 创意方式：从多品创意结构里取（CUSTOM_CREATIVE 自定义 / PROGRAMMATIC_CREATIVE 程序化）
+                creative_types = set()
+                for c in data.get("multi_product_creative_list", []) or []:
+                    ct = c.get("creative_type")
+                    if ct:
+                        creative_types.add(ct)
+                creative_way = ("/".join(sorted(creative_types)) if creative_types
+                                else data.get("creative_material_mode", ""))
                 out = []
                 for c in data.get("multi_product_creative_list", []) or []:
                     pid = str(c.get("product_id") or "")
@@ -1727,7 +1758,8 @@ class DouYinAdService:
                             vid = str(v.get("video_id") or v.get("image_id") or "")
                             if vid:
                                 out.append((vid, {"plan_id": ad_id, "plan_name": plan_name,
-                                                  "status": status, "product_id": pid}))
+                                                  "status": status, "product_id": pid,
+                                                  "creative_way": creative_way}))
                 return out
             except Exception:
                 return []
@@ -1774,6 +1806,128 @@ class DouYinAdService:
             "plans": plans,
             "products": products,
         }
+
+    _STYLE_CACHE_DIR = os.path.join(BASE_DIR, "data", "cache")
+
+    def classify_material_style(self, material_id: str, mtype: str = "视频", force: bool = False) -> dict:
+        """AI 识图打标：判断素材属于 场景图/模特图/白底图/其他。
+        图片素材看图片本身，视频素材看首帧封面（poster_url）。
+        结果按 (广告主, material_id) 磁盘缓存 7 天，避免重复调用 VLM 产生费用。"""
+        mid = str(material_id)
+        # 标题类无画面，直接返回未知
+        if mtype == "标题":
+            return {"style": "未知", "confidence": "", "note": "标题素材无画面"}
+
+        cache_path = os.path.join(self._STYLE_CACHE_DIR, f"style_{self.advertiser_id}_{mid}.json")
+        if not force:
+            try:
+                if os.path.isfile(cache_path):
+                    with open(cache_path, encoding="utf-8") as f:
+                        d = json.load(f)
+                    if d.get("style"):
+                        return d
+            except Exception:
+                pass
+
+        # 取素材图片/封面地址
+        lib = self._fetch_material_lib(mid, mtype)
+        img_url = (lib.get("poster_url") or "" if lib.get("kind") == "video"
+                   else lib.get("url") or lib.get("image_url") or "")
+        if not img_url:
+            return {"style": "未知", "confidence": "", "note": "无素材画面地址"}
+
+        # 本地下载图片转 base64（千川 URL 1 小时过期，先落盘再识别）
+        b64 = ""
+        try:
+            import base64 as _b64
+            r = requests.get(img_url, timeout=20)
+            if r.status_code == 200 and r.content:
+                b64 = _b64.b64encode(r.content).decode()
+        except Exception:
+            b64 = ""
+
+        if not b64:
+            return {"style": "未知", "confidence": "", "note": "素材图片下载失败"}
+
+        api_key = os.environ.get("NEWAPI_API_KEY", "") or DOUYIN_CONFIG.get("NEWAPI_API_KEY", "")
+        base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
+        if not api_key:
+            return {"style": "未知", "confidence": "", "note": "未配置 NEWAPI_API_KEY"}
+
+        prompt = (
+            "这是一张电商商品图/视频封面。请判断这张图属于以下哪种素材样式，只输出一个词：\n"
+            "1. 场景图：商品被摆放在真实生活/使用场景中（如房间、户外、街道、厨房等），有背景环境；\n"
+            "2. 模特图：画面中出现真人模特穿着/展示商品（全身或半身，含人物主体）；\n"
+            "3. 白底图：商品主体在纯白/纯色背景上，无人物、无场景，突出商品本身；\n"
+            "4. 其他：以上都不是（如纯文字海报、图案拼接、直播间画面等）。\n"
+            "只输出 JSON：{\"style\": \"场景图|模特图|白底图|其他\", \"reason\": \"一句话判断理由\"}"
+        )
+
+        # —— 优先走 wellflow 模型池（自动轮询/熔断/海外兜底）——
+        content, used_model = "", ""
+        try:
+            from wellflow.app.llm.model_pool import get_model_pool
+            import asyncio as _aio
+
+            async def _go():
+                resp, model = await get_model_pool().chat_with_images(
+                    system="你是专业的电商素材分类专家。",
+                    user=prompt,
+                    image_uris=[f"data:image/jpeg;base64,{b64}"],
+                    response_format={"type": "json_object"},
+                )
+                return resp.content or "", model
+            content, used_model = _aio.run(_go())
+        except Exception:
+            # 兜底：本地同步轮询网关已知可用视觉模型
+            for _m in ("gemini-3.7-flash", "gemini-3.8-flash", "deepseek-v4.1-flash",
+                       "glm-5.3-flash", "qwen3.8-flash", "doubao-seed-1-6-flash"):
+                try:
+                    resp = requests.post(
+                        f"{base}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": _m,
+                            "messages": [{"role": "user", "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url",
+                                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}],
+                            "temperature": 0.1,
+                        },
+                        timeout=50,
+                    )
+                    rj = resp.json()
+                    if resp.status_code == 200 and rj.get("choices"):
+                        content = rj["choices"][0]["message"]["content"] or ""
+                        used_model = _m
+                        break
+                except Exception:
+                    continue
+
+        # 解析 JSON
+        import re as _re
+        m = _re.search(r'\{[^}]*\}', content or "")
+        style, reason, confidence = "未知", "", ""
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+                style = obj.get("style") or "未知"
+                reason = obj.get("reason") or ""
+            except Exception:
+                pass
+        if style not in ("场景图", "模特图", "白底图", "其他"):
+            style = "未知"
+        result = {"style": style, "confidence": confidence,
+                  "reason": reason, "model": used_model or "wellflow-pool"}
+
+        # 磁盘缓存（7 天）
+        try:
+            os.makedirs(self._STYLE_CACHE_DIR, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False)
+        except Exception:
+            pass
+        return result
 
     def get_overall_plan_detail(self, ad_id) -> dict:
         """获取单个全域计划详情（含现有创意/视频素材，用于追加素材）。"""
