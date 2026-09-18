@@ -23,181 +23,224 @@ HTML_PAGE = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>商城 · 千川素材投放台</title>
-    <style>
+        <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
-            font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
-            background: #f3f5f8; color: #1f2733; line-height: 1.6; padding: 24px;
+            font-family: "Inter", -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+            background: #f2f5fb; color: #1f2733; line-height: 1.6; padding: 30px 26px;
+            background-image:
+                radial-gradient(1200px 480px at 50% -160px, rgba(79,124,247,.14), transparent 62%),
+                radial-gradient(800px 320px at 92% 12%, rgba(14,143,168,.08), transparent 60%);
+            background-attachment: fixed;
         }
-        .wrap { max-width: 980px; margin: 0 auto; }
+        .wrap { max-width: 1240px; margin: 0 auto; }
         header {
-            position:relative;
-            background: linear-gradient(135deg, #1f6feb, #0aa5a5);
-            color: #fff; border-radius: 14px; padding: 22px 28px; margin-bottom: 20px;
-            box-shadow: 0 6px 18px rgba(31,111,235,.18);
+            position: relative; overflow: hidden;
+            background: linear-gradient(135deg, #16347d 0%, #1d4ed8 40%, #2563eb 68%, #0e8fa8 100%);
+            color: #fff; border-radius: 20px; padding: 28px 32px; margin-bottom: 24px;
+            box-shadow: 0 14px 34px -14px rgba(22,52,125,.55);
         }
-        header h1 { font-size: 22px; font-weight: 700; }
-        header p { font-size: 13px; opacity: .9; margin-top: 4px; }
+        header::before, header::after {
+            content: ""; position: absolute; border-radius: 50%; pointer-events: none;
+        }
+        header::before { right: -70px; top: -90px; width: 260px; height: 260px;
+            background: radial-gradient(circle, rgba(255,255,255,.18), transparent 65%); }
+        header::after { left: 36%; bottom: -100px; width: 190px; height: 190px;
+            background: radial-gradient(circle, rgba(255,255,255,.10), transparent 65%); }
+        header h1 { font-size: 23px; font-weight: 800; letter-spacing: .5px; position: relative; z-index: 1; }
+        header p { font-size: 13px; opacity: .92; margin-top: 6px; position: relative; z-index: 1;
+            display:inline-block; background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.28);
+            padding:3px 12px; border-radius:20px; backdrop-filter: blur(3px); }
+        /* ===== 卡片设计系统 ===== */
         .card {
-            background: #fff; border-radius: 14px; padding: 20px 24px; margin-bottom: 18px;
-            box-shadow: 0 2px 10px rgba(20,40,80,.06); border: 1px solid #eaeef4;
+            background: #fff; border-radius: 18px; padding: 22px 26px; margin-bottom: 20px;
+            border: 1px solid #e8ebf3;
+            box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 10px 28px -14px rgba(16,24,40,.12);
+            transition: box-shadow .22s ease, transform .22s ease;
         }
-        .card h3 {
-            font-size: 16px; margin-bottom: 14px; padding-left: 10px;
-            border-left: 4px solid #1f6feb;
-        }
+        .card:hover { box-shadow: 0 2px 4px rgba(16,24,40,.05), 0 16px 38px -14px rgba(16,24,40,.16); }
+        /* 分区头部：图标徽章 + 标题 + 右侧操作 */
+        .sec-head { display:flex; align-items:center; gap:12px; margin-bottom:16px; }
+        .sec-icon { flex:none; width:36px; height:36px; border-radius:11px; display:flex; align-items:center;
+            justify-content:center; font-size:17px; color:#fff;
+            background:linear-gradient(135deg,#2563eb,#3b82f6);
+            box-shadow:0 4px 10px -3px rgba(37,99,235,.5); }
+        .sec-icon.teal { background:linear-gradient(135deg,#0e7490,#06b6d4); box-shadow:0 4px 10px -3px rgba(14,116,144,.5); }
+        .sec-icon.violet { background:linear-gradient(135deg,#7c3aed,#a78bfa); box-shadow:0 4px 10px -3px rgba(124,58,237,.5); }
+        .sec-icon.amber { background:linear-gradient(135deg,#d97706,#f59e0b); box-shadow:0 4px 10px -3px rgba(217,119,6,.5); }
+        .sec-title { font-size:16px; font-weight:750; color:#1b2a45; letter-spacing:.2px; }
+        .sec-sub { font-size:12px; color:#8a97ab; margin-top:1px; }
+        .sec-ops { margin-left:auto; display:flex; align-items:center; gap:10px; }
+        /* ===== 顶部统计概览 ===== */
+        .stat-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:20px; }
+        .stat-card { background:#fff; border:1px solid #e8ebf3; border-radius:16px; padding:14px 18px;
+            display:flex; align-items:center; gap:12px;
+            box-shadow:0 1px 2px rgba(16,24,40,.04), 0 8px 20px -12px rgba(16,24,40,.10); }
+        .stat-ico { flex:none; width:40px; height:40px; border-radius:12px; display:flex; align-items:center;
+            justify-content:center; font-size:18px; color:#fff; }
+        .stat-ico.blue { background:linear-gradient(135deg,#2563eb,#60a5fa); }
+        .stat-ico.teal { background:linear-gradient(135deg,#0e7490,#2dd4bf); }
+        .stat-ico.violet { background:linear-gradient(135deg,#7c3aed,#c4b5fd); }
+        .stat-ico.amber { background:linear-gradient(135deg,#d97706,#fbbf24); }
+        .stat-num { font-size:21px; font-weight:800; color:#1b2a45; line-height:1.1; }
+        .stat-lab { font-size:12px; color:#8a97ab; margin-top:2px; }
         .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
         input[type=text], select {
-            padding: 9px 12px; border: 1px solid #d4dbe5; border-radius: 8px;
-            font-size: 14px; background: #fff; outline: none; transition: .15s;
+            padding: 10px 13px; border: 1px solid #d8dde8; border-radius: 10px;
+            font-size: 14px; background: #fff; outline: none; transition: .15s; color: #1f2733;
         }
-        input[type=text]:focus, select:focus { border-color: #1f6feb; box-shadow: 0 0 0 3px rgba(31,111,235,.12); }
+        input[type=text]:hover, select:hover { border-color: #b8c1d4; }
+        input[type=text]:focus, select:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.13); }
         input[type=file] { font-size: 14px; }
         button {
-            padding: 9px 18px; border: none; border-radius: 8px; font-size: 14px;
-            background: #1f6feb; color: #fff; cursor: pointer; transition: .15s; font-weight: 500;
+            padding: 10px 20px; border: none; border-radius: 10px; font-size: 14px;
+            background: linear-gradient(135deg, #2563eb, #3b82f6); color: #fff; cursor: pointer;
+            transition: .15s; font-weight: 500; box-shadow: 0 2px 8px -2px rgba(37,99,235,.35);
         }
-        button:hover { background: #1559c4; }
-        button:disabled { background: #9bb8e6; cursor: not-allowed; }
-        button.ghost { background: #eef2f8; color: #33486b; }
-        button.ghost:hover { background: #dfe7f2; }
+        button:hover { background: linear-gradient(135deg, #1d4ed8, #2f74e8); box-shadow: 0 4px 12px -2px rgba(37,99,235,.42); }
+        button:disabled { background: #a9c1ea; cursor: not-allowed; box-shadow: none; }
+        button.ghost { background: #f1f3f8; color: #3d4f6d; box-shadow: none; border: 1px solid #e2e6ef; }
+        button.ghost:hover { background: #e6eaf3; color: #2563eb; border-color: #c9d4ea; }
         pre {
-            background: #f6f8fb; border-radius: 8px; padding: 12px 14px; margin-top: 12px;
+            background: #f7f9fc; border: 1px solid #eaeef5; border-radius: 10px; padding: 13px 15px; margin-top: 12px;
             font-size: 12.5px; white-space: pre-wrap; word-break: break-all; color: #33486b;
             max-height: 260px; overflow: auto;
         }
         .kpi { display:grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:12px 0; }
-        .kpi .cell { background:#f7f8fa; border:1px solid #eceff3; border-radius:12px; padding:12px 14px; }
+        .kpi .cell { background:linear-gradient(180deg,#fbfcff,#f4f7fd); border:1px solid #e8edf6; border-radius:14px; padding:13px 15px; }
         .kpi .lab { font-size:12px; color:#8a94a6; margin-bottom:4px; }
-        .kpi .val { font-size:21px; font-weight:700; color:#2d5bff; margin-top:2px; }
+        .kpi .val { font-size:21px; font-weight:700; color:#1d4ed8; margin-top:2px; }
         .kpi.kpi-all { grid-template-columns: repeat(auto-fill,minmax(165px,1fr)); gap:8px; }
         .kpi.kpi-all .cell { padding:10px 12px; }
         .kpi.kpi-all .val { font-size:17px; word-break:break-all; }
         table.data { border-collapse: collapse; width:100%; font-size:13px; margin-top:8px; }
-        table.data th, table.data td { border:1px solid #e6ebf2; padding:7px 10px; text-align:center; }
-        table.data th { background:#f0f4fa; color:#44566f; font-weight:600; }
-        .barwrap { display:flex; align-items:flex-end; height:130px; border-bottom:2px solid #d4dbe5; gap:2px; margin-top:8px; }
-        .bar { flex:1; background:linear-gradient(180deg,#4aa3ff,#1f6feb); border-radius:3px 3px 0 0; min-width:2px; }
-        .preview-box img, .preview-box video { max-width:300px; max-height:480px; border-radius:10px; border:1px solid #e6ebf2; display:block; }
+        table.data th, table.data td { border:1px solid #e8ecf3; padding:8px 10px; text-align:center; }
+        table.data th { background:#f4f7fb; color:#3d4f6d; font-weight:600; }
+        .barwrap { display:flex; align-items:flex-end; height:130px; border-bottom:2px solid #dce2ec; gap:2px; margin-top:8px; }
+        .bar { flex:1; background:linear-gradient(180deg,#60a5fa,#2563eb); border-radius:3px 3px 0 0; min-width:2px; }
+        .preview-box img, .preview-box video { max-width:300px; max-height:480px; border-radius:12px; border:1px solid #e6ebf2; display:block; }
         .upload-card {
-            border:2px dashed #ccd6e4; border-radius:10px; background:#fafbfd;
+            border:2px dashed #cdd6e4; border-radius:14px; background:#fbfcfe;
             display:flex; align-items:center; justify-content:center; min-height:212px;
-            cursor:pointer; transition:.15s; user-select:none; text-align:center;
+            cursor:pointer; transition:.18s; user-select:none; text-align:center;
         }
-        .upload-card:hover { border-color:#1f6feb; color:#1f6feb; background:#f4f8ff; }
+        .upload-card:hover { border-color:#2563eb; color:#2563eb; background:#f3f7ff; }
         .upload-card .uc-plus { font-size:36px; line-height:1; color:#aab6c8; }
-        .upload-card:hover .uc-plus { color:#1f6feb; }
+        .upload-card:hover .uc-plus { color:#2563eb; }
         .upload-card .uc-title { margin-top:10px; font-size:14px; font-weight:600; color:#44566f; }
         .upload-card .uc-sub { font-size:12px; color:#9aa7ba; margin-top:4px; line-height:1.6; }
-        .upload-card .uc-tip { margin-top:10px; font-size:12px; color:#1f6feb; display:none; }
+        .upload-card .uc-tip { margin-top:10px; font-size:12px; color:#2563eb; display:none; }
         .lib-tabs { display:flex; gap:10px; }
-        .lib-tab { padding:9px 22px; border-radius:9px; border:1px solid #d4dbe5;
-            background:#f4f6fa; color:#44566f; font-size:14px; font-weight:600;
+        .lib-tab { padding:9px 24px; border-radius:11px; border:1px solid #d8dde8;
+            background:#fff; color:#44566f; font-size:14px; font-weight:600;
             cursor:pointer; transition:.15s; }
-        .lib-tab:hover { border-color:#1f6feb; color:#1f6feb; }
-        .lib-tab.on { background:linear-gradient(120deg,#1f6feb,#3b82f6); color:#fff;
-            border-color:transparent; box-shadow:0 3px 10px rgba(31,111,235,.25); }
-        .upload-zone { margin-top:14px; border:2px dashed #ccd6e4; border-radius:12px;
-            background:#fafbfd; padding:26px 20px; text-align:center; cursor:pointer; transition:.15s; }
-        .upload-zone:hover { border-color:#1f6feb; background:#f4f8ff; }
+        .lib-tab:hover { border-color:#2563eb; color:#2563eb; background:#f6f9ff; }
+        .lib-tab.on { background:linear-gradient(120deg,#2563eb,#3b82f6); color:#fff;
+            border-color:transparent; box-shadow:0 4px 12px -3px rgba(37,99,235,.45); }
+        .upload-zone { margin-top:14px; border:2px dashed #cdd6e4; border-radius:14px;
+            background:#fbfcfe; padding:28px 20px; text-align:center; cursor:pointer; transition:.18s; }
+        .upload-zone:hover { border-color:#2563eb; background:#f3f7ff; }
         .upload-zone .uc-plus { font-size:38px; line-height:1; color:#aab6c8; }
-        .upload-zone:hover .uc-plus { color:#1f6feb; }
+        .upload-zone:hover .uc-plus { color:#2563eb; }
         .upload-zone .uc-title { margin-top:10px; font-size:15px; font-weight:600; color:#44566f; }
         .upload-zone .uc-sub { font-size:12.5px; color:#9aa7ba; margin-top:6px; line-height:1.6; }
-        .upload-zone .uc-tip { margin-top:10px; font-size:13px; color:#1f6feb; display:none; }
-        .ai-box { background:linear-gradient(180deg,#fbfcff 0%,#f4f8ff 100%); border:1px solid #dbe4ff; border-radius:12px; padding:16px 18px; margin-top:10px; font-size:14px; line-height:1.9; color:#1f2329; box-shadow:0 1px 4px rgba(31,111,235,.06); }
+        .upload-zone .uc-tip { margin-top:10px; font-size:13px; color:#2563eb; display:none; }
+        .ai-box { background:linear-gradient(180deg,#fbfdff 0%,#f3f8ff 100%); border:1px solid #dce7fb; border-radius:14px; padding:16px 18px; margin-top:10px; font-size:14px; line-height:1.9; color:#1f2329; box-shadow:0 1px 4px rgba(37,99,235,.06); }
         .ai-head { display:flex; align-items:center; gap:8px; margin-top:18px; font-size:14px; font-weight:700; color:#1f2329; }
-        .ai-head::before { content:""; width:4px; height:16px; border-radius:2px; background:linear-gradient(180deg,#4aa3ff,#1f6feb); }
+        .ai-head::before { content:""; width:4px; height:16px; border-radius:2px; background:linear-gradient(180deg,#60a5fa,#2563eb); }
         .ai-sec { margin:10px 0 4px; display:flex; align-items:flex-start; gap:8px; }
-        .ai-sec-no { flex:none; min-width:22px; height:22px; line-height:22px; text-align:center; background:linear-gradient(135deg,#4aa3ff,#1f6feb); color:#fff; border-radius:6px; font-size:13px; font-weight:700; margin-top:2px; box-shadow:0 1px 3px rgba(31,111,235,.25); }
-        .ai-sec-body { font-weight:700; color:#1f6feb; }
+        .ai-sec-no { flex:none; min-width:22px; height:22px; line-height:22px; text-align:center; background:linear-gradient(135deg,#60a5fa,#2563eb); color:#fff; border-radius:7px; font-size:13px; font-weight:700; margin-top:2px; box-shadow:0 1px 3px rgba(37,99,235,.28); }
+        .ai-sec-body { font-weight:700; color:#2563eb; }
         .ai-item { display:flex; gap:8px; margin:5px 0 5px 4px; }
-        .ai-bullet { flex:none; color:#3370ff; font-weight:700; }
+        .ai-bullet { flex:none; color:#3b82f6; font-weight:700; }
         .ai-line { margin:3px 0; }
         .ai-line b, .ai-item b { color:#d25f00; }
         .ai-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
-        .ai-tab { padding:7px 16px; border-radius:8px; border:1px solid #d4dbe5;
-            background:#f4f6fa; color:#44566f; font-size:13px; font-weight:600;
+        .ai-tab { padding:8px 18px; border-radius:10px; border:1px solid #d8dde8;
+            background:#fff; color:#44566f; font-size:13px; font-weight:600;
             cursor:pointer; transition:.15s; }
-        .ai-tab:hover { border-color:#1f6feb; color:#1f6feb; }
-        .ai-tab.on { background:linear-gradient(120deg,#1f6feb,#3b82f6); color:#fff;
-            border-color:transparent; box-shadow:0 3px 10px rgba(31,111,235,.25); }
+        .ai-tab:hover { border-color:#2563eb; color:#2563eb; }
+        .ai-tab.on { background:linear-gradient(120deg,#2563eb,#3b82f6); color:#fff;
+            border-color:transparent; box-shadow:0 4px 12px -3px rgba(37,99,235,.45); }
         .ai-tab-pane { display:none; }
         .ai-tab-pane.on { display:block; }
         .viz-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
         .viz-stage { padding:5px 14px; border-radius:14px; font-size:13px; font-weight:700; color:#fff; }
         .viz-stage.cold { background:linear-gradient(120deg,#8b5cf6,#a78bfa); }
         .viz-stage.up { background:linear-gradient(120deg,#16a34a,#22c55e); }
-        .viz-stage.stable { background:linear-gradient(120deg,#1f6feb,#3b82f6); }
+        .viz-stage.stable { background:linear-gradient(120deg,#2563eb,#3b82f6); }
         .viz-stage.down { background:linear-gradient(120deg,#dc2626,#f87171); }
         .viz-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px 18px; margin-bottom:14px;
-            background:#fff; border:1px solid #e7edf6; border-radius:10px; padding:12px 14px; }
+            background:#fff; border:1px solid #e8ecf4; border-radius:12px; padding:12px 14px; }
         .viz-bar { display:flex; align-items:center; gap:8px; min-width:0; }
         .viz-lab { flex:none; width:64px; font-size:12px; color:#55637a; text-align:right; }
         .viz-track { flex:1; height:8px; border-radius:4px; background:#eef2f7; overflow:hidden; }
         .viz-fill { height:100%; border-radius:4px; transition:width .4s; }
         .viz-grade { flex:none; width:34px; font-size:12px; font-weight:700; }
         .viz-val { flex:none; font-size:11px; color:#8a97ab; }
-        .viz-note { font-size:12px; color:#8a97ab; background:#fff; border:1px solid #e7edf6;
-            border-radius:8px; padding:6px 10px; margin-bottom:12px; }
-        .viz-note b { color:#1f6feb; }
+        .viz-note { font-size:12px; color:#8a97ab; background:#fff; border:1px solid #e8ecf4;
+            border-radius:10px; padding:6px 10px; margin-bottom:12px; }
+        .viz-note b { color:#2563eb; }
         .viz-sec { display:flex; align-items:center; gap:8px; margin:12px 0 8px; }
         .viz-sec-tag { font-size:13px; font-weight:700; color:#fff; padding:4px 12px; border-radius:8px;
-            background:linear-gradient(120deg,#1f6feb,#3b82f6); box-shadow:0 1px 3px rgba(31,111,235,.25); }
+            background:linear-gradient(120deg,#2563eb,#3b82f6); box-shadow:0 1px 3px rgba(37,99,235,.28); }
         .viz-chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:4px; }
         .viz-chip { background:#eef4ff; border:1px solid #d5e2ff; color:#2b5bff; font-size:12.5px;
             padding:6px 12px; border-radius:14px; line-height:1.5; }
         .viz-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }
-        .viz-card { background:#fff; border:1px solid #e7edf6; border-radius:10px; padding:10px 12px;
-            display:flex; gap:10px; align-items:flex-start; box-shadow:0 1px 2px rgba(31,111,235,.05); }
+        .viz-card { background:#fff; border:1px solid #e8ecf4; border-radius:12px; padding:10px 12px;
+            display:flex; gap:10px; align-items:flex-start; box-shadow:0 1px 2px rgba(37,99,235,.05); }
         .viz-no { flex:none; min-width:22px; height:22px; line-height:22px; text-align:center;
-            background:linear-gradient(135deg,#4aa3ff,#1f6feb); color:#fff; border-radius:6px;
+            background:linear-gradient(135deg,#60a5fa,#2563eb); color:#fff; border-radius:7px;
             font-size:12.5px; font-weight:700; margin-top:1px; }
         .viz-txt { font-size:13px; color:#1f2329; line-height:1.7; }
         .viz-txt b { color:#d25f00; }
         .muted { color:#8a97ab; font-size:13px; }
-        .spin { color:#1f6feb; }
+        .spin { color:#2563eb; }
         .settings-btn {
-            background:rgba(255,255,255,.2); color:#fff; border:1px solid rgba(255,255,255,.5);
-            border-radius:8px; padding:8px 16px; font-size:14px; cursor:pointer;
+            background:rgba(255,255,255,.18); color:#fff; border:1px solid rgba(255,255,255,.55);
+            border-radius:10px; padding:9px 18px; font-size:14px; cursor:pointer; backdrop-filter: blur(4px);
+            transition:.15s;
         }
         .settings-btn:hover { background:rgba(255,255,255,.32); }
         .modal-mask {
-            display:none; position:fixed; inset:0; background:rgba(0,0,0,.45);
+            display:none; position:fixed; inset:0; background:rgba(15,23,42,.48);
             z-index:100; align-items:center; justify-content:center;
+            backdrop-filter: blur(3px);
         }
         .modal-mask.show { display:flex; }
         .modal {
-            background:#fff; border-radius:14px; width:560px; max-width:92vw;
-            max-height:86vh; overflow:auto; padding:24px;
+            background:#fff; border-radius:18px; width:560px; max-width:92vw;
+            max-height:86vh; overflow:auto; padding:26px;
+            box-shadow:0 24px 60px -16px rgba(15,23,42,.32);
         }
         .modal h3 { font-size:17px; margin-bottom:14px; }
         .modal table { width:100%; border-collapse:collapse; font-size:13px; margin-top:10px; }
-        .modal th, .modal td { border:1px solid #e6ebf2; padding:7px 9px; text-align:center; }
-        .modal th { background:#f0f4fa; }
+        .modal th, .modal td { border:1px solid #e8ecf3; padding:7px 9px; text-align:center; }
+        .modal th { background:#f4f7fb; }
         .modal .row input { margin-right:8px; }
         .modal .op { padding:3px 10px; font-size:12px; }
         .modal .op.del { background:#e5484d; }
-        /* ===== 投放弹窗（选择商品并投放）美化 ===== */
-        .modal-launch { width:960px; max-width:96vw; padding:0; border-radius:18px; overflow:hidden;
-            box-shadow:0 24px 60px rgba(15,40,90,.28);
+        /* ===== 投放弹窗（选择商品并投放） ===== */
+        .modal-launch { width:960px; max-width:96vw; padding:0; border-radius:20px; overflow:hidden;
+            box-shadow:0 30px 70px -18px rgba(15,40,90,.35);
             height:98vh; max-height:98vh; display:flex; flex-direction:column; }
-        .lm-head { display:flex; align-items:center; gap:12px; padding:16px 22px;
-            background:linear-gradient(120deg,#1559c4,#3b82f6); }
+        .lm-head { display:flex; align-items:center; gap:12px; padding:17px 24px;
+            background:linear-gradient(120deg,#1d4ed8,#3b82f6); }
         .lm-title { font-size:17px; font-weight:700; color:#fff; white-space:nowrap; }
-        .lm-file { flex:1; min-width:0; font-size:13px; color:rgba(255,255,255,.92);
+        .lm-file { flex:1; min-width:0; font-size:13px; color:rgba(255,255,255,.94);
             overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-            background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.25);
-            padding:5px 12px; border-radius:8px; }
-        .lm-close { flex:none; width:32px; height:32px; border:none; border-radius:9px;
-            background:rgba(255,255,255,.16); color:#fff; font-size:17px; line-height:1;
-            cursor:pointer; padding:0; }
-        .lm-close:hover { background:rgba(255,255,255,.32); }
-        .lm-steps { display:flex; gap:8px; padding:14px 22px 0; }
-        .lm-step { font-size:12px; color:#8a97ab; padding:5px 13px; border-radius:20px;
-            background:#f0f4fa; font-weight:500; }
-        .lm-step.on { background:#e3efff; color:#1f6feb; font-weight:700; }
-        .lm-body { padding:16px 22px 22px; display:flex; flex-direction:column; gap:14px;
+            background:rgba(255,255,255,.14); border:1px solid rgba(255,255,255,.28);
+            padding:5px 12px; border-radius:9px; }
+        .lm-close { flex:none; width:34px; height:34px; border:none; border-radius:10px;
+            background:rgba(255,255,255,.18); color:#fff; font-size:17px; line-height:1;
+            cursor:pointer; padding:0; transition:.15s; }
+        .lm-close:hover { background:rgba(255,255,255,.36); }
+        .lm-steps { display:flex; gap:8px; padding:15px 24px 0; }
+        .lm-step { font-size:12px; color:#8a97ab; padding:5px 14px; border-radius:20px;
+            background:#f2f5fa; font-weight:500; }
+        .lm-step.on { background:#e3efff; color:#2563eb; font-weight:700; }
+        .lm-body { padding:16px 24px 24px; display:flex; flex-direction:column; gap:14px;
             flex:1; min-height:0; overflow:hidden; }
         .lm-fields { display:flex; flex-direction:column; gap:14px; overflow:auto; min-height:0;
             flex:0 1 55%; }
@@ -207,24 +250,24 @@ HTML_PAGE = """
         .lm-label { display:flex; align-items:center; gap:8px; font-size:13.5px; font-weight:700;
             color:#2b3a52; margin-bottom:10px; }
         .lm-label::before { content:""; flex:none; width:4px; height:15px; border-radius:2px;
-            background:linear-gradient(180deg,#4aa3ff,#1f6feb); }
+            background:linear-gradient(180deg,#60a5fa,#2563eb); }
         .lm-hint { font-size:12px; color:#9aa7ba; font-weight:400; }
         .lm-line { display:flex; gap:10px; align-items:center; }
         .lm-line select { flex:1; min-width:0; padding:10px 12px; }
         .lm-search { width:200px; }
         .lm-refresh { flex:none; white-space:nowrap; }
         .lm-summary { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:10px; }
-        .lm-summary .k { background:#fff; border:1px solid #e7edf6; border-radius:10px; padding:8px 10px; }
+        .lm-summary .k { background:#fff; border:1px solid #e8ecf4; border-radius:12px; padding:8px 10px; }
         .lm-summary .lab { font-size:11px; color:#8a97ab; }
         .lm-summary .val { font-size:15px; font-weight:700; color:#2b3a52; margin-top:1px; }
-        .lm-summary .val.hl { color:#1f6feb; }
+        .lm-summary .val.hl { color:#2563eb; }
         .lm-actions { display:flex; align-items:center; justify-content:space-between; gap:14px; }
         .lm-test { display:flex; align-items:center; gap:7px; font-size:13px; color:#55637a;
-            cursor:pointer; background:#f0f4fa; border:1px solid #e4ebf4; padding:8px 14px; border-radius:10px; }
-        .lm-test input { margin:0; accent-color:#1f6feb; }
-        .lm-launch { padding:11px 26px; font-size:15px; border-radius:10px;
-            background:linear-gradient(120deg,#1f6feb,#3b82f6); box-shadow:0 4px 12px rgba(31,111,235,.3); }
-        .lm-launch:hover { background:linear-gradient(120deg,#1559c4,#2f74e8); }
+            cursor:pointer; background:#f2f5fa; border:1px solid #e6ebf4; padding:8px 14px; border-radius:10px; }
+        .lm-test input { margin:0; accent-color:#2563eb; }
+        .lm-launch { padding:11px 28px; font-size:15px; border-radius:11px;
+            background:linear-gradient(120deg,#2563eb,#3b82f6); box-shadow:0 4px 14px -2px rgba(37,99,235,.4); }
+        .lm-launch:hover { background:linear-gradient(120deg,#1d4ed8,#2f74e8); }
         .lm-result { border-radius:12px; padding:16px 18px; margin-top:2px; font-size:16px;
             white-space:pre-wrap; word-break:break-all; overflow:auto; flex:1; min-height:0;
             font-family:Consolas,Menlo,monospace; line-height:2; }
@@ -232,34 +275,85 @@ HTML_PAGE = """
         .lm-result.err { background:#fdf2f2; border:1px solid #f3cccc; color:#c0392b; }
         .lm-tags { display:flex; flex-wrap:wrap; gap:8px; }
         .lm-tag { display:inline-flex; align-items:center; gap:6px; padding:7px 14px; border-radius:20px;
-            border:1px solid #dde5f0; background:#fff; font-size:13px; color:#44566f; cursor:pointer;
+            border:1px solid #dfe5ef; background:#fff; font-size:13px; color:#44566f; cursor:pointer;
             user-select:none; transition:.15s; }
         .lm-tag .dot { width:10px; height:10px; border-radius:50%; flex:none; }
-        .lm-tag:hover { border-color:#1f6feb; }
-        .lm-tag.on { background:#e8f1ff; border-color:#1f6feb; color:#1f6feb; font-weight:600; }
+        .lm-tag:hover { border-color:#2563eb; }
+        .lm-tag.on { background:#e8f1ff; border-color:#2563eb; color:#2563eb; font-weight:600; }
         .lm-tag.on .dot { box-shadow:0 0 0 2px #fff inset; }
         .lm-tags-empty { font-size:12.5px; color:#9aa7ba; }
+        .mat-tbl { width:100%; border-collapse:collapse; font-size:12.5px; background:#fff;
+            border:1px solid #e8ecf4; border-radius:12px; overflow:hidden; }
+        .mat-tbl th { background:#f4f7fb; font-weight:600; color:#33486b; text-align:left;
+            padding:8px 10px; border-bottom:1px solid #e4e9f2; white-space:nowrap; }
+        .mat-tbl td { padding:7px 10px; border-bottom:1px solid #eef2f8; color:#1f2329; }
+        .mat-tbl tr:last-child td { border-bottom:none; }
+        .mat-tbl tr:hover td { background:#f7faff; }
         .mat-card { position:relative; }
         .mat-check { position:absolute; top:8px; left:8px; width:22px; height:22px; border-radius:50%;
-            background:rgba(255,255,255,.92); border:2px solid #c2cad6; display:flex; align-items:center;
+            background:rgba(255,255,255,.94); border:2px solid #c2cad6; display:flex; align-items:center;
             justify-content:center; font-size:13px; color:#fff; cursor:pointer; z-index:2; transition:.15s;
             user-select:none; line-height:1; }
-        .mat-check:hover { border-color:#1f6feb; }
-        .mat-check.on { background:#1f6feb; border-color:#1f6feb; }
-        .mat-card.sel { border-color:#1f6feb; box-shadow:0 0 0 2px rgba(31,111,235,.15); }
+        .mat-check:hover { border-color:#2563eb; }
+        .mat-check.on { background:#2563eb; border-color:#2563eb; }
+        .mat-card.sel { border-color:#2563eb; box-shadow:0 0 0 2px rgba(37,99,235,.15); }
         .launch-badge { position:absolute; top:36px; right:8px; z-index:2; font-size:11px;
             padding:2px 8px; border-radius:10px; background:rgba(255,255,255,.94);
             border:1px solid #e0e6ef; color:#8a97ab; cursor:default; line-height:1.5; }
         .launch-badge.ok { color:#1a7f37; border-color:#c9ecd4; background:rgba(240,250,243,.94); }
         .launch-badge.test { color:#b26a00; border-color:#f2d9a6; background:rgba(255,248,235,.94); }
         .launch-badge.fail { color:#c0392b; border-color:#f3cccc; background:rgba(253,242,242,.94); }
+        /* 素材投放业务状态徽标（7 状态） */
+        .launch-badge.pending { color:#b26a00; border-color:#f2d9a6; background:rgba(255,248,235,.95); }
+        .launch-badge.ready { color:#1d4ed8; border-color:#c7d7fb; background:rgba(239,244,255,.95); }
+        .launch-badge.live { color:#7c3aed; border-color:#d9c8f8; background:rgba(248,243,255,.95); }
+        .launch-badge.shop { color:#0e7490; border-color:#b7e3ef; background:rgba(238,250,253,.95); }
+        .launch-badge.both { color:#1a7f37; border-color:#c9ecd4; background:rgba(240,250,243,.95); }
+        .launch-badge.abandon { color:#6b7280; border-color:#d9dde3; background:rgba(246,247,249,.95); }
+        .launch-badge.manual { cursor:pointer; }
+        .launch-badge.manual:hover { box-shadow:0 0 0 2px rgba(37,99,235,.2); }
+        /* 状态选择弹层 */
+        .biz-status-menu { position:absolute; top:68px; right:8px; z-index:30; min-width:150px;
+            background:#fff; border:1px solid #e3e8f0; border-radius:12px; box-shadow:0 8px 24px rgba(15,23,42,.12);
+            padding:6px; display:none; }
+        .biz-status-menu.show { display:block; }
+        .biz-status-menu .bsm-item { display:flex; align-items:center; gap:8px; padding:7px 10px; font-size:12.5px;
+            border-radius:8px; cursor:pointer; color:#1f2d3d; }
+        .biz-status-menu .bsm-item:hover { background:#f1f5ff; }
+        .biz-status-menu .bsm-dot { width:8px; height:8px; border-radius:50%; flex:none; }
+        .biz-status-menu .bsm-title { font-size:11px; color:#8a97ab; padding:4px 10px 2px; }
         .lib-tabs { display:flex; align-items:center; gap:10px; }
         .batch-btn { margin-left:auto; }
+        /* ===== 数据分析中心 Tab ===== */
+        .dt-tabs { display:flex; gap:10px; margin-bottom:16px; border-bottom:1px solid #edf0f6; padding-bottom:12px; }
+        .dt-tab { padding:9px 22px; border-radius:11px; border:1px solid #d8dde8;
+            background:#fff; color:#44566f; font-size:14px; font-weight:600;
+            cursor:pointer; transition:.15s; }
+        .dt-tab:hover { border-color:#2563eb; color:#2563eb; background:#f6f9ff; }
+        .dt-tab.on { background:linear-gradient(120deg,#2563eb,#3b82f6); color:#fff;
+            border-color:transparent; box-shadow:0 4px 12px -3px rgba(37,99,235,.45); }
+        .dt-pane { display:none; }
+        .dt-pane.on { display:block; }
         .lm-batch-summary { font-size:15px; font-weight:700; margin-bottom:10px; }
-        .lm-batch-item { border:1px solid #e7edf6; border-radius:10px; padding:10px 14px; margin-bottom:8px; background:#fff; }
+        .lm-batch-item { border:1px solid #e8ecf4; border-radius:12px; padding:10px 14px; margin-bottom:8px; background:#fff; }
         .lm-batch-item.ok { border-color:#c9ecd4; }
         .lm-batch-item.err { border-color:#f3cccc; background:#fdf8f8; }
         .lm-batch-item pre { margin:6px 0 0; font-size:12px; white-space:pre-wrap; word-break:break-all; }
+        .card-inner-title { font-size:14px; font-weight:600; color:#1f2d3d; padding:8px 12px; background:#f4f8ff; border-radius:10px; border-left:3px solid #2563eb; }
+        .crowd-chip { font-size:13px; color:#1f2d3d; }
+        .crowd-item { border:1px solid #e8ecf4; border-radius:12px; padding:9px 12px; background:#fff; }
+        .crowd-name { font-weight:600; color:#1f2d3d; }
+        .crowd-cover { font-size:12px; color:#2563eb; background:#eaf2ff; padding:2px 8px; border-radius:10px; }
+        .tbl { width:100%; border-collapse:collapse; background:#fff; border-radius:12px; overflow:hidden; border:1px solid #e8ecf4; }
+        .tbl th { background:#f4f7fb; font-size:12px; color:#5a6b84; text-align:left; padding:8px 10px; }
+        .tbl td { font-size:13px; color:#1f2d3d; padding:8px 10px; border-top:1px solid #eef2f8; }
+        .tbl tr:hover td { background:#f8fafd; }
+        /* 滚动条美化 */
+        ::-webkit-scrollbar { width: 9px; height: 9px; }
+        ::-webkit-scrollbar-thumb { background: #c6cddc; border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+        ::-webkit-scrollbar-thumb:hover { background: #aab4c8; border: 2px solid transparent; background-clip: content-box; }
+        ::-webkit-scrollbar-track { background: transparent; }
+    </style>
     </style>
 </head>
 <body>
@@ -267,59 +361,143 @@ HTML_PAGE = """
     <header>
         <h1>数语深流 · 巨量千川素材投放台</h1>
         <p>本地素材库 · 数据回流（AI）</p>
-        <div style="position:absolute;top:22px;right:28px;display:flex;gap:10px">
+        <div style="position:absolute;top:24px;right:30px;display:flex;gap:10px;z-index:2">
             <button class="settings-btn" onclick="openTags()">标签设置</button>
             <button class="settings-btn" onclick="openSettings()">店铺设置</button>
         </div>
     </header>
 
-    <div class="card">
-        <div class="lib-tabs">
-            <button class="lib-tab on" id="tabLocal" onclick="switchLib('local')">本地素材库</button>
-            <button class="lib-tab" id="tabUpload" onclick="switchLib('upload')">上传素材库</button>
-            <button class="ghost batch-btn" id="batchLaunchBtn" onclick="openBatchLaunchModal()" style="display:none">批量投放(0)</button>
+    <!-- ===== 顶部统计概览 ===== -->
+    <div class="stat-row">
+        <div class="stat-card">
+            <div class="stat-ico blue">📦</div>
+            <div><div class="stat-num" id="statTotal">—</div><div class="stat-lab">素材总数</div></div>
         </div>
-        <div id="libLocal">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
-                <h3 style="margin-bottom:0">本地素材</h3>
-                <button class="ghost" onclick="loadLocalMaterials()">刷新目录</button>
-            </div>
-            <div id="localMaterialBox" style="margin-top:10px;"><p class="muted">点击「刷新目录」加载素材列表</p></div>
+        <div class="stat-card">
+            <div class="stat-ico teal">✅</div>
+            <div><div class="stat-num" id="statReady">—</div><div class="stat-lab">通过-待投放</div></div>
         </div>
-        <div id="libUpload" style="display:none">
-            <div class="upload-zone" id="uploadZone">
-                <div class="uc-plus">＋</div>
-                <div class="uc-title">上传素材</div>
-                <div class="uc-sub">点击或拖拽文件到此处，支持图片 / 视频，可多选</div>
-                <div class="uc-tip" id="uploadTip"></div>
-                <input type="file" id="uploadInput" accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.mp4,.mov,.avi,.mkv,.webm" multiple style="display:none">
-            </div>
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px">
-                <h3 style="margin-bottom:0">已上传素材</h3>
-                <button class="ghost" onclick="loadUploadedMaterials()">刷新</button>
-            </div>
-            <div id="uploadedMaterialBox" style="margin-top:10px;"><p class="muted">暂无上传素材，请在上方上传</p></div>
+        <div class="stat-card">
+            <div class="stat-ico violet">🚀</div>
+            <div><div class="stat-num" id="statLive">—</div><div class="stat-lab">已投放</div></div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-ico amber">⏳</div>
+            <div><div class="stat-num" id="statPending">—</div><div class="stat-lab">待审核 / 驳回</div></div>
         </div>
     </div>
 
+    <!-- ===== 运营工作台（Tab 切换，避免长页面） ===== -->
     <div class="card">
-        <div style="display:flex;align-items:center;justify-content:space-between">
-            <h3 style="margin-bottom:0">数据回流</h3>
-            <button class="ghost" id="exportBtn" onclick="exportMaterialHtml()"
-                    title="导出所选素材的全量投放数据为 HTML 文件">导出 HTML</button>
+        <div class="sec-head">
+            <div class="sec-icon teal">📊</div>
+            <div>
+                <div class="sec-title">运营工作台</div>
+                <div class="sec-sub">素材库 · 数据回流 · 人群场景 · 直播投放效果</div>
+            </div>
+            <div class="sec-ops">
+                <button class="ghost batch-btn" id="batchLaunchBtn" onclick="openBatchLaunchModal()" style="display:none">批量投放(0)</button>
+            </div>
         </div>
-        <div class="row">
-            <label class="muted">店铺</label>
-            <select id="matAdvertiser" onchange="onMatAdvertiserChange()" style="min-width:210px"></select>
-            <label class="muted">商品</label>
-            <select id="productSelect" onchange="onProductChange()" style="min-width:190px"><option value="">全部商品</option></select>
-            <input type="text" id="materialSearch" placeholder="输入关键词筛选素材…"
-                   oninput="filterMaterials()" style="width:200px">
-            <select id="materialSelect" style="flex:1;min-width:240px" onchange="loadMaterialDetail()"></select>
-            <button class="ghost" onclick="loadMaterialList(true)" title="从千川重新拉取最新数据（约40秒）">刷新素材</button>
+        <div class="dt-tabs">
+            <button class="dt-tab on" id="dtTabLib" onclick="switchDataTab('lib')">素材库</button>
+            <button class="dt-tab" id="dtTabData" onclick="switchDataTab('data')">数据回流</button>
+            <button class="dt-tab" id="dtTabCrowd" onclick="switchDataTab('crowd')">人群场景回流数据</button>
+            <button class="dt-tab" id="dtTabLive" onclick="switchDataTab('live')">直播投放效果</button>
         </div>
-        <div id="productAgg" style="margin-top:12px"></div>
-        <div id="matDetail" style="margin-top:14px;"></div>
+
+        <!-- Tab1 素材库 -->
+        <div class="dt-pane on" id="dtPaneLib">
+            <div class="lib-tabs">
+                <button class="lib-tab on" id="tabLocal" onclick="switchLib('local')">本地素材库</button>
+                <button class="lib-tab" id="tabUpload" onclick="switchLib('upload')">上传素材库</button>
+            </div>
+            <div id="libLocal">
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:14px">
+                    <span class="card-inner-title" style="margin-bottom:0">本地素材</span>
+                    <button class="ghost" onclick="loadLocalMaterials()">刷新目录</button>
+                </div>
+                <div id="localMaterialBox" style="margin-top:12px;"><p class="muted">点击「刷新目录」加载素材列表</p></div>
+            </div>
+            <div id="libUpload" style="display:none">
+                <div class="upload-zone" id="uploadZone">
+                    <div class="uc-plus">＋</div>
+                    <div class="uc-title">上传素材</div>
+                    <div class="uc-sub">点击或拖拽文件到此处，支持图片 / 视频，可多选</div>
+                    <div class="uc-tip" id="uploadTip"></div>
+                    <input type="file" id="uploadInput" accept=".jpg,.jpeg,.png,.gif,.webp,.bmp,.mp4,.mov,.avi,.mkv,.webm" multiple style="display:none">
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;margin-top:16px">
+                    <span class="card-inner-title" style="margin-bottom:0">已上传素材</span>
+                    <button class="ghost" onclick="loadUploadedMaterials()">刷新</button>
+                </div>
+                <div id="uploadedMaterialBox" style="margin-top:12px;"><p class="muted">暂无上传素材，请在上方上传</p></div>
+            </div>
+        </div>
+
+        <!-- Tab2 数据回流 -->
+        <div class="dt-pane" id="dtPaneData">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <span class="card-inner-title" style="margin-bottom:0">投放全量数据</span>
+                <button class="ghost" id="exportBtn" onclick="exportMaterialHtml()"
+                        title="导出所选素材的全量投放数据为 HTML 文件">导出 HTML</button>
+            </div>
+            <div class="row">
+                <label class="muted">店铺</label>
+                <select id="matAdvertiser" onchange="onMatAdvertiserChange()" style="min-width:200px"></select>
+                <label class="muted">商品</label>
+                <select id="productSelect" onchange="onProductChange()" style="min-width:180px"><option value="">全部商品</option></select>
+                <button class="ghost" onclick="showProductImgs()" title="查看选中商品的主图与商详图">查看主图/商详</button>
+                <input type="text" id="materialSearch" placeholder="输入关键词筛选素材…"
+                       oninput="filterMaterials()" style="width:190px">
+                <select id="materialSelect" style="flex:1;min-width:220px" onchange="loadMaterialDetail()"></select>
+                <button class="ghost" onclick="loadMaterialList(true)" title="从千川重新拉取最新数据（约40秒）">刷新素材</button>
+            </div>
+            <div id="productAgg" style="margin-top:12px"></div>
+            <div id="productImgBox" style="margin-top:12px;display:none"></div>
+            <div id="matDetail" style="margin-top:14px;"></div>
+        </div>
+
+        <!-- Tab2 人群场景回流数据 -->
+        <div class="dt-pane" id="dtPaneCrowd">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <span class="card-inner-title" style="margin-bottom:0">人群包来自千川 DMP，场景来自自定义报表（scene 维度）</span>
+                <span style="display:flex;align-items:center;gap:10px">
+                    <span class="muted" id="crowdUpdated"></span>
+                    <button class="ghost" onclick="loadCrowdData(true)" title="从千川重新拉取人群与场景数据（约30秒）">刷新</button>
+                </span>
+            </div>
+            <div class="row">
+                <label class="muted">店铺</label>
+                <select id="crowdAdvertiser" onchange="loadCrowdData()" style="min-width:200px"></select>
+            </div>
+            <div class="row" style="margin-top:14px;gap:14px;align-items:stretch">
+                <div style="flex:1;min-width:340px;background:#f8fafd;border:1px solid #eef1f7;border-radius:14px;padding:14px 16px">
+                    <div class="card-inner-title">DMP 人群包</div>
+                    <div id="dmpBox" style="margin-top:10px"><p class="muted">正在加载人群包…</p></div>
+                </div>
+                <div style="flex:1;min-width:340px;background:#f8fafd;border:1px solid #eef1f7;border-radius:14px;padding:14px 16px">
+                    <div class="card-inner-title">营销场景投放分布（近7天）</div>
+                    <div id="sceneBox" style="margin-top:10px"><p class="muted">正在加载场景数据…</p></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tab3 直播投放效果 -->
+        <div class="dt-pane" id="dtPaneLive">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+                <span class="card-inner-title" style="margin-bottom:0">直播间画面 / 素材 / 整体数据</span>
+                <span style="display:flex;align-items:center;gap:10px">
+                    <span class="muted" id="liveUpdated"></span>
+                    <button class="ghost" onclick="loadLiveEffect(true)" title="从千川重新拉取最新直播数据（约30秒）">刷新直播数据</button>
+                </span>
+            </div>
+            <div class="row">
+                <label class="muted">店铺</label>
+                <select id="liveAdvertiser" onchange="loadLiveEffect()" style="min-width:200px"></select>
+            </div>
+            <div id="liveEffectBox" style="margin-top:14px;"><p class="muted">正在加载直播投放效果…</p></div>
+        </div>
     </div>
 </div>
 
@@ -436,6 +614,17 @@ window.addEventListener("load", function(){
     loadAdvertiserSelects();
     loadLocalMaterials();
     initUploadZone();
+    // 店铺下拉框填充完成后自动加载直播数据
+    setTimeout(function(){
+        const liveSel = document.getElementById("liveAdvertiser");
+        if(liveSel && liveSel.options.length > 0){
+            loadLiveEffect(false);
+        }
+        const crowdSel = document.getElementById("crowdAdvertiser");
+        if(crowdSel && crowdSel.options.length > 0){
+            loadCrowdData(false);
+        }
+    }, 800);
 });
 
 // ===== 广告主下拉框（内容来自后台保存的账户，只显示真实店铺） =====
@@ -447,7 +636,7 @@ async function loadAdvertiserSelects(){
         advertiserAccounts = [];
     }
     const hasAccounts = advertiserAccounts.length > 0;
-    ["matAdvertiser", "popAdvertiser"].forEach(id=>{
+    ["matAdvertiser", "popAdvertiser", "liveAdvertiser", "crowdAdvertiser"].forEach(id=>{
         const sel = document.getElementById(id);
         const prev = sel.value;
         sel.innerHTML = "";
@@ -483,6 +672,198 @@ function onMatAdvertiserChange(){
     document.getElementById("productAgg").innerHTML = "";
     loadProducts();
     loadMaterialList();
+}
+
+// ===== 人群场景回流数据（DMP人群包 + 场景维度报表） =====
+async function loadCrowdData(force){
+    const dmpBox = document.getElementById("dmpBox");
+    const sceneBox = document.getElementById("sceneBox");
+    const sel = document.getElementById("crowdAdvertiser");
+    const aid = sel ? sel.value : "";
+    if(!aid){ dmpBox.innerHTML = "<p class='muted'>请先添加广告主账户</p>"; sceneBox.innerHTML = ""; return; }
+    dmpBox.innerHTML = "<p class='spin'>正在加载人群包…</p>";
+    sceneBox.innerHTML = "<p class='spin'>正在加载场景数据…</p>";
+    const q = new URLSearchParams();
+    q.set("advertiser_id", aid);
+    if(force) q.set("refresh", "true");
+    try{
+        // 并行拉取 DMP 人群包 + 场景报表
+        const [dmpRes, sceneRes] = await Promise.all([
+            (await fetch("/api/dmp/audiences?" + q.toString())).json().catch(()=>({success:false,error:"DMP请求失败"})),
+            (await fetch("/api/scene/report?" + q.toString())).json().catch(()=>({success:false,error:"场景请求失败"}))
+        ]);
+        // ---- DMP 人群包 ----
+        if(dmpRes.success && dmpRes.data){
+            const d = dmpRes.data;
+            const plat = d.platform || [];
+            let h = "<div class='crowd-chip' style='margin-bottom:8px'><b>平台精选人群包</b>（" + (d.total_platform||plat.length) + " 个）</div>";
+            if(plat.length === 0) h += "<p class='muted'>暂无平台精选人群包</p>";
+            plat.forEach((x,i)=>{
+                h += crowdCard(x, "platform", i);
+            });
+            dmpBox.innerHTML = h;
+        }else{
+            dmpBox.innerHTML = "<p style='color:#e02424'>" + esc((dmpRes.error||"加载失败")) + "</p>";
+        }
+        // ---- 场景报表 ----
+        if(sceneRes.success){
+            const rows = sceneRes.data || [];
+            if(rows.length === 0){
+                sceneBox.innerHTML = "<p class='muted'>近7天无场景维度投放数据（接口已连通，投放后即可回流）</p>";
+            }else{
+                const totalCost = rows.reduce((s,r)=>s+(Number(r.stat_cost)||0),0);
+                const totalGmv = rows.reduce((s,r)=>s+(Number(r.gmv)||0),0);
+                let h2 = "<table class='tbl'><thead><tr><th>营销场景</th><th>消耗</th><th>成交订单</th><th>GMV</th><th>ROI</th></tr></thead><tbody>";
+                rows.forEach(r=>{
+                    const c = Number(r.stat_cost)||0;
+                    const roi = c>0 ? (Number(r.gmv)||0)/c : 0;
+                    h2 += "<tr><td>" + esc(r.scene_name||r.scene) + "</td><td>¥" + fmtNum(c) + "</td><td>" + fmtNum(r.pay_order_count,0) + "</td><td>¥" + fmtNum(r.gmv) + "</td><td>" + fmtNum(roi,2) + "</td></tr>";
+                });
+                h2 += "</tbody></table>";
+                h2 += "<p class='muted' style='margin-top:8px'>合计：消耗 ¥" + fmtNum(totalCost) + " / GMV ¥" + fmtNum(totalGmv) + "</p>";
+                sceneBox.innerHTML = h2;
+            }
+        }else{
+            sceneBox.innerHTML = "<p style='color:#e02424'>" + esc((sceneRes.error||"加载失败")) + "</p>";
+        }
+        const upd = document.getElementById("crowdUpdated");
+        if(upd) upd.textContent = "已更新 " + new Date().toLocaleTimeString("zh-CN", {hour12:false});
+    }catch(e){
+        dmpBox.innerHTML = "<p style='color:#e02424'>加载失败：" + esc(e.message||e) + "</p>";
+        sceneBox.innerHTML = "";
+    }
+}
+
+function crowdCard(x, kind, idx){
+    const cover = Number(x.cover_num)||0;
+    const coverTxt = cover >= 100000000 ? (cover/100000000).toFixed(2)+" 亿" : cover >= 10000 ? (cover/10000).toFixed(1)+" 万" : String(cover);
+    const tip = x.tip ? "<div class='muted' style='font-size:12px;margin-top:4px'>" + esc(x.tip) + "</div>" : "";
+    return "<div class='crowd-item' style='margin-bottom:8px'>"
+        + "<div style='display:flex;align-items:center;gap:8px'>"
+        + "<span class='crowd-name'>" + esc(x.name||"未命名") + "</span>"
+        + "<span class='crowd-cover'>预估覆盖 " + coverTxt + "</span>"
+        + (x.id ? "<span class='muted' style='font-size:11px'>ID " + x.id + "</span>" : "")
+        + "</div>" + tip + "</div>";
+}
+
+// ===== 直播投放效果（千川已授权权限：全域投放数据 + 今日直播数据） =====
+function fmtNum(v, d){
+    if(v === null || v === undefined || isNaN(Number(v))) return "—";
+    return Number(v).toLocaleString("zh-CN", {maximumFractionDigits: (d===undefined?2:d)});
+}
+async function loadLiveEffect(force){
+    const box = document.getElementById("liveEffectBox");
+    const sel = document.getElementById("liveAdvertiser");
+    const aid = sel ? sel.value : "";
+    box.innerHTML = "<p class='spin'>正在拉取直播投放效果…</p>";
+    try{
+        const q = new URLSearchParams();
+        if(aid) q.set("advertiser_id", aid);
+        if(force) q.set("refresh", "true");
+        const res = await (await fetch("/api/live/effect?" + q.toString())).json();
+        if(!res.success){ box.innerHTML = "<p style='color:#e02424'>" + esc(res.error || "加载失败") + "</p>"; return; }
+        // 并行拉取 直播整体数据 + 直播间商品列表（同一权限：获取今日直播数据）
+        let ov = null, rp = null;
+        try{ ov = await (await fetch("/api/live/overview?" + q.toString())).json(); }catch(e){}
+        try{ rp = await (await fetch("/api/live/room_products?" + q.toString())).json(); }catch(e){}
+        if(ov && !ov.success) ov = null;
+        if(rp && !rp.success) rp = null;
+        const updated = document.getElementById("liveUpdated");
+        if(updated) updated.textContent = "数据时间：" + (res.updated || "");
+        let h = "";
+        if(ov) res.overview = ov;
+        if(rp) res.room_products = rp;
+        const anchors = res.anchors || [], mats = res.materials || [], boards = res.boards || [];
+        const totalCost = anchors.reduce((s,a)=>s+(Number(a.cost)||0), 0);
+        const totalGmv = anchors.reduce((s,a)=>s+(Number(a.gmv)||0), 0);
+        const totalWatch = anchors.reduce((s,a)=>s+(Number(a.watch)||0), 0);
+        const totalRoi = totalCost > 0 ? (totalGmv/totalCost) : 0;
+
+        // 汇总卡片
+        h += "<div style='display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px'>";
+        h += "<div class='lm-tag on' style='font-size:13px;padding:10px 14px'><b>直播间画面消耗</b>　" + fmtNum(totalCost) + " 元</div>";
+        h += "<div class='lm-tag on' style='font-size:13px;padding:10px 14px'><b>直播GMV</b>　" + fmtNum(totalGmv) + " 元</div>";
+        h += "<div class='lm-tag on' style='font-size:13px;padding:10px 14px'><b>直播观看</b>　" + fmtNum(totalWatch, 0) + " 次</div>";
+        h += "<div class='lm-tag on' style='font-size:13px;padding:10px 14px'><b>整体ROI</b>　" + fmtNum(totalRoi) + "</div>";
+        h += "</div>";
+
+        // 直播间画面（主播维度）
+        h += "<h4 style='font-size:14px;margin:0 0 8px'>直播间画面 · 投放数据</h4>";
+        if(anchors.length){
+            h += "<table class='mat-tbl'><thead><tr><th>直播间</th><th>直播展示</th><th>观看</th><th>CVR</th><th>转化率</th><th>消耗</th><th>ROI</th><th>GMV</th><th>成交单</th></tr></thead><tbody>";
+            anchors.forEach(a=>{
+                h += "<tr><td>" + esc(a.anchor_name || a.anchor_id) + "</td><td>" + fmtNum(a.show,0) + "</td><td>" + fmtNum(a.watch,0) +
+                     "</td><td>" + (a.cvr!=null?(Number(a.cvr)*100).toFixed(2)+"%":"—") + "</td><td>" + (a.convert_rate!=null?(Number(a.convert_rate)*100).toFixed(2)+"%":"—") +
+                     "</td><td>" + fmtNum(a.cost) + "</td><td>" + fmtNum(a.roi) + "</td><td>" + fmtNum(a.gmv) + "</td><td>" + fmtNum(a.orders,0) + "</td></tr>";
+            });
+            h += "</tbody></table>";
+        } else {
+            h += "<p class='muted'>近30天无直播间画面投放数据（直播间可能未开播或无投放）</p>";
+        }
+
+        // 直播视频素材
+        h += "<h4 style='font-size:14px;margin:16px 0 8px'>直播视频素材 · 投放数据</h4>";
+        if(mats.length){
+            h += "<table class='mat-tbl'><thead><tr><th>素材名称</th><th>直播间</th><th>类型</th><th>展示</th><th>观看</th><th>CVR</th><th>消耗</th><th>ROI</th><th>GMV</th><th>成交单</th></tr></thead><tbody>";
+            mats.forEach(m=>{
+                h += "<tr><td>" + esc(m.name || m.material_id) + "</td><td>" + esc(m.anchor_name || "") + "</td><td>" + esc(m.mtype || "") +
+                     "</td><td>" + fmtNum(m.show,0) + "</td><td>" + fmtNum(m.watch,0) + "</td><td>" + (m.cvr!=null?(Number(m.cvr)*100).toFixed(2)+"%":"—") +
+                     "</td><td>" + fmtNum(m.cost) + "</td><td>" + fmtNum(m.roi) + "</td><td>" + fmtNum(m.gmv) + "</td><td>" + fmtNum(m.orders,0) + "</td></tr>";
+            });
+            h += "</tbody></table>";
+        } else {
+            h += "<p class='muted'>近30天无直播视频素材投放数据</p>";
+        }
+
+        // 直播大屏
+        if(boards.length){
+            h += "<h4 style='font-size:14px;margin:16px 0 8px'>直播大屏 · 近7天</h4>";
+            h += "<table class='mat-tbl'><thead><tr><th>类型</th><th>名称</th><th>观看/GMV/ROI</th></tr></thead><tbody>";
+            boards.forEach(b=>{
+                let val = "";
+                if(b.type === "流量来源"){ val = "观看 " + fmtNum(b.watch,0) + " · GMV " + fmtNum(b.gmv) + " 元"; }
+                else { val = "GMV " + fmtNum(b.gmv) + " 元 · 成交 " + fmtNum(b.orders,0) + " 单 · ROI " + fmtNum(b.roi) + " · 成本 " + fmtNum(b.cost) + " 元"; }
+                h += "<tr><td>" + esc(b.type) + "</td><td>" + esc(b.name || b.product_id || "") + "</td><td>" + val + "</td></tr>";
+            });
+            h += "</tbody></table>";
+        }
+
+        // 直播整体数据（report/live/get，全部流量 自然+营销）
+        const ovData = res.overview || null;
+        h += "<h4 style='font-size:14px;margin:16px 0 8px'>直播整体数据" + (ovData && ovData.days ? " · 近" + ovData.days + "天" : "") + "</h4>";
+        if(ovData && ovData.anchors && ovData.anchors.length){
+            h += "<table class='mat-tbl'><thead><tr><th>直播间</th><th>消耗</th><th>营销点击</th><th>CTR</th><th>观看人次</th><th>超1分钟</th><th>购物车</th><th>商品点击</th><th>下单</th><th>成单</th><th>成交GMV</th><th>营销GMV</th><th>整体ROI</th><th>营销ROI</th><th>新增粉丝</th></tr></thead><tbody>";
+            ovData.anchors.forEach(a=>{
+                h += "<tr><td>" + esc(a.anchor_name || a.anchor_id) + "</td>" +
+                     "<td>" + fmtNum(a.cost) + "</td><td>" + fmtNum(a.click_cnt,0) + "</td><td>" + (a.ctr!=null?(Number(a.ctr)*100).toFixed(2)+"%":"—") + "</td>" +
+                     "<td>" + fmtNum(a.watch,0) + "</td><td>" + fmtNum(a.watch_1min,0) + "</td><td>" + fmtNum(a.cart_click,0) + "</td><td>" + fmtNum(a.product_click,0) + "</td>" +
+                     "<td>" + fmtNum(a.create_orders,0) + "</td><td>" + fmtNum(a.pay_orders,0) + "</td><td>" + fmtNum(a.gmv) + "</td><td>" + fmtNum(a.marketing_gmv) + "</td>" +
+                     "<td>" + fmtNum(a.roi) + "</td><td>" + fmtNum(a.marketing_roi) + "</td><td>" + fmtNum(a.follow,0) + "</td></tr>";
+            });
+            h += "</tbody></table>";
+        } else {
+            h += "<p class='muted'>近30天无直播整体数据（直播间可能未开播）</p>";
+        }
+
+        // 直播间商品列表（product_list/get）
+        const rpData = res.room_products || null;
+        h += "<h4 style='font-size:14px;margin:16px 0 8px'>直播间商品列表" + (rpData && rpData.days ? " · 近" + rpData.days + "天" : "") + "</h4>";
+        if(rpData && rpData.products && rpData.products.length){
+            h += "<table class='mat-tbl'><thead><tr><th>商品</th><th>直播间ID</th><th>价格</th><th>销量</th><th>支付金额</th><th>退款金额</th><th>成单</th><th>点击</th><th>曝光</th></tr></thead><tbody>";
+            rpData.products.forEach(p=>{
+                h += "<tr><td>" + esc(p.name || p.product_id) + "</td><td>" + esc(p.room_id) + "</td>" +
+                     "<td>" + fmtNum(p.price) + "</td><td>" + fmtNum(p.volume,0) + "</td><td>" + fmtNum(p.pay_amount) + "</td><td>" + fmtNum(p.refund_amount) + "</td>" +
+                     "<td>" + fmtNum(p.pay_orders,0) + "</td><td>" + fmtNum(p.click_cnt,0) + "</td><td>" + fmtNum(p.show_cnt,0) + "</td></tr>";
+            });
+            h += "</tbody></table>";
+        } else {
+            h += "<p class='muted'>近7天无直播间商品数据（无直播场次）</p>";
+        }
+
+        box.innerHTML = h;
+    }catch(e){
+        box.innerHTML = "<p style='color:#e02424'>请求失败：" + esc(e) + "</p>";
+    }
 }
 
 function setBusy(btn, busy, busyText){
@@ -568,19 +949,22 @@ function fmtTime(ts){
 function renderMaterialGrid(box, items, urlPrefix){
     if(!items.length){ box.innerHTML = "<p class='muted'>暂无素材</p>"; return; }
     const grid = document.createElement("div");
-    grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;";
+    grid.className = "mat-grid";
+    grid.style.cssText = "display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;";
     items.forEach(it=>{
         const url = urlPrefix + encodeURIComponent(it.name);
         const sel = selectedMaterials.some(x=>x.path===it.path);
         const card = document.createElement("div");
         card.className = "mat-card" + (sel ? " sel" : "");
         card.setAttribute("data-path", it.path);
-        card.style.cssText = "border:1px solid #e5e6eb;border-radius:8px;overflow:hidden;background:#fff;display:flex;flex-direction:column;";
+        card.style.cssText = "border:1px solid #e6e9f1;border-radius:14px;overflow:hidden;background:#fff;display:flex;flex-direction:column;box-shadow:0 1px 3px rgba(16,24,40,.05);transition:transform .18s ease, box-shadow .18s ease, border-color .18s;";
+        card.onmouseenter = function(){ this.style.transform = "translateY(-3px)"; this.style.boxShadow = "0 10px 26px -10px rgba(16,24,40,.16)"; this.style.borderColor = "#c9d6f2"; };
+        card.onmouseleave = function(){ this.style.transform = ""; this.style.boxShadow = ""; this.style.borderColor = ""; };
         let mediaHtml = "";
         if(it.type === "video"){
-            mediaHtml = `<video src="${url}" controls preload="metadata" style="width:100%;height:150px;object-fit:contain;background:#000"></video>`;
+            mediaHtml = `<video src="${url}" controls preload="metadata" style="width:100%;height:158px;object-fit:contain;background:#0d1117"></video>`;
         }else{
-            mediaHtml = `<img src="${url}" style="width:100%;height:150px;object-fit:contain;background:#f7f8fa" loading="lazy">`;
+            mediaHtml = `<img src="${url}" style="width:100%;height:158px;object-fit:contain;background:linear-gradient(180deg,#fafbfd,#f1f4fa)" loading="lazy">`;
         }
         const tag = it.type === "video" ? "<span style='color:#c96442'>视频</span>" : "<span style='color:#3370ff'>图片</span>";
         const timeTxt = fmtTime(it.mtime);
@@ -588,13 +972,13 @@ function renderMaterialGrid(box, items, urlPrefix){
         card.innerHTML =
             `<span class="mat-check${sel ? " on" : ""}" title="勾选后批量投放"
                   onclick='event.stopPropagation();toggleMaterial(${JSON.stringify({path:it.path,name:it.name,type:it.type})})'>${sel ? "✓" : ""}</span>` +
-            (badge ? `<span class="launch-badge ${badge.cls}" title="${badge.tip}">${badge.text}</span>` : "") +
+            (badge ? `<span class="launch-badge ${badge.cls}" title="${badge.tip.replace(/"/g,"&quot;")}" onclick="event.stopPropagation();showBizStatusMenu(this, event)">${badge.text}</span>` : "") +
             mediaHtml +
-            `<div style="padding:8px 10px;flex:1;display:flex;flex-direction:column;gap:4px">
-                <div style="font-size:13px;word-break:break-all" title="${esc(it.name)}">${esc(it.name)}</div>
+            `<div style="padding:10px 12px 12px;flex:1;display:flex;flex-direction:column;gap:5px">
+                <div style="font-size:13px;font-weight:600;color:#1f2d3d;word-break:break-all;line-height:1.45" title="${esc(it.name)}">${esc(it.name)}</div>
                 <div class="muted" style="font-size:12px">${tag} · ${fmtSize(it.size)}${timeTxt ? " · " + timeTxt : ""}</div>
                 <button onclick='openLaunchModal(${JSON.stringify(it.path)}, ${JSON.stringify(it.name)})'
-                        style="margin-top:auto;padding:6px 0;font-size:13px">投放</button>
+                        style="margin-top:auto;padding:7px 0;font-size:13px;border-radius:9px;background:linear-gradient(135deg,#2563eb,#3b82f6);box-shadow:0 3px 8px -2px rgba(37,99,235,.4)">投放</button>
             </div>`;
         grid.appendChild(card);
     });
@@ -603,15 +987,58 @@ function renderMaterialGrid(box, items, urlPrefix){
 }
 function renderLocalMaterials(items){
     renderMaterialGrid(document.getElementById("localMaterialBox"), items, "/api/local_media/");
+    refreshStats();
 }
-// 素材投放状态徽标：未投放返回空；否则按最近一次结果显示
+// 顶部统计概览：素材总数 + 投放业务状态分布
+function refreshStats(){
+    const totalEl = document.getElementById("statTotal");
+    const readyEl = document.getElementById("statReady");
+    const liveEl = document.getElementById("statLive");
+    const pendingEl = document.getElementById("statPending");
+    // 素材总数 = 当前展示的素材网格卡片数（本地+上传可见的）
+    const cards = document.querySelectorAll(".mat-card");
+    if(totalEl && cards.length) totalEl.textContent = cards.length;
+    if(!readyEl || !liveEl || !pendingEl) return;
+    let ready = 0, live = 0, pending = 0;
+    Object.keys(launchStatusMap || {}).forEach(pth=>{
+        const st = launchStatusMap[pth];
+        const biz = st.biz_status || "";
+        if(biz === "通过-待投放") ready++;
+        else if(biz === "直播间已投放" || biz === "商城已投放" || biz === "已投放商品+直播间") live++;
+        else if(biz === "待审核" || biz === "审核驳回") pending++;
+        else if(!biz){
+            if(st.status === "fail") pending++;
+            else if(st.mode === "real") live++;
+            else ready++;
+        }
+    });
+    readyEl.textContent = ready;
+    liveEl.textContent = live;
+    pendingEl.textContent = pending;
+}
+// 素材投放业务状态：7 状态 → 徽标样式类/颜色
+const BIZ_STATUS_STYLE = {
+    "待审核":        {cls:"pending",  color:"#b26a00"},
+    "审核驳回":      {cls:"fail",     color:"#c0392b"},
+    "通过-待投放":   {cls:"ready",    color:"#1d4ed8"},
+    "直播间已投放":  {cls:"live",     color:"#7c3aed"},
+    "商城已投放":    {cls:"shop",     color:"#0e7490"},
+    "已投放商品+直播间": {cls:"both",  color:"#1a7f37"},
+    "放弃测试":      {cls:"abandon",  color:"#6b7280"},
+};
+const BIZ_STATUS_ORDER = ["待审核","审核驳回","通过-待投放","直播间已投放","商城已投放","已投放商品+直播间","放弃测试"];
+// 素材投放状态徽标：未投放返回空；否则按最近一次业务状态（biz_status）显示，可点击手动改状态
 function launchBadge(it){
     const st = launchStatusMap[it.path];
     if(!st){ return ""; }
+    const biz = st.biz_status || "";
+    const style = BIZ_STATUS_STYLE[biz];
     const cnt = st.count > 1 ? " " + st.count + "次" : "";
     const t = st.time ? " · " + st.time : "";
     let cls, text;
-    if(st.status === "fail"){
+    if(style){
+        cls = style.cls; text = biz + t;
+    }else if(st.status === "fail"){
         cls = "fail"; text = "投放失败" + (st.mode === "test" ? "（测试）" : "") + t;
     }else if(st.mode === "test"){
         cls = "test"; text = "测试投放" + cnt + t;
@@ -621,9 +1048,82 @@ function launchBadge(it){
     const tip = "最近投放：" + (st.time || "—") +
         (st.plan_name ? "，计划：" + st.plan_name : "") +
         (st.product_id ? "，商品：" + st.product_id : "") +
-        (st.detail ? "，" + st.detail : "");
-    return {cls: cls, text: text, tip: tip};
+        (st.detail ? "，" + st.detail : "") +
+        "\\n（点击可手动标注业务状态：待审核/审核驳回/通过-待投放/直播间已投放/商城已投放/已投放商品+直播间/放弃测试）";
+    return {cls: cls + " manual", text: text, tip: tip};
 }
+// 点击徽标弹出状态选择菜单
+let bizStatusMenuFor = "";
+function showBizStatusMenu(el, ev){
+    ev.stopPropagation();
+    const card = el.closest ? el.closest(".mat-card") : null;
+    const path = (card && card.getAttribute("data-path")) || el.getAttribute("data-path") || "";
+    if(!path) return;
+    bizStatusMenuFor = path;
+    document.querySelectorAll(".biz-status-menu").forEach(m => m.classList.remove("show"));
+    let menu = document.getElementById("bizStatusMenu");
+    if(!menu){
+        menu = document.createElement("div");
+        menu.id = "bizStatusMenu";
+        menu.className = "biz-status-menu";
+        menu.innerHTML = "<div class='bsm-title'>素材投放业务状态</div>" +
+            BIZ_STATUS_ORDER.map(s => {
+                const st = BIZ_STATUS_STYLE[s];
+                return `<div class='bsm-item' data-s='${s}' onclick='event.stopPropagation();pickBizStatus("${s}")'><span class='bsm-dot' style='background:${st.color}'></span>${s}</div>`;
+            }).join("") +
+            "<div class='bsm-item' style='color:#8a97ab' onclick='event.stopPropagation();clearBizStatusMenu()'>清除手动标注</div>";
+        document.body.appendChild(menu);
+    }
+    menu.classList.add("show");
+    // 菜单定位在卡片右上角（跟随徽标附近）
+    const rect = ev.target.getBoundingClientRect();
+    menu.style.position = "fixed";
+    menu.style.left = Math.max(8, rect.right - 160) + "px";
+    menu.style.top = (rect.bottom + 4) + "px";
+}
+function clearBizStatusMenu(){ pickBizStatus(""); }
+function pickBizStatus(s){
+    document.querySelectorAll(".biz-status-menu").forEach(m => m.classList.remove("show"));
+    if(!bizStatusMenuFor) return;
+    const path = bizStatusMenuFor;
+    bizStatusMenuFor = "";
+    fetch("/api/material/set_biz_status", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({file_path: path, biz_status: s})
+    }).then(r=>r.json()).then(res=>{
+        if(res.success){ loadLaunchStatus().then(()=>refreshAllBadges()); }
+        else{ alert(res.error || "设置失败"); }
+    }).catch(e=>alert("设置失败："+e));
+}
+function refreshAllBadges(){
+    document.querySelectorAll(".mat-card[data-path]").forEach(card=>{
+        const path = card.getAttribute("data-path");
+        const st = launchStatusMap[path];
+        let badge = card.querySelector(".launch-badge");
+        const it = {path:path, name:card.querySelector("img, video") ? "" : path};
+        const b = launchBadge(it);
+        if(b){
+            if(!badge){
+                badge = document.createElement("span");
+                badge.className = "launch-badge";
+                card.appendChild(badge);
+            }
+            badge.className = "launch-badge " + b.cls;
+            badge.title = b.tip;
+            badge.textContent = b.text;
+            badge.onclick = function(ev){ showBizStatusMenu(this, ev); };
+        }else if(badge){
+            badge.remove();
+        }
+    });
+}
+// 页面全局点击关闭状态菜单
+document.addEventListener("click", function(e){
+    if(!e.target.closest(".biz-status-menu") && !e.target.classList.contains("launch-badge")){
+        document.querySelectorAll(".biz-status-menu").forEach(m => m.classList.remove("show"));
+    }
+});
 // ===== 素材勾选（跨本地/上传库）与批量投放入口 =====
 function toggleMaterial(it){
     const i = selectedMaterials.findIndex(x=>x.path===it.path);
@@ -666,6 +1166,15 @@ async function loadUploadedMaterials(){
     }
 }
 
+// ===== 运营工作台 Tab 切换 =====
+function switchDataTab(name){
+    ["lib","data","crowd","live"].forEach(n=>{
+        const t = document.getElementById("dtTab" + n.charAt(0).toUpperCase() + n.slice(1));
+        const p = document.getElementById("dtPane" + n.charAt(0).toUpperCase() + n.slice(1));
+        if(t) t.classList.toggle("on", n === name);
+        if(p) p.classList.toggle("on", n === name);
+    });
+}
 // ===== 弹窗：选择商品并投放 =====
 let popLocalFilePath = "";
 let popLocalFilePaths = []; // 批量投放：本次选中的全部素材 [{path,name,type}]
@@ -675,6 +1184,7 @@ async function loadLaunchStatus(){
         const res = await (await fetch("/api/material_launch_status")).json();
         launchStatusMap = (res.success && res.data) ? res.data : {};
     }catch(e){ launchStatusMap = {}; }
+    refreshStats();
 }
 let selectedMaterials = []; // 素材库中已勾选的素材（跨本地/上传两个库）
 let popTagList = [];        // 标签设置里的全部标签
@@ -1150,9 +1660,181 @@ function onProductChange(){
     const pid = document.getElementById("productSelect").value;
     if(pid){
         loadMaterialsByProduct(pid);
+        showProductImgs();
     }else{
         document.getElementById("productAgg").innerHTML = "";
+        document.getElementById("productImgBox").innerHTML = "";
+        document.getElementById("productImgBox").style.display = "none";
         loadMaterialList();
+    }
+}
+// 查看选中商品的主图与商详图（千川商品接口返回 img 主图 + img_list 商详图）
+async function showProductImgs(){
+    const box = document.getElementById("productImgBox");
+    const pid = document.getElementById("productSelect").value;
+    if(!pid){ box.innerHTML = ""; box.style.display = "none"; return; }
+    const aid = document.getElementById("matAdvertiser").value;
+    box.style.display = "block";
+    box.innerHTML = "<p class='spin' style='margin:8px 0'>正在加载商品图片…</p>";
+    try{
+        const res = await (await fetch("/api/product/detail?advertiser_id=" + encodeURIComponent(aid) + "&product_id=" + encodeURIComponent(pid))).json();
+        if(!res.success || !res.data){ box.innerHTML = "<div class='muted'>加载失败：" + ((res&&res.error)||"") + "</div>"; return; }
+        const p = res.data;
+        const imgs = (p.img_list && p.img_list.length) ? p.img_list : (p.img ? [p.img] : []);
+        let html = "<div style='border:1px solid #eee;border-radius:10px;padding:12px;background:#fafafa'>";
+        html += "<div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:10px'>";
+        html += "<b>商品主图 / 商详图</b>";
+        html += "<span class='muted'>" + (p.discount_price_yuan ? ("售价 ¥" + p.discount_price_yuan) : "") + " · 库存 " + (p.inventory||0) + " · 销量 " + (p.sell_num||0) + "</span>";
+        html += "</div>";
+        html += "<div style='display:flex;gap:8px;flex-wrap:wrap'>";
+        imgs.forEach(function(u, i){
+            html += "<div style='flex:0 0 auto;text-align:center'>";
+            html += "<img src='" + u + "' style='width:96px;height:96px;object-fit:cover;border-radius:8px;border:1px solid #eee;background:#fff' />";
+            html += "<div class='muted' style='font-size:11px;margin-top:2px'>" + (i === 0 ? "主图" : "商详" + i) + "</div>";
+            html += "</div>";
+        });
+        html += "</div>";
+        html += "<div style='margin-top:10px;display:flex;align-items:center;gap:10px'>";
+        html += "<button class='ghost' onclick='classifyProductStyle()' title='AI 识别每张图属于 场景图/模特图/白底图'>AI 样式识别</button>";
+        html += "<button class='ghost' onclick='productAudience()' title='AI 推断主图/商详图面向的受众画像（性别/年龄/地域/兴趣）'>AI 受众画像</button>";
+        html += "<span class='muted' id='pStyleTip' style='font-size:12px'>识别结果缓存7天，首次约需30-60秒</span>";
+        html += "</div>";
+        html += "<div id='pStyleBox' style='margin-top:8px'></div>";
+        html += "<div id='pAudBox' style='margin-top:8px'></div>";
+        html += "</div>";
+        box.innerHTML = html;
+        // 选中商品后默认自动 AI 样式识别
+        classifyProductStyle(false);
+    }catch(e){
+        box.innerHTML = "<div class='muted'>加载失败：" + e + "</div>";
+    }
+}
+
+// ===== AI 样式识别：商品主图/商详图 =====
+let pStyleRunning = false;
+async function classifyProductStyle(force){
+    if(pStyleRunning) return;
+    const pid = document.getElementById("productSelect").value;
+    if(!pid){ return; }
+    const aid = document.getElementById("matAdvertiser").value;
+    const box = document.getElementById("pStyleBox");
+    const tip = document.getElementById("pStyleTip");
+    pStyleRunning = true;
+    if(tip) tip.textContent = "AI 识别中（首次约30-60秒）…";
+    box.innerHTML = "<p class='spin' style='margin:6px 0'>正在调用 AI 识别每张图的样式（场景图/模特图/白底图）…</p>";
+    try{
+        const q = "/api/product_style?product_id=" + encodeURIComponent(pid) + "&advertiser_id=" + encodeURIComponent(aid) + (force ? "&refresh=true" : "");
+        const res = await (await fetch(q)).json();
+        if(!res.success){ box.innerHTML = "<p style='color:#e02424'>" + esc(res.error || "识别失败") + "</p>"; return; }
+        const images = res.images || [];
+        let h = "<div style='display:flex;gap:10px;flex-wrap:wrap'>";
+        const styleColor = {"场景图":"#1f6feb","模特图":"#b45f2b","白底图":"#0f8a5f","其他":"#8a8f98","未知":"#8a8f98"};
+        images.forEach(function(img){
+            const st = img.style || "未知";
+            const color = styleColor[st] || "#8a8f98";
+            h += "<div style='flex:0 0 auto;width:120px;text-align:center;border:1px solid #eee;border-radius:10px;padding:8px;background:#fff'>";
+            h += "<img src='" + img.img_url + "' style='width:76px;height:76px;object-fit:cover;border-radius:6px;border:1px solid #eee;background:#fff' />";
+            h += "<div class='muted' style='font-size:11px;margin-top:4px'>" + esc(img.kind) + "</div>";
+            h += "<span style='display:inline-block;margin-top:3px;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:600;color:#fff;background:" + color + "'>" + esc(st) + "</span>";
+            if(img.reason){
+                h += "<div class='muted' style='font-size:11px;margin-top:4px;line-height:1.4;word-break:break-all'>" + esc(img.reason) + "</div>";
+            }
+            h += "</div>";
+        });
+        h += "</div>";
+        box.innerHTML = h;
+        if(tip) tip.textContent = "识别完成 · 结果已缓存（7天）· " + new Date().toLocaleTimeString("zh-CN", {hour12:false});
+    }catch(e){
+        box.innerHTML = "<p style='color:#e02424'>识别失败：" + esc(e.message || e) + "</p>";
+        if(tip) tip.textContent = "";
+    }finally{
+        pStyleRunning = false;
+    }
+}
+
+// ===== AI 受众画像：投流素材图 / 商品主图 / 商详图 =====
+function audChip(k, v){
+    return "<span style='display:inline-block;padding:3px 11px;border-radius:11px;background:#eef4ff;border:1px solid #d5e2ff;color:#2b5bff;font-size:12.5px;margin-right:6px;margin-top:2px'><b>" + esc(k) + "：</b>" + esc(v) + "</span>";
+}
+function audCardHtml(im){
+    const p = im.profile || {};
+    let h = "<div style='border:1px solid #e8ecf4;border-radius:12px;padding:11px 13px;background:#fff;font-size:12.5px;margin-bottom:8px'>";
+    h += "<div style='display:flex;align-items:center;justify-content:space-between'>";
+    h += "<b style='color:#1f2d3d'>" + esc(im.label || "素材图") + "</b>";
+    h += "<span class='muted' style='font-size:11px'>" + (im.cached ? "缓存" : "AI 分析") + (im.model ? (" · " + esc(im.model)) : "") + "</span>";
+    h += "</div>";
+    if(p.gender || p.age || p.region){
+        h += "<div style='display:flex;gap:0;flex-wrap:wrap;margin-top:6px'>";
+        if(p.gender) h += audChip("性别", p.gender);
+        if(p.age) h += audChip("年龄", p.age);
+        if(p.region) h += audChip("地域", p.region);
+        h += "</div>";
+    }
+    if(p.interest_tags && p.interest_tags.length){
+        h += "<div style='margin-top:7px'><span class='muted'>兴趣标签：</span>";
+        h += p.interest_tags.map(t => "<span style='display:inline-block;padding:2px 10px;border-radius:10px;background:#f3f6fb;border:1px solid #e2e8f2;color:#44566f;font-size:12px;margin-right:6px;margin-top:2px'>" + esc(t) + "</span>").join("");
+        h += "</div>";
+    }
+    if(p.scene) h += "<div style='margin-top:6px'><span class='muted'>消费场景：</span>" + esc(p.scene) + "</div>";
+    if(p.style_pref) h += "<div style='margin-top:4px'><span class='muted'>风格偏好：</span>" + esc(p.style_pref) + "</div>";
+    if(p.summary) h += "<div style='margin-top:7px;padding:7px 11px;background:#f0f7ff;border-radius:8px;color:#1f2d3d;line-height:1.65'><b style='color:#2563eb'>画像总结：</b>" + esc(p.summary) + "</div>";
+    h += "</div>";
+    return h;
+}
+function audErrHtml(im){
+    return "<div style='border:1px solid #f3cccc;border-radius:10px;padding:9px 12px;background:#fdf8f8;font-size:12.5px;color:#c0392b;margin-bottom:8px'><b>" + esc(im.label || "素材图") + "：</b>" + esc(im.error || "分析失败") + "</div>";
+}
+let pAudRunning = false;
+async function productAudience(){
+    if(pAudRunning) return;
+    const pid = document.getElementById("productSelect").value;
+    if(!pid){ return; }
+    const aid = document.getElementById("matAdvertiser").value;
+    const box = document.getElementById("pAudBox");
+    pAudRunning = true;
+    box.innerHTML = "<p class='spin' style='margin:6px 0'>正在调用 AI 推断主图/商详图受众画像（首次约30-60秒/张）…</p>";
+    try{
+        const q = "/api/product_audience?product_id=" + encodeURIComponent(pid) + "&advertiser_id=" + encodeURIComponent(aid);
+        const res = await (await fetch(q)).json();
+        if(!res.success){ box.innerHTML = "<p style='color:#e02424'>" + esc(res.error || "分析失败") + "</p>"; return; }
+        let h = "<div style='display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start'>";
+        (res.images || []).forEach(function(im){
+            h += "<div style='flex:0 0 auto;width:250px'>";
+            h += "<img src='" + im.img_url + "' style='width:100%;height:130px;object-fit:cover;border-radius:9px;border:1px solid #e6ebf2;background:#fff' />";
+            h += "<div style='margin-top:6px'>" + (im.success ? audCardHtml(im) : audErrHtml(im)) + "</div>";
+            h += "</div>";
+        });
+        h += "</div>";
+        box.innerHTML = h;
+    }catch(e){
+        box.innerHTML = "<p style='color:#e02424'>分析失败：" + esc(e.message || e) + "</p>";
+    }finally{
+        pAudRunning = false;
+    }
+}
+async function loadMaterialAudience(){
+    const mid = document.getElementById("materialSelect").value;
+    const box = document.getElementById("matAudBox");
+    if(!mid){ return; }
+    const aid = document.getElementById("matAdvertiser").value;
+    // 取素材预览图：优先封面 poster，其次视频/图片 url
+    let imgUrl = "";
+    try{
+        const pvRes = await (await fetch("/api/material_detail?material_id=" + encodeURIComponent(mid) + (aid ? ("&advertiser_id="+encodeURIComponent(aid)) : ""))).json();
+        if(pvRes.success){
+            const pv = pvRes.preview || {};
+            imgUrl = pv.poster || pv.url || "";
+        }
+    }catch(e){}
+    if(!imgUrl){ box.innerHTML = "<div class='muted'>该素材暂无可用预览图，无法分析受众画像</div>"; return; }
+    box.innerHTML = "<p class='spin' style='margin:6px 0'>正在调用 AI 推断素材受众画像（首次约30-60秒）…</p>";
+    try{
+        const q = "/api/audience_profile?img_url=" + encodeURIComponent(imgUrl) + "&label=" + encodeURIComponent("素材图") + (aid ? ("&advertiser_id="+encodeURIComponent(aid)) : "");
+        const res = await (await fetch(q)).json();
+        if(!res.success){ box.innerHTML = audErrHtml(res); return; }
+        box.innerHTML = audCardHtml(res);
+    }catch(e){
+        box.innerHTML = "<p style='color:#e02424'>分析失败：" + esc(e.message || e) + "</p>";
     }
 }
 async function loadMaterialsByProduct(pid){
@@ -1231,6 +1913,7 @@ async function loadMaterialDetail(){
                 <span>🧩 创意方式：<b>${esc(wayCn)}</b></span>
                 <span>🤖 生成方式：${aiBadge}</span>
                 <span id="aiStyleTag" style="color:#8a97ab">🔍 AI 样式识别中…</span>
+                <button class="ghost" onclick="loadMaterialAudience()" style="padding:4px 14px;font-size:12.5px" title="AI 推断该素材面向的受众画像（性别/年龄/地域/兴趣）">🧑‍🤝‍🧑 受众画像</button>
             </div>`;
             // 异步调 AI 识图打标（场景图/模特图/白底图）
             (async function(){
@@ -1251,6 +1934,7 @@ async function loadMaterialDetail(){
                 }
             })();
         }
+        html += `<div id="matAudBox" style="margin-top:8px"></div>`;
         if(s.metrics_all && s.metrics_all.length){
             html += "<details open style='margin-top:14px'><summary class='muted'>全部报表指标（点击收起，共 "+s.metrics_all.length+" 项）</summary>";
             html += "<div class='kpi kpi-all'>";
