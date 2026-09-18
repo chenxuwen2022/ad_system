@@ -325,6 +325,8 @@ async def chat(
     has_task = bool(task_id)
     t_id: str | None = None
     current_node: str | None = None
+    task = None  # Task ORM object（仅 has_task=True 时赋值）
+    graph_state: dict | None = None  # LangGraph checkpoint state（仅 has_task=True 时赋值）
     completed_mask = [False] * 6
     existing_report = ""
     existing_schemes: list = []
@@ -694,7 +696,7 @@ async def chat(
                 # paused → 放行
 
             # ------------------------------------------------------------------
-            # dispatch：四种互斥分支
+            # dispatch：互斥分支
             # ------------------------------------------------------------------
             if intent == "start_task":
                 async for ev in _pipe(_handle_start_task(
@@ -703,68 +705,67 @@ async def chat(
                 )):
                     yield ev
 
-            elif intent == "redo":
+            elif intent == "redo_blocked":
                 # ------------------------------------------------------------------
-                # v2 redo dispatch：
-                #   - 只有 1 个允许选项（c1/c2）→ 直接走 backward_to_nodeX（自动执行）
-                #   - ≥2 个允许选项（c3/c4）→ 发 SSE selection_required，让前端弹 radio
+                # v4：完全重做已禁用。所有 redo 类关键词 / LLM 误判 redo / 方向词+第X步 backward
+                #     统一拦在这里，返回友好提示引导用户用微调
                 # ------------------------------------------------------------------
-                allowed = build_redo_options(current_node)
-                if len(allowed) == 1:
-                    auto_intent = f"backward_to_{allowed[0]['value']}"
-                    print(f"[chat] redo dispatch: 仅 1 个选项，自动执行 {auto_intent}", flush=True)
-                    async for ev in _pipe(_handle_backward(auto_intent, t_id or '', graph,
-                                                           product_images=product_images)):
-                        yield ev
-                elif len(allowed) > 1:
-                    print(f"[chat] redo dispatch: {len(allowed)} 个选项 → 发 selection_required", flush=True)
-
-                    # ⚠️ 必须先持久化 checkpoint，再 yield _sse("done")！
-                    # 前端收到 done 后会停止读 SSE → ASGI 关闭连接 → generator 被 asyncio 取消。
-                    # 如果 aupdate_state 放在 yield done 之后，它会被 CancelledError 中断
-                    # （CancelledError 是 BaseException 子类，except Exception 兜不住），
-                    # 导致 checkpoint 里永远没有 phase=waiting_selection，刷新后 redo 卡片丢失。
-                    try:
-                        graph = _get_graph()
-                        config = _langgraph_config(t_id)
-                        await graph.aupdate_state(config, {
-                            "phase": "waiting_selection",
-                            # 复用已注册的 interrupt channel 存 redo 选项
-                            "interrupt": {
-                                "node": "redo_selection",
-                                "schema": {
-                                    "mode": "redo_selection",
-                                    "options": allowed,
-                                },
-                                "hint": "请选择要重新执行的步骤",
-                            },
-                        })
-                        print(f"[chat] ✅ checkpoint 已持久化 phase=waiting_selection", flush=True)
-                    except BaseException as exc:
-                        # CancelledError、Exception 全都捕获打日志，方便确认是否还有其他来源的取消
-                        import asyncio as _asio
-                        if isinstance(exc, _asio.CancelledError):
-                            print(f"[chat] ❌ aupdate_state 被 CancelledError 取消"
-                                  f"（graph 可能未初始化或连接提前关闭）", flush=True)
-                        else:
-                            print(f"[chat] ❌ 持久化 waiting_selection 失败: {exc!r}", flush=True)
-                            import traceback as _tb
-                            _tb.print_exc()
-
-                    yield _sse("selection_required", {
-                        "message": "请选择要重新执行的步骤：",
-                        "options": allowed,
-                        "task_id": t_id or "",
+                # 如果整个流程已经走完（phase=done），不支持任何重做/微调，直接引导开新任务
+                _is_done = (
+                    has_task and task is not None and task.phase == "done"
+                ) or (
+                    isinstance(graph_state, dict) and graph_state.get("phase") == "done"
+                )
+                if _is_done:
+                    chunk = _sse("message", {
+                        "text": "整个流程已经走完，不支持重做。如需新的内容，请开启新任务。",
                     })
-                    yield _sse("done", {"phase": "waiting_selection"})
-                else:
-                    # 无选项（理论上不会，redo 守卫已经挡了无 current_node）
-                    yield _sse("message", {"text": "当前阶段不允许重做。"})
-                    yield _sse("done", {"phase": "done"})
-            elif intent.startswith("backward_to_node"):
-                async for ev in _pipe(_handle_backward(intent, t_id or '', graph,
-                                                       product_images=product_images)):
-                    yield ev
+                    await _persist_sse_text(chunk, known_task_id=t_id)
+                    yield chunk
+                    yield _sse("done", {"phase": "done_blocked"})
+                    return
+
+                _c = current_node or "cX"
+                _tips = {
+                    "c1": "你可以直接说要改的内容，比如「把品牌定位改成轻奢」「帽子应该是可拆卸的」「核心卖点加一条」，我会帮你微调报告。",
+                    "c2": "你可以直接说想要的方案调整，比如「第x个方案增加一套极简风方案」「第x个方案核心卖点改成极简自然」，我会帮你微调商拍方案。",
+                    "c3": "你可以直接说想要的提示词调整，比如「第x条提示词背景换成城市夜景」「第x条提示词模特姿势改成回头望」，我会帮你微调提示词。",
+                    "c4": "你可以直接说想要的调整，比如「这批图整体颜色再暗一点」「第一张换个背景」，我会帮你微调；如果对整体不满意，建议开启新任务。",
+                }
+                _tip = _tips.get(_c, "你可以直接说想要的调整内容，我会帮你微调。")
+                chunk = _sse("message", {
+                    "text": f"当前不支持完全重做哦～{_tip}",
+                })
+                await _persist_sse_text(chunk, known_task_id=t_id)
+                yield chunk
+                yield _sse("done", {"phase": "cX_blocked"})
+
+            elif intent.startswith("backward_to_node") or intent == "redo":
+                # ------------------------------------------------------------------
+                # 兜底拦截：LLM 老版本 / 老 checkpoint 里的 redo/backward 意图
+                # ------------------------------------------------------------------
+                # 同样处理 done 状态
+                _is_done = (
+                    has_task and task is not None and task.phase == "done"
+                ) or (
+                    isinstance(graph_state, dict) and graph_state.get("phase") == "done"
+                )
+                if _is_done:
+                    print(f"[chat] 🛡️ done 状态下拦截 legacy intent={intent}", flush=True)
+                    chunk = _sse("message", {
+                        "text": "整个流程已经走完，不支持重做。如需新的内容，请开启新任务。",
+                    })
+                    await _persist_sse_text(chunk, known_task_id=t_id)
+                    yield chunk
+                    yield _sse("done", {"phase": "done_blocked"})
+                    return
+                print(f"[chat] 🛡️ 兜底拦截 legacy intent={intent} → 返回 redo_blocked 友好提示", flush=True)
+                chunk = _sse("message", {
+                    "text": "当前不支持完全重做哦～你可以直接说想要的调整内容，我会帮你微调。",
+                })
+                await _persist_sse_text(chunk, known_task_id=t_id)
+                yield chunk
+                yield _sse("done", {"phase": "cX_blocked"})
             else:
                 async for ev in _pipe(_handle_resume(
                     intent, t_id or '', current_node, intent_result,
@@ -877,15 +878,16 @@ async def _handle_backward(
     graph,
     *,
     product_images: list[UploadFile] | None = None,
+    refine_instruction: str | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
     # ------------------------------------------------------------------
-    # 意图 → 回退目标映射（统一 nodeX → resume_node + redo_target）
-    #   backward_to_node1 → resume c1, redo node1（只能在 c1 触发，node1 永久锁定）
-    #   backward_to_node2 → resume c2, redo node2
-    #   backward_to_node3 → resume c3, redo node3
-    #   backward_to_node4 → resume c4, redo node4
+    # 意图 → 回退目标映射
+    #   backward_to_node1 → resume c1, refine node1（纯 text LLM 增量编辑报告）
+    #   backward_to_node2 → resume c2, refine node2（纯 text LLM 增量编辑商拍方案）
+    #   backward_to_node3 → resume c3, refine node3（纯 text LLM 增量编辑提示词）
+    #   backward_to_node4 → resume c4, redo node4（生图 API 无法增量编辑，保留完全重做）
     # ------------------------------------------------------------------
     _INTENT_MAP = {
         "backward_to_node1": ("c1", "node1", 1),
@@ -898,6 +900,8 @@ async def _handle_backward(
         yield _sse("done", {"phase": "done"})
         return
     resume_node, redo_target, step_num = _INTENT_MAP[intent]
+    # node1/2/3 → refine；node4 → redo
+    _IS_REFINE = redo_target in ("node1", "node2", "node3")
 
     # ------------------------------------------------------------------
     # 流程守卫：
@@ -920,11 +924,22 @@ async def _handle_backward(
             return None, None
 
     current_phase, interrupt_node = await asyncio.to_thread(_get_state)
-    # phase=done 不再硬拦——用户明确说"重做"时让 graph 从 END 续跑到 c4_review_result
-    if intent == "backward_to_node1" and interrupt_node != "c1":
+
+    # refine_instruction：优先用传入的显式参数，否则用用户原始 chat 消息做兜底
+    _instruction = (refine_instruction or "").strip()
+    if _IS_REFINE and not _instruction:
+        print(f"[backward] ⚠️ refine 目标 {redo_target} 无指令，降级为通用 '重新生成' 指令", flush=True)
+        _instruction = "请基于现有内容重新生成一份，保持整体风格不变。"
+
+    # ------------------------------------------------------------------
+    # 流程守卫：
+    #   node1 已确认过 → 不允许完全重做（原来的 backward_to_node1 守卫）
+    #   但 refine 目标可以跨阶段——用户说"重写 node1 报告"永远可以用 refine 做增量编辑
+    # ------------------------------------------------------------------
+    if intent == "backward_to_node1" and interrupt_node != "c1" and not _IS_REFINE:
         print(f"[backward] 🛡️ task={task_id} interrupt={interrupt_node}，"
               f"node1 已锁定（只能在 c1 回退），拒绝 backward_to_node1", flush=True)
-        yield _sse("message", {"text": "商品报告已确认进入方案阶段，不能再重做商品识别。"})
+        yield _sse("message", {"text": "商品报告已确认进入方案阶段，不能再完全重做商品识别。"})
         yield _sse("done", {"phase": "done"})
         return
 
@@ -962,8 +977,9 @@ async def _handle_backward(
     }
 
     if current_phase == "done":
-        # ── 路径 B：graph 已 END，手动清理 state + goto 到目标执行节点 ──
-        # 先读最新 graph_state 来做正确的清理
+        # ── 路径 B：graph 已 END ──
+        # node1/2/3 refine → Command(goto=目标 refine 节点) + 写 _refine_target/_refine_instruction
+        # node4 redo → 保持原有清理逻辑 + goto node4_generate_image
         _, latest_state = await _aget_snapshot(task_id)
         latest_state = latest_state or {}
 
@@ -973,47 +989,58 @@ async def _handle_backward(
         node3 = latest_state.get("node3", {}) or {}
         node4 = latest_state.get("node4", {}) or {}
 
-        redo_target_cleanup: dict[str, dict[str, Any]] = {}
-        # 复用 _c4_review_result 里的分层清理规则（node1 已永久锁定，只清 2/3/4）
-        if redo_target == "node2":
-            redo_target_cleanup = {
-                "node2": cleared(),
-                "node3": cleared(model_images=node3.get("model_images", []),
-                                 ratio=node3.get("ratio"), image_model=node3.get("image_model")),
-                "node4": cleared(),
-                "phase": "c4_review",
+        if _IS_REFINE:
+            # refine 目标 → 不做 state 清理（refine 是原地增量编辑，保留所有上下游产物）
+            refine_node_map = {
+                "node1": "node1_refine_report",
+                "node2": "node2_refine_schemes",
+                "node3": "node3_refine_prompts",
             }
-        elif redo_target == "node3":
-            redo_target_cleanup = {
-                "node3": cleared(model_images=node3.get("model_images", []),
-                                 ratio=node3.get("ratio"), image_model=node3.get("image_model")),
-                "node4": cleared(),
-                "phase": "c4_review",
+            exec_node = refine_node_map.get(redo_target)
+            if not exec_node:
+                yield _sse("message", {"text": f"不支持的 refine 目标: {redo_target}"})
+                yield _sse("done", {"phase": "done"})
+                return
+            refine_update = {
+                "_refine_target": redo_target,
+                "_refine_instruction": _instruction,
+                "_redo_target": None,
             }
-        else:  # node4
-            new_node4 = dict(node4) if isinstance(node4, dict) else {}
+            update_dict = {**refine_update, **cmd_update} if cmd_update else refine_update
+            cmd = Command(goto=exec_node, update=update_dict)
+            print(f"[backward] 🎯 graph已END → refine→{redo_target} goto={exec_node}, instruction={_instruction[:60]}", flush=True)
+        else:
+            # redo node4：完全重置 work_items + 清 outputs（保持原有逻辑）
+            redo_target_cleanup: dict[str, dict[str, Any]] = {}
+            new_node4 = dict(node4)
             items = new_node4.get("work_items", []) or []
             for it in items:
                 if isinstance(it, dict):
                     it["status"] = "pending"
             new_node4["outputs"] = []
             new_node4["failed_items"] = []
-            redo_target_cleanup = {
-                "node4": new_node4,
-                "phase": "c4_review",
-            }
-
-        update_dict = {**redo_target_cleanup, **cmd_update} if cmd_update else redo_target_cleanup
-        exec_node = _EXEC_NODE_OF_TARGET.get(redo_target, redo_target)
-        cmd = Command(goto=exec_node, update=update_dict)
-        print(f"[backward] 🎯 graph已END → Command(goto={exec_node}) cleanup_keys={list(redo_target_cleanup.keys())}", flush=True)
+            redo_target_cleanup = {"node4": new_node4, "phase": "c4_review"}
+            update_dict = {**redo_target_cleanup, **cmd_update} if cmd_update else redo_target_cleanup
+            exec_node = _EXEC_NODE_OF_TARGET.get(redo_target, redo_target)
+            cmd = Command(goto=exec_node, update=update_dict)
+            print(f"[backward] 🎯 graph已END → redo node4 goto={exec_node}", flush=True)
     else:
         # ── 路径 A：graph 停在 cX interrupt → Command(resume=...) ──
-        # 🔑 redo 必须走 resume 语义：interrupt 节点（_cX_*）的 redo 分支负责清理下游
-        # state（cleared() 整体替换）并通过 _route_cX_decision 路由回目标执行节点。
-        # 不能用 Command(goto=...)：graph 处于 interrupt 态时 goto 不会跳过当前 interrupt
-        # 节点，interrupt() 会以已清空的 state 立刻重新抛出，表现为"秒回一个空报告"。
-        resume_values = {"node": resume_node, "decision": "redo", "redo_target": redo_target}
+        if _IS_REFINE:
+            # refine：让 _cX_confirm / _c4_review 的 refine 分支消费
+            resume_values = {
+                "node": resume_node,
+                "decision": "refine",
+                "refine_target": redo_target,
+                "refine_instruction": _instruction,
+            }
+        else:
+            # redo node4
+            resume_values = {
+                "node": resume_node,
+                "decision": "redo",
+                "redo_target": redo_target,
+            }
         cmd = Command(resume=resume_values, **({"update": cmd_update} if cmd_update else {}))
         print(f"[backward] 🎯 Command(resume={resume_values}) task={task_id} update_keys={list(cmd_update.keys())}", flush=True)
 
@@ -1110,8 +1137,12 @@ async def _handle_resume(
     if node == "c1":
         # C1 阶段无需传图，用户直接确认/编辑报告即可继续
 
+        # ── edit_and_confirm_c1：自然语言补充/修改报告 → 走 refine 路径（与 c2/c3 一致）──
         if intent == "edit_and_confirm_c1":
-            resume_values["confirmed_report"] = message
+            resume_values["decision"] = "refine"
+            resume_values["refine_target"] = "node1"
+            resume_values["refine_instruction"] = message
+            print(f"[chat] c1 edit_and_confirm_c1 → refine 路径, instruction={message[:60]}", flush=True)
         else:
             resume_values["confirmed_report"] = existing_report
         if model_image_paths:
@@ -1120,42 +1151,53 @@ async def _handle_resume(
         resume_values.setdefault("count", 3)
 
     elif node == "c2":
-        # 选中项优先级：前端 checkbox 显式传的 > 意图从消息文本解析的 > 默认全选。
-        # 字段名必须是 selected_scheme_indices（_c2_select_scheme 读这个名字），
-        # 历史上误写成 selected_prompt_indices 导致 resume 值永远被忽略。
-        indices: list[int] = []
-        if selected_scheme_indices:
-            for part in selected_scheme_indices.split(","):
-                part = part.strip()
-                if part.isdigit():
-                    indices.append(int(part))
-        if not indices:
-            selected = intent_result.get("selected_indices")
-            if selected == "all":
+        # ── edit_and_confirm_c2：用户想微调/修改商拍方案 → 走 refine 路径 ──
+        if intent == "edit_and_confirm_c2":
+            resume_values["decision"] = "refine"
+            resume_values["refine_target"] = "node2"
+            resume_values["refine_instruction"] = message
+            print(f"[chat] c2 edit_and_confirm_c2 → refine 路径, instruction={message[:60]}", flush=True)
+        else:
+            # 选中项优先级：前端 checkbox 显式传的 > 意图从消息文本解析的 > 默认全选。
+            # 字段名必须是 selected_scheme_indices（_c2_select_scheme 读这个名字），
+            # 历史上误写成 selected_prompt_indices 导致 resume 值永远被忽略。
+            indices: list[int] = []
+            if selected_scheme_indices:
+                for part in selected_scheme_indices.split(","):
+                    part = part.strip()
+                    if part.isdigit():
+                        indices.append(int(part))
+            if not indices:
+                selected = intent_result.get("selected_indices")
+                if selected == "all":
+                    indices = list(range(len(existing_schemes)))
+                elif isinstance(selected, list):
+                    for x in selected:
+                        try:
+                            idx = int(x)
+                            if 0 <= idx < len(existing_schemes):
+                                indices.append(idx)
+                        except (ValueError, TypeError):
+                            pass
+            if not indices:
                 indices = list(range(len(existing_schemes)))
-            elif isinstance(selected, list):
-                for x in selected:
-                    try:
-                        idx = int(x)
-                        if 0 <= idx < len(existing_schemes):
-                            indices.append(idx)
-                    except (ValueError, TypeError):
-                        pass
-        if not indices:
-            indices = list(range(len(existing_schemes)))
-        resume_values["selected_scheme_indices"] = indices
+            resume_values["selected_scheme_indices"] = indices
         if model_image_paths:
             resume_values["model_images"] = model_image_paths
 
     elif node == "c3":
-        # C3 只有 confirm_current：用户确认 prompt 进入 Node4 生图。
-        # C3 下的重做意图（比如"换背景"）已在意图分类阶段归为 backward_to_node3，
-        # 由 _handle_backward 单独处理，不会走到这里。
-        # 历史上曾有 resume_values["action"] = "redo" 的残留分支，
-        # 但 graph 的 _c3_confirm_prompt 读的是 decision 字段而非 action，导致 c3 redo 从未生效。
-        # 新设计下此问题已自然消除。
-        if model_image_paths:
-            resume_values["model_images"] = model_image_paths
+        # ── edit_and_confirm_c3：用户想微调/修改提示词 → 走 refine 路径 ──
+        if intent == "edit_and_confirm_c3":
+            resume_values["decision"] = "refine"
+            resume_values["refine_target"] = "node3"  # c3 下默认改 node3 提示词，也可改 node2 方案
+            resume_values["refine_instruction"] = message
+            print(f"[chat] c3 edit_and_confirm_c3 → refine 路径, instruction={message[:60]}", flush=True)
+        else:
+            # C3 只有 confirm_current：用户确认 prompt 进入 Node4 生图。
+            # C3 下的重做意图（比如"换背景"）已在意图分类阶段归为 backward_to_node3，
+            # 由 _handle_backward 单独处理，不会走到这里。
+            if model_image_paths:
+                resume_values["model_images"] = model_image_paths
 
     elif node == "c4":
         # C4 独占 confirm_generation / redo_generation 两个意图。

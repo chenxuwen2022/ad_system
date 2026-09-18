@@ -27,7 +27,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from wellflow.app.api.utils import ok
+from wellflow.app.api.utils import ok, to_cn_iso
 from wellflow.app.config import settings
 from wellflow.app.database import get_db
 from wellflow.app.llm.factory import get_llm_client
@@ -207,7 +207,7 @@ def _to_list_item(o) -> OutfitListItem:
         scope=o.scope, origin=o.origin,
         cover_storage_uri=o.cover_storage_uri,
         cover_url=_storage_uri_url(o.cover_storage_uri),
-        created_at=o.created_at.isoformat(), updated_at=o.updated_at.isoformat(),
+        created_at=to_cn_iso(o.created_at), updated_at=to_cn_iso(o.updated_at),
     )
 
 
@@ -219,7 +219,7 @@ def _to_detail(o) -> OutfitDetailResponse:
         original_storage_uri=o.original_storage_uri,
         original_url=_storage_uri_url(o.original_storage_uri),
         items=o.items or [], dims=o.dims or {},
-        created_at=o.created_at.isoformat(), updated_at=o.updated_at.isoformat(),
+        created_at=to_cn_iso(o.created_at), updated_at=to_cn_iso(o.updated_at),
     )
 
 

@@ -143,6 +143,10 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     full_report = "".join(full_report_parts)
     full_thinking = "".join(think_parts)
 
+    # ---- 双保险：强制在报告末尾追加确认提示语 ----
+    if "请仔细核对以上识别信息" not in full_report:
+        full_report = full_report.rstrip()
+
     # 归一化为稳定 key 的四块结构（前端"重点洞察"面板只认这个，不认 prompt 字段名）
     from wellflow.app.prompt.report_sections import build_report_sections
     report_sections = build_report_sections(full_report)

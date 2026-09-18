@@ -78,6 +78,8 @@ INTENT = Literal[
     "confirm_current",               # c1/c2/c3 通用确认（好的/继续/ok）
     "confirm_generation",            # 仅 c4：确认生图结果（满意/保存/结束）
     "edit_and_confirm_c1",           # 仅 c1：自然语言修改报告
+    "edit_and_confirm_c2",           # 仅 c2：自然语言微调/修改商拍方案
+    "edit_and_confirm_c3",           # 仅 c3：自然语言微调/修改提示词
     "select_topics",                 # 仅 c2：选方案（全选/用第1个）
     "redo",                          # 重做但没说哪一步 → 前端弹 radio 选
     "backward_to_node1",             # 方向词+第1步显式指定
@@ -94,15 +96,13 @@ ALLOWED_INTENTS: set[str] = {
     "confirm_current",
     "confirm_generation",
     "edit_and_confirm_c1",
+    "edit_and_confirm_c2",
+    "edit_and_confirm_c3",
     "select_topics",
-    "redo",
-    "backward_to_node1",
-    "backward_to_node2",
-    "backward_to_node3",
-    "backward_to_node4",
     "skip_forward",
     "chat_outside",
     "unknown",
+    "redo_blocked",  # v4: 用户想重做/回退/换节点 —— 已禁用重做，引导用微调
 }
 
 
@@ -116,25 +116,29 @@ CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器�
 - c1: 商品分析完成，等用户确认报告
 - c2: 方案策划完成，等用户选方案
 - c3: Prompt 生成完成，等用户确认 prompt
-- c4: 生图完成，等用户确认或重做
+- c4: 生图完成，等用户确认
+
+## 🔴 核心原则（最重要）
+**本工作台不支持"完全重做"或"回到某一步"。** 用户如果表达"重做/重来/换一张/回到第X步/退到上一步/撤回/不满意想重来"这类意图，**一律归为 redo_blocked**，而不是 redo 或 backward_to_nodeX。系统会统一提示用户"可以微调"。
 
 ## 意图列表
 
 ### 所有节点都能返回
 - **chat_outside**: 闲聊/商拍无关（"你好"/"天气"/"帮我写代码"）
-- **redo**: 用户想重做或回退但没明确指定哪一步。包括但不限于：裸"重做/重来/换一张/不满意/不好看/再试/重新生成"，以及带了模糊产物词的输入（"重做方案"/"回到提示词"/"换一张图"）——这些都归 redo，不需要猜具体 node
-- **backward_to_node1/2/3/4**: 只有当用户用"回到第X步/重做第X步/前往第X步"这种格式**显式指定了步骤编号**时才返回。返回的 node 必须满足"目标步 ≤ 当前步"（只能回到已经跑过的节点）。c1 还永久锁定：backward_to_node1 仅允许在 c1
+- **redo_blocked**: 用户想完全重做、回退、回到某一步、重来、重新生成（**凡是这类意图都归这里**）
 - **skip_forward**: 试图跳过工作流步骤（"帮我出图"/"直接生成图"/"跳过分析"）
 
 ### 仅特定节点
 - c1（报告确认）:
   - **confirm_current**: "好的/继续/就这样/ok/可以"
-  - **edit_and_confirm_c1**: 自然语言修改报告（"品牌定位改成轻奢"）
+  - **edit_and_confirm_c1**: 自然语言修改报告（"品牌定位改成轻奢"/"帽子应该是可拆卸的"）—— **修改内容 / 补充内容 / 指出错误 都是 edit_and_confirm_c1，不是 redo_blocked**
 - c2（选题确认）:
   - **confirm_current**: "好的/继续"（默认全选）
-  - **select_topics**: "全选/用第1和第3"
+  - **select_topics**: "全选/用第1和第3/选方案1和2"
+  - **edit_and_confirm_c2**: 自然语言微调/修改商拍方案（"微调第一个方案"/"把方案二改成极简风"/"核心卖点加上环保"/"方案三的模特换成短发"）—— **凡是要修改已有方案内容的，都是 edit_and_confirm_c2，不是 select_topics 或 redo_blocked**
 - c3（Prompt 确认）:
   - **confirm_current**: "好的/继续/就这样/ok/可以"
+  - **edit_and_confirm_c3**: 自然语言微调/修改提示词（"换背景"/"把提示词改得更自然"/"第二个提示词的模特换成长发"）—— **凡是要修改提示词内容的，都是 edit_and_confirm_c3，不是 redo_blocked**
 - c4（生图确认）:
   - **confirm_generation**: "就这样/满意/保存/确认/结束"
 
@@ -143,14 +147,17 @@ CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器�
 - **chat_outside**: 闲聊 → 拦截
 
 ### 禁止返回的意图
+- **redo** / **backward_to_nodeX**: 完全重做已禁用。**绝对不要返回这两个意图**，所有重做类统一归 redo_blocked
 - **skip_forward**: 跳过前置步骤直接往下走是不允许的，**绝不要返回 skip_forward**
-- edit_and_confirm_c1 仅在 **c1 节点**下有效，其他节点下返回它会导致 dispatch 层丢数据
+- edit_and_confirm_c1 仅在 **c1 节点**下有效，edit_and_confirm_c2 仅在 **c2 节点**下有效，edit_and_confirm_c3 仅在 **c3 节点**下有效。在其他节点下返回它们会导致 dispatch 层丢数据
 
 ## 关键判定法则（请严格遵守）
-1. **redo 的范围**：凡是用户表达了"不满意/想重来/换一下/重新生成"这类意图，但没有用"第X步"显式指定步骤号的，一律归为 **redo**。不要猜 node
-2. **只有方向词+第X步**（"回到第一步/重做第2步/前往第3步"）才能返回 backward_to_nodeX
-3. "继续/进入" 单独出现且无步骤编号时 → confirm_current（或 confirm_generation 在 c4）
-4. "保存/结束/完成" 只有在 c4 下才是 confirm_generation
+1. **区分"重做"vs"微调"vs"选择"**:
+   - "重新做"/"重来"/"回到第X步"/"退回"/"撤回" → redo_blocked
+   - "改一下标题"/"增加一个卖点"/"微调第一个方案"/"把方案二改成极简风" → edit_and_confirm_cX（根据 current_node 选 c1/c2/c3）
+   - "用第一个"/"选方案1和2"/"全选" → select_topics（仅 c2 下）
+2. "继续/进入" 单独出现且无步骤编号时 → confirm_current（或 confirm_generation 在 c4）
+3. "保存/结束/完成" 只有在 c4 下才是 confirm_generation
 
 ## 输出格式
 ```json
@@ -219,16 +226,27 @@ def _match_direction_step(text: str, current_node: str | None) -> str | None:
 # redo 关键词 —— v2 所有 redo 类统一返回 redo，不再猜 target_node
 # ---------------------------------------------------------------------------
 # 动作词（redo 触发词）
-_BACKWARD_VERBS = ["重新", "重做", "重来", "重跑", "再", "换", "改", "回到", "退到",
-                   "撤回", "重新做", "重新出", "换一下"]
+# 动作词（完全重做 / 回退 触发词）
+# 注意：不要把"改"、"换"这种过宽的单字放进来——"品牌改成轻奢"、"换个背景"是**微调**不是重做，
+#   要靠更精确的词（如"换一下"/"换成"/"改回去"）或让 LLM 意图判断兜底
+_BACKWARD_VERBS = [
+    "重新", "重做", "重来", "重跑", "回到", "退到", "撤回",
+    "重新做", "重新出", "换一下", "退回", "回到上一步", "撤回到",
+    "完全重做", "全重做", "推翻重来", "从头开始", "重新来",
+]
 _BARE_REDO_WORDS = ["重做", "重来", "重跑"]
-_REDO_VERBS = ["重新生成", "重做", "重来", "再来", "换", "再做", "再出", "再画",
-               "重新画", "重做这张", "重来一张"]
+# 动作词（完全重做 / 回退 触发词）
+# 注意：只保留 ≥2 字的明确动作，去掉单字（"换"/"再"/"改" 太宽，会误吞微调）
+_REDO_VERBS = [
+    "重新生成", "重画", "重来", "重做",
+    "再来一张", "换一张", "重新做", "重新画",
+    "重做这张", "重来一张", "换一下", "换一个",
+]
 # 抱怨词（redo 触发词，不需要配动词）
 _REDO_COMPLAINT_WORDS = ["不满意", "不太满意", "不好看", "不行", "画得不好",
                          "这张不行", "不太行", "不好", "太差", "糟糕"]
-# 再试词
-_RETRY_WORDS = ["再试一下", "再试试", "再试", "重新试", "换一个", "换个"]
+# 再试词 —— 必须带"再试"/"重新试"明确动作，避免"换个X"这种微调被误判
+_RETRY_WORDS = ["再试一下", "再试试", "再试", "重新试", "重新尝试", "再尝试一次"]
 
 # c3 微调（旧版归 backward_to_node3，v2 归入 redo 让前端选）
 _C3_TUNE_WORDS = ["换背景", "换个背景", "换颜色", "换个颜色", "调暗", "调亮",
@@ -286,6 +304,19 @@ _SELECT_INDICES_PATTERNS = [
     r"用第?(\d+)[、,，]\s*第?(\d+)",
 ]
 
+# --- 选择语义动词前缀（_match_select_indices 仅在这些动词后才抽 indices）---
+_SELECT_VERB_PREFIXES = [
+    "选", "用", "要", "就选", "就用", "就这", "就第一个", "就第",
+    "选这", "用这", "选第", "用第", "就",
+]
+
+# --- 修改语义动词（_match_select_indices 遇到这些动词时跳过 indices 匹配，交给 edit_and_confirm_cX）---
+_EDIT_VERBS = [
+    "微调", "改", "修改", "调整", "换", "换成", "改成", "换成",
+    "加上", "增加", "去掉", "删除", "换一下", "重写", "优化",
+    "润色", "完善", "补充", "去掉", "移除", "换成",
+]
+
 # --- 尾部语气词剥离 ---
 _TONE_SUFFIXES = ("吧", "啊", "哦", "啦", "呀", "哈", "呢", "咧", "咯", "嘞", "噻")
 
@@ -312,19 +343,17 @@ def _has_negation(text: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def _match_redo_any(text: str, current_node: str | None) -> bool:
-    """v2 redo 判定：只要表达了"想重做/回退"的意思就返回 True。
+    """v4 redo 判定（只拦完全重做 / 回退语义，微调类不拦）。
 
-    匹配范围（统一归 redo，不分 node）：
+    匹配范围（统一归 redo_blocked）：
       1. bare_redo（短短语 ≤4字）："重做"、"重来"
-      2. 所有 redo 动作词："重新生成"、"换一下"、"再出一张"
-      3. 抱怨词："不满意"、"不好看"、"不太行"
+      2. 抱怨词（≥2字，防止单字误匹配）："不满意"、"不好看"、"不太行"
+      3. redo 动作词："重新生成"、"再来一张"
       4. 再试词："再试一下"、"重新试"
-      5. c3 微调 / c4 改图词
-      6. backward 动词（"回到"、"退到"、"撤回"）
+      5. backward 动词（"回到"/"退到"/"撤回"）—— 排除 confirm 语境
 
-    守卫：
-      - 有否定词不算
-      - 没有 current_node（任务没开始）不算 redo
+    🔴 v4 不再拦 c3 微调 / c4 改图（"换背景"/"调暗" 等）—— 这些属于微调范畴，
+    让 LLM 意图判断兜底，不要提前拦截。
     """
     if not current_node:
         return False
@@ -336,7 +365,7 @@ def _match_redo_any(text: str, current_node: str | None) -> bool:
     if len(t) <= 4 and _fuzz_any(t, _BARE_REDO_WORDS):
         return True
 
-    # 2. 抱怨词独立命中（≥2字，防止单字误匹配）
+    # 2. 抱怨词独立命中（≥2字）
     for w in _REDO_COMPLAINT_WORDS:
         if len(w) >= 2 and _fuzz_any(text, [w]):
             return True
@@ -349,13 +378,8 @@ def _match_redo_any(text: str, current_node: str | None) -> bool:
     if _fuzz_any(text, _RETRY_WORDS):
         return True
 
-    # 5. c3 微调 / c4 改图（归 redo 让前端选）
-    if _fuzz_any(text, _C3_TUNE_WORDS) or _fuzz_any(text, _C4_EDIT_WORDS):
-        return True
-
-    # 6. backward 动词（"回到"/"退到"/"撤回" 等）—— 没配产物词也归 redo
+    # 5. backward 动词（"回到"/"退到"/"撤回" 等）—— 排除 confirm 语境
     if _fuzz_any(text, _BACKWARD_VERBS):
-        # 排除"回到好的"/"继续"这种 confirm 语境
         if not _fuzz_any(text, _CONFIRM_SHORT_WORDS):
             return True
 
@@ -406,8 +430,27 @@ def _match_select_all(text: str, current_node: str | None) -> bool:
 
 
 def _match_select_indices(text: str, current_node: str | None) -> list[int] | None:
+    """匹配 c2 下用户选择哪些方案的 indices。
+
+    v2 增加动词过滤：只有当用户意图是"选择"（选/用/要）时才抽 indices，
+    如果前面有"修改语义动词"（微调/改/调整），则跳过匹配——让 Step8 或 LLM
+    把它分类成 edit_and_confirm_c2，而不是 select_topics。
+    """
     if current_node != "c2":
         return None
+
+    # ── 排除修改语义：如果 text 里包含 _EDIT_VERBS 里的词，跳过 indices 匹配 ──
+    for verb in _EDIT_VERBS:
+        if verb in text:
+            # 但要排除"就用第一个方案"里的"就"——"就"是确认词不是修改词
+            if verb == "就":
+                continue
+            # "用"本身是选择动词，不算修改
+            if verb == "换" and "换成" not in text and "换一下" not in text:
+                continue
+            print(f"[intent] _match_select_indices ⛔ 遇到修改动词 '{verb}'，跳过 indices 匹配", flush=True)
+            return None
+
     for p in _SELECT_INDICES_PATTERNS:
         m = re.search(p, text)
         if m:
@@ -468,6 +511,8 @@ _INTENT_ALLOWED_CURRENT_NODES: dict[str, tuple[str, ...]] = {
     "confirm_generation": ("c4",),
     # edit / select 只在对应节点
     "edit_and_confirm_c1": ("c1",),
+    "edit_and_confirm_c2": ("c2",),
+    "edit_and_confirm_c3": ("c3",),
     "select_topics": ("c2",),
 }
 
@@ -618,12 +663,12 @@ def _try_keywords(
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
     # ────────────────────────────────────── Step 1: 方向词+"第X步" ──────────────────────────────────────
-    # v2 唯一能精确定位 target_node 的路径
+    # v4：backward_to_nodeX 一律拦（不允许任何完全重做）；forward（前往/走到第X步）仍正常
     direction_step = _match_direction_step(text, current_node)
     if direction_step:
         if direction_step.startswith("backward_to_node"):
-            return {"intent": direction_step,
-                    "reasoning": "关键词: 方向词+第X步,目标在当前之前→精确回退",
+            return {"intent": "redo_blocked",
+                    "reasoning": "关键词: 方向词+第X步 backward→拦截，引导用微调",
                     "selected_indices": None, "blocked_step": None, "parsed_content": None}
         return {"intent": direction_step,
                 "reasoning": "关键词: 方向词+第X步,目标在当前之后→确认继续",
@@ -645,11 +690,11 @@ def _try_keywords(
                 "reasoning": "关键词: c4 下保存/结束生图",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
-    # ────────────────────────────────────── Step 3: redo（统一，不带 node） ──────────────────────────────────────
-    # v2：所有 redo 类输入统一归 redo，dispatch 层发 selection_required 让前端选
+    # ────────────────────────────────────── Step 3: redo → 一律拦 ──────────────────────────────────────
+    # v4：完全重做已禁用。所有 redo 关键词都返回 redo_blocked，引导用户用微调
     if _match_redo_any(text, current_node):
-        return {"intent": "redo",
-                "reasoning": "关键词: redo 触发词→统一 redo，让前端选目标节点",
+        return {"intent": "redo_blocked",
+                "reasoning": "关键词: redo 触发词→拦截，引导用微调",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
     # ────────────────────────────────────── Step 4: select_topics（仅 c2） ──────────────────────────────────────
@@ -705,7 +750,40 @@ def _try_keywords(
                 "reasoning": "c1 节点自然语言输入→编辑报告",
                 "selected_indices": None, "blocked_step": None, "parsed_content": text}
 
-    # c2/c3/c4 走到这里没命中任何规则 —— 交给 LLM
+    if current_node == "c2":
+        # c2 下的自然语言修改指令 → edit_and_confirm_c2
+        # 核心判断：包含修改语义动词（_EDIT_VERBS），且不包含明确的选择动词
+        _C2_EDIT_SIGNAL_WORDS = [
+            "微调", "改", "修改", "调整", "换成", "改成", "换一下",
+            "优化", "润色", "重写", "加上", "增加", "去掉", "补充",
+            "极简", "轻奢", "环保", "高级", "年轻", "商务",
+        ]
+        _C2_SELECT_VERBS = ["用", "选", "要", "就选", "就用", "就"]
+        has_edit_verb = any(verb in text for verb in _EDIT_VERBS)
+        has_edit_signal = _fuzz_any(text, _C2_EDIT_SIGNAL_WORDS)
+        has_select_verb = any(verb in text for verb in _C2_SELECT_VERBS)
+        # 有修改动词 → edit；有修改信号词但无选择动词 → edit；否则走LLM
+        if has_edit_verb or (has_edit_signal and not has_select_verb and not _match_confirm(text, current_node)):
+            return {"intent": "edit_and_confirm_c2",
+                    "reasoning": "c2 节点自然语言修改指令→微调方案",
+                    "selected_indices": None, "blocked_step": None, "parsed_content": text}
+
+    if current_node == "c3":
+        # c3 下的自然语言修改指令 → edit_and_confirm_c3
+        _C3_EDIT_SIGNAL_WORDS = [
+            "微调", "改", "修改", "调整", "换成", "改成", "换一下",
+            "优化", "润色", "重写", "加上", "去掉",
+            "提示词", "prompt",
+            "背景", "颜色", "色调", "姿势", "风格", "构图",
+        ]
+        has_edit_verb = any(verb in text for verb in _EDIT_VERBS)
+        has_edit_signal = _fuzz_any(text, _C3_EDIT_SIGNAL_WORDS)
+        if has_edit_verb or (has_edit_signal and not _match_confirm(text, current_node)):
+            return {"intent": "edit_and_confirm_c3",
+                    "reasoning": "c3 节点自然语言修改指令→微调提示词",
+                    "selected_indices": None, "blocked_step": None, "parsed_content": text}
+
+    # c4 走到这里没命中任何规则 —— 交给 LLM
     return None
 
 
@@ -831,38 +909,33 @@ def compute_completed_mask(
 # ---------------------------------------------------------------------------
 
 def build_redo_options(current_node: str | None) -> list[dict[str, str]]:
-    """根据 current_node 生成 allowed redo target 选项列表（供前端 radio 渲染）。
+    """根据 current_node 生成允许的选项列表（供前端 radio 渲染）。
 
-    复用 _INTENT_ALLOWED_CURRENT_NODES 的守卫逻辑：
-      c1 → [{label: "商品分析（第1步）", value: "node1"}]           # 1 选项，dispatch 自动执行
-      c2 → [{label: "方案策划（第2步）", value: "node2"}]           # 1 选项，dispatch 自动执行（node1 已锁定）
-      c3 → [{node2, node3}]                                          # 2 选项，前端弹 radio
-      c4 → [{node2, node3, node4}]                                  # 3 选项，前端弹 radio
-      None → []                                                       # 无任务，不允许 redo
+    v3 增量编辑版：node1/2/3 的"重做"统一走 refine（纯 text LLM 增量编辑），
+    只有 node4（生图 API）保留完全重做。所以选项表收窄：
 
-    注意：node1 永久锁定——一旦过了 c1（进入 c2/c3/c4）就不可再重跑，
-    所以选项里只保留 target_node_num ≤ current_node_num 且"当前未过锁定阶段"的 node。
+      c1 → [{label: "商品分析（第1步）", value: "node1"}]  — refine，1 选项
+      c2 → [{label: "方案策划（第2步）", value: "node2"}]  — refine，1 选项
+      c3 → [{node2, node3}]                                 — refine，2 选项
+      c4 → [{label: "图像生成（第4步）", value: "node4"}]  — 唯一的完全重做选项
+      None → []
+
+    注意：node1 refine 可跨阶段生效（即使过了 c1 也能通过 refine 修改报告），
+    但 build_redo_options 只反映"当前阶段合理的选项"，跨阶段 refine 由 chat.py 的
+    守卫（_IS_REFINE）负责放开。
     """
     if not current_node or current_node not in _CURRENT_NODE_NUM:
         return []
 
-    # 守卫表严格定义了每个 current_node 下允许的 backward_to_nodeX
-    # 直接从守卫表反推 allowed node 列表（比手写 node_num 比较更准确，
-    # 还能天然覆盖 node1 永久锁定这种特例）
-    node_labels = {
-        "node1": ("商品分析", 1),
-        "node2": ("方案策划", 2),
-        "node3": ("Prompt 生成", 3),
-        "node4": ("图像生成", 4),
+    # v3: 收窄允许表
+    _OPTIONS = {
+        "c1": [("node1", "商品分析", 1)],
+        "c2": [("node2", "方案策划", 2)],
+        "c3": [("node2", "方案策划", 2), ("node3", "Prompt 生成", 3)],
+        "c4": [("node4", "图像生成", 4)],  # c4 只允许 node4 完全重做
     }
-    allowed_intents = []
-    for node_key in ("node1", "node2", "node3", "node4"):
-        intent = f"backward_to_{node_key}"
-        allowed_current = _INTENT_ALLOWED_CURRENT_NODES.get(intent, ())
-        if current_node in allowed_current:
-            label, step_num = node_labels[node_key]
-            allowed_intents.append({"label": f"{label}（第{step_num}步）", "value": node_key})
-
-    # 按 node 编号升序排列（先早期后晚期）
-    allowed_intents.sort(key=lambda x: int(x["value"][4:]))
-    return allowed_intents
+    allowed = _OPTIONS.get(current_node, [])
+    return [
+        {"label": f"{label}（第{num}步）", "value": node}
+        for node, label, num in allowed
+    ]

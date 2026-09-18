@@ -9,7 +9,7 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db
-from wellflow.app.api.utils import ok, StandardResponse
+from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
 from wellflow.app.models.task_models import Conversation, ChatMessage, Task, TaskImage
 from wellflow.app.repositories.conversation_repo import ConversationRepo
 from wellflow.app.schemas.conversation_schemas import (
@@ -123,8 +123,8 @@ def list_conversations(
             latest_message_preview=preview,
             message_count=msg_count,
             task_count=task_count,
-            created_at=c.created_at.isoformat(),
-            updated_at=c.updated_at.isoformat(),
+            created_at=to_cn_iso(c.created_at),
+            updated_at=to_cn_iso(c.updated_at),
         ))
 
     return ok(ConversationListResponse(
@@ -171,7 +171,7 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
             images=imgs,
             intent=m.intent,
             session_index=m.session_index,
-            created_at=m.created_at.isoformat(),
+            created_at=to_cn_iso(m.created_at),
         ))
 
     # 关联 task 列表
@@ -190,8 +190,8 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
             phase=t.phase,
             description=req.get("description", "")[:80],
             has_interrupt=bool(t.interrupt_json),
-            created_at=t.created_at.isoformat(),
-            updated_at=t.updated_at.isoformat(),
+            created_at=to_cn_iso(t.created_at),
+            updated_at=to_cn_iso(t.updated_at),
         ))
 
     return ok(ConversationDetailResponse(
@@ -200,8 +200,8 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
         current_task_id=c.current_task_id,
         messages=chat_out,
         tasks=task_out,
-        created_at=c.created_at.isoformat(),
-        updated_at=c.updated_at.isoformat(),
+        created_at=to_cn_iso(c.created_at),
+        updated_at=to_cn_iso(c.updated_at),
     ))
 
 
@@ -260,7 +260,7 @@ def get_timeline(conversation_id: str, db: Session = Depends(get_db)):
             "text": ch.text or "",
             "intent": ch.intent,
             "session_index": ch.session_index,
-            "created_at": ch.created_at.isoformat() if ch.created_at else None,
+            "created_at": to_cn_iso(ch.created_at),
         })
 
     for ev in events:
@@ -272,7 +272,7 @@ def get_timeline(conversation_id: str, db: Session = Depends(get_db)):
             "phase": ev.phase,
             "payload": ev.payload_json or {},
             "cost_usd": ev.cost_usd,
-            "created_at": ev.created_at.isoformat() if ev.created_at else None,
+            "created_at": to_cn_iso(ev.created_at),
         })
 
     # 5. 按 created_at 升序排（chat 没 created_at 的退到最后）

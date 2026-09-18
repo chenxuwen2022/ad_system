@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Depends, Form, File, Query, Upload
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db
-from wellflow.app.api.utils import ok, StandardResponse
+from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
 from wellflow.app.repositories.product_repo import BrandRepo, SeriesRepo, SkuRepo, _gen_no
 from wellflow.app.utils.image_store import save_sku_assets
 from wellflow.app.config import settings as wf_settings
@@ -460,8 +460,8 @@ def _brand_to_dict(b) -> dict[str, Any]:
         "status": b.status,
         "series_count": b.series_count,
         "sku_count": b.sku_count,
-        "created_at": b.created_at.isoformat(),
-        "updated_at": b.updated_at.isoformat(),
+        "created_at": to_cn_iso(b.created_at),
+        "updated_at": to_cn_iso(b.updated_at),
     }
 
 
@@ -474,8 +474,8 @@ def _series_to_dict(s) -> dict[str, Any]:
         "brand_id": s.brand_id,
         "brand_name": s.brand.name if hasattr(s, "brand") and s.brand else "",
         "sku_count": s.sku_count,
-        "created_at": s.created_at.isoformat(),
-        "updated_at": s.updated_at.isoformat(),
+        "created_at": to_cn_iso(s.created_at),
+        "updated_at": to_cn_iso(s.updated_at),
     }
 
 
@@ -493,8 +493,8 @@ def _sku_to_list_item(sku, db: Session) -> SkuListItem:
         color=sku.color,
         status=sku.status,
         image_count=img_count,
-        created_at=sku.created_at.isoformat(),
-        updated_at=sku.updated_at.isoformat(),
+        created_at=to_cn_iso(sku.created_at),
+        updated_at=to_cn_iso(sku.updated_at),
     )
 
 
@@ -507,7 +507,7 @@ def _sku_to_detail(sku, db: Session) -> SkuDetailResponse:
             storage_uri=img.storage_uri,
             url=_storage_uri_url(img.storage_uri),
             sort_order=img.sort_order,
-            created_at=img.created_at.isoformat(),
+            created_at=to_cn_iso(img.created_at),
         ))
 
     return SkuDetailResponse(
@@ -530,6 +530,6 @@ def _sku_to_detail(sku, db: Session) -> SkuDetailResponse:
         series_name=sku.series.name if sku.series else "",
         images=images_out,
         image_count=len(images_out),
-        created_at=sku.created_at.isoformat(),
-        updated_at=sku.updated_at.isoformat(),
+        created_at=to_cn_iso(sku.created_at),
+        updated_at=to_cn_iso(sku.updated_at),
     )

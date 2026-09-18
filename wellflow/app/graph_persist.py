@@ -19,6 +19,10 @@ def persist_phase(task_id: str, phase: str, node_name: str) -> None:
         with session_scope() as db:
             repo = TaskRepo(db)
             repo.update_phase(task_id, phase)
+            if phase == "done":
+                # 终态归档：清掉残留的 interrupt_json，
+                # 否则前端恢复任务时会误判为「等待确认」而渲染确认按钮
+                repo.save_interrupt(task_id, None)
             repo.add_event(task_id, "phase_change", phase=phase, payload_json={"node": node_name})
     except Exception:
         pass

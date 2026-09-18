@@ -24,7 +24,7 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
-from wellflow.app.api.utils import ok, StandardResponse
+from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
 from wellflow.app.graph_persist import persist_phase, persist_interrupt, persist_error, persist_outputs
 from wellflow.app.models.task_models import TaskPhase
 from wellflow.app.repositories.task_repo import TaskRepo
@@ -395,16 +395,16 @@ async def resume_task(
     confirmed_report: str = Form(default=""),
     ratio: str = Form(default="9:16"),
     scheme_count: int = Form(default=3),
+    # action: "confirm" | "refine" | "redo"(仅 C4 redo→node4 保留)
     action: str = Form(default="confirm"),
     image_model: str | None = Form(default=None),
     model_images: list[UploadFile] = File(default_factory=list),
-    # C2（选方案）：selected_scheme_indices "0,2" 或 JSON body
     selected_scheme_indices: str | None = Form(default=None),
-    # C3（确认 prompt）：JSON body，后端不拆 Form
-    # C4（重做/确认）：decision "redo" / "confirm"，redo_target 可选
+    # redo_target: C4 阶段可选，仅 redo 模式生效
     redo_target: str | None = Form(default=None),
-    # 🔑 灵活 JSON body：前端可直接传完整 resume_values dict
-    # 优先级最高，覆盖所有 Form 字段
+    # refine 专用字段：C1/C2/C3/C4 都支持
+    refine_instruction: str | None = Form(default=None),
+    refine_target: str | None = Form(default=None),
     resume_json: str | None = Form(default=None),
     db: Session = Depends(get_db),
 ):
@@ -459,24 +459,59 @@ async def resume_task(
         raise HTTPException(409, f"当前暂停在 node={current_node}，不能 resume node={node}")
 
     # ------------------------------------------------------------------
-    # 🛡️ 硬性规则校验：绝不允许跳过损坏 / 数据缺失的节点
-    #   场景：current_node=c2，但 node2.schemes=[] → 阻断向下流转，
-    #   只允许 retry 当前 node2。
+    # 🛡️ C4 入库守卫：confirm 是不可逆的终态操作，必须显式声明意图。
+    #    历史缺陷：action 缺失时落入 confirm 分支，导致静默入库。
     # ------------------------------------------------------------------
-    from wellflow.app.graph_context import validate_current_node_products
-    graph_state, _ = await _aget_graph_state(task_id)
-    ok, missing = validate_current_node_products(current_node, graph_state)
-    if not ok:
-        print(
-            f"[resume] 🛡️ 硬性守卫拦截 current_node={current_node}，"
-            f"缺失产物: {missing} → 拒绝 resume，请 retry 当前 node",
-            flush=True,
-        )
-        raise HTTPException(
-            409,
-            f"当前节点({current_node})产物缺失或损坏({missing})，"
-            "请重试当前节点，不允许跳过向下流转。",
-        )
+    if current_node == "c4":
+        if resume_json:
+            try:
+                _rj_guard = _json.loads(resume_json)
+                _has_explicit_decision = (
+                    isinstance(_rj_guard, dict)
+                    and _rj_guard.get("decision") in ("confirm", "redo", "refine")
+                )
+            except Exception:
+                _has_explicit_decision = False
+        else:
+            _has_explicit_decision = action in ("confirm", "redo", "refine")
+        if not _has_explicit_decision:
+            raise HTTPException(
+                400,
+                "node=c4 的 resume 必须显式携带 decision（confirm/redo/refine），禁止默认确认入库",
+            )
+
+    # ------------------------------------------------------------------
+    # 🛡️ 硬性规则校验：绝不允许跳过损坏 / 数据缺失的节点（仅 confirm 路径）
+    #   refine 路径：就是因为产物可能有问题才想编辑，不应被产物完整性拦截
+    #   redo 路径（仅 C4 redo→node4）：重置 work_items 也应绕过
+    # ------------------------------------------------------------------
+    _decision_for_validate = action
+    # resume_json 可能覆盖 Form action（resume_json 优先级最高）
+    if resume_json:
+        try:
+            _rj = _json.loads(resume_json)
+            if isinstance(_rj, dict) and _rj.get("decision"):
+                _decision_for_validate = _rj["decision"]
+        except Exception:
+            pass
+
+    _skip_validate = (_decision_for_validate in ("refine", "redo"))
+
+    if not _skip_validate:
+        from wellflow.app.graph_context import validate_current_node_products
+        graph_state, _ = await _aget_graph_state(task_id)
+        ok, missing = validate_current_node_products(current_node, graph_state)
+        if not ok:
+            print(
+                f"[resume] 🛡️ 硬性守卫拦截 current_node={current_node}，"
+                f"缺失产物: {missing} → 拒绝 resume，请 retry 当前 node",
+                flush=True,
+            )
+            raise HTTPException(
+                409,
+                f"当前节点({current_node})产物缺失或损坏({missing})，"
+                "请重试当前节点，不允许跳过向下流转。",
+            )
 
     # model_images 落盘（C1 专用）
     model_image_paths: list[str] = []
@@ -500,29 +535,47 @@ async def resume_task(
     else:
         # ---- 按 node 类型组装 Form 参数 ----
         resume_values: dict[str, Any] = {"node": node}
-        if node == "c1":
-            # C1：报告确认，也支持 redo 模式
-            if action and action != "confirm":
-                resume_values["decision"] = action  # "redo"
-                resume_values["redo_target"] = redo_target or "node1"
-                print(f"[resume] C1 redo → {redo_target or 'node1'}", flush=True)
-            else:
-                # C1 阶段无需传模特参考图，用户直接确认报告即可继续
+        _is_refine = (action == "refine")
+        _is_redo = (action == "redo")
+
+        # ---- 通用 refine / redo 拦截：C1/C2/C3 不支持完全 redo ----
+        if _is_redo and node in ("c1", "c2", "c3"):
+            print(f"[resume] ⚠️ node={node} 不支持完全重做（redo），自动降级为 refine", flush=True)
+            _is_redo = False
+            _is_refine = True
+
+        # refine 通用注入
+        if _is_refine:
+            if not refine_instruction:
+                raise HTTPException(400, f"node={node} action=refine 时 refine_instruction 为必传参数")
+            resume_values["decision"] = "refine"
+            resume_values["refine_instruction"] = refine_instruction.strip()
+            if refine_target:
+                resume_values["refine_target"] = refine_target
+            print(f"[resume] node={node} refine target={refine_target or 'default'} "
+                  f"instruction={refine_instruction.strip()[:60]}...", flush=True)
+
+        # redo 通用注入（仅 C4 redo→node4 保留）
+        if _is_redo:
+            if node != "c4":
+                raise HTTPException(400, f"node={node} 不支持完全重做（redo），请使用 action=refine")
+            target = redo_target or "node4"
+            if target != "node4":
+                raise HTTPException(400, f"C4 redo 仅支持 redo_target=node4，node2/node3 请使用 action=refine")
+            resume_values["decision"] = "redo"
+            resume_values["redo_target"] = target
+            print(f"[resume] C4 redo → {target}", flush=True)
+
+        # ---- confirm 模式：按 node 分支处理正常流转 ----
+        if not _is_refine and not _is_redo:
+            if node == "c1":
                 resume_values["confirmed_report"] = confirmed_report
                 if model_image_paths:
                     resume_values["model_images"] = model_image_paths
                 resume_values["ratio"] = ratio
                 if image_model:
                     resume_values["image_model"] = image_model
-        elif node == "c2":
-            # C2：选方案 + 每套方案的生成张数（per_scheme_count）
-            # 同时支持 redo 模式：action="redo" + redo_target="node1"/"node2"
-            if action and action != "confirm":
-                resume_values["decision"] = action  # "redo"
-                if redo_target:
-                    resume_values["redo_target"] = redo_target
-                print(f"[resume] C2 redo → {redo_target}", flush=True)
-            else:
+            elif node == "c2":
                 if image_model:
                     resume_values["image_model"] = image_model
                 if ratio:
@@ -534,7 +587,6 @@ async def resume_task(
                         print(f"[resume] C2 收到 selected_scheme_indices={indices}", flush=True)
                     except ValueError:
                         print(f"[resume] ⚠️ selected_scheme_indices 解析失败: {selected_scheme_indices}", flush=True)
-                # per_scheme_count: "3,1,2" —— 每套选中方案要生成几份 prompt
                 _psc = request.form.get("per_scheme_count")
                 if _psc:
                     try:
@@ -543,24 +595,13 @@ async def resume_task(
                         print(f"[resume] C2 收到 per_scheme_count={counts}", flush=True)
                     except ValueError:
                         print(f"[resume] ⚠️ per_scheme_count 解析失败: {_psc}", flush=True)
-        elif node == "c3":
-            # C3：确认提示词 — Form 不够用，前端应传 resume_json
-            # 同时支持 redo 模式：action="redo" + redo_target="node1"/"node2"/"node3"/"node4"
-            if action and action != "confirm":
-                resume_values["decision"] = action  # "redo"
-                if redo_target:
-                    resume_values["redo_target"] = redo_target
-                print(f"[resume] C3 redo → {redo_target}", flush=True)
-            else:
+            elif node == "c3":
                 if image_model:
                     resume_values["image_model"] = image_model
                 if ratio:
                     resume_values["ratio"] = ratio
-        elif node == "c4":
-            # C4：重做/确认 — decision "confirm"/"redo" + redo_target
-            resume_values["decision"] = action  # "confirm" / "redo"
-            if redo_target:
-                resume_values["redo_target"] = redo_target
+            elif node == "c4":
+                resume_values["decision"] = "confirm"
 
     # fire-and-forget DB: 清 interrupt + 写事件
     def _sync_prepare():
@@ -573,7 +614,9 @@ async def resume_task(
                     payload_json={
                         "node": node,
                         "model_image_count": len(model_image_paths),
-                        "action": action if node == "c3" else None,
+                        "action": action,
+                        "redo_target": redo_target,
+                        "refine_target": refine_target,
                     }
                 )
                 # 模特图路径持久化到 task_image（按 task_id 可查）
@@ -665,8 +708,8 @@ def list_tasks(
             marketing_goal=req.get("marketing_goal", ""),
             description=req.get("description", "")[:80],
             has_interrupt=bool(t.interrupt_json),
-            created_at=t.created_at.isoformat(),
-            updated_at=t.updated_at.isoformat(),
+            created_at=to_cn_iso(t.created_at),
+            updated_at=to_cn_iso(t.updated_at),
         ))
 
     return ok(TaskListResponse(
@@ -730,8 +773,8 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
                 node3=node3,
                 model_images=[],
                 output_images=[],
-                created_at=task.created_at.isoformat(),
-                updated_at=task.updated_at.isoformat(),
+                created_at=to_cn_iso(task.created_at),
+                updated_at=to_cn_iso(task.updated_at),
             ))
 
     # ── Step A: enrich node1.report_sections（历史 task 可能没有这个字段）───
@@ -838,8 +881,8 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         node3=node3,
         model_images=model_images,
         output_images=output_images,
-        created_at=task.created_at.isoformat(),
-        updated_at=task.updated_at.isoformat(),
+        created_at=to_cn_iso(task.created_at),
+        updated_at=to_cn_iso(task.updated_at),
     ))
 
 

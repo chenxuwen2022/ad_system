@@ -170,3 +170,10 @@ class TaskState(TypedDict, total=False):
     interrupt: Annotated[InterruptSnapshot | None, REDUCER]
     error: Annotated[TaskError | None, REDUCER]
     event_ids: Annotated[list[str], REDUCER]
+
+    # ---- 临时控制字段（refine / redo 专用，消费后自动清空）----
+    # refine 路径：interrupt resume(decision="refine") 写入，refine 节点消费后清 None
+    _refine_target: Annotated[str | None, REDUCER]       # "node1" | "node2" | "node3" | None
+    _refine_instruction: Annotated[str | None, REDUCER]  # 用户修改指令文本
+    # redo 路径：仅 C4 redo→node4 保留（其他节点都走 refine）
+    _redo_target: Annotated[str | None, REDUCER]         # "node4" | None
