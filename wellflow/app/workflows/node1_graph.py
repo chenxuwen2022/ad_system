@@ -2,7 +2,7 @@
 
 流式/非流式策略（根据 reasoning_effort 预先选择，不做运行时降级）：
   - effort == "low"        → 非流式 analyze_product
-  - effort == None / "none" / "medium" / "high" → 流式 stream_analyze_product
+  - effort == "close" / "medium" / "high" → 流式 stream_analyze_product
 流式路径下每个 delta token 立即 publish 到 SSE event_bus，前端实时逐字输出。
 """
 
@@ -102,7 +102,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
         content_chunk_index = 1
         publish(task_id, "report_chunk", {"chunk": full_report, "index": 1, "node": "node1"})
     else:
-        # ---- 流式路径（reasoning_effort=none/medium/high）----
+        # ---- 流式路径（reasoning_effort=close/medium/high）----
         print(f"[node1] 📌 reasoning_effort={effort} → 使用流式 VLM", flush=True)
         async for item in product_analyzer.stream_analyze_product(
             images=images,

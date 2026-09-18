@@ -1,16 +1,19 @@
 """意图分类器 —— LLM + 关键词快速路径，路由 /api/chat 输入到工作流意图。
 
-设计原则：
-  1. **节点优先**：大多数关键词规则都绑定到特定 current_node（c1/c2/c3/c4），
-     所以同样的短语在不同节点会有不同路由。例："重新生成图" 在 c3 → redo_generation，
-     在 c1 → backward_to_c1（因为 c1 还没图，用户一定是想重跑前面的分析）。
-  2. **backward > redo > edit**：任何明确说"回/重做第X步/重新分析"的短语，
-     必须排在 redo/confirm/edit 之前判断，否则会被后面的规则吞掉。
-  3. **LLM 兜底**：关键词返回 None 时再走 LLM，model = volcengine/doubao-seed-1-6-flash，
-     reason_effort=None（关闭推理提速），response_format=json_object。
-  4. **UTF-8 容错**：chat.py 入口做 latin-1→utf-8 纠正（macOS curl 常见）。
+设计原则（v2：用显式选择替代猜测）：
+  1. **方向词+第X步 是唯一精确定位 target 的路径**：用户说"回到第一步/重做第2步"时，
+     返回明确的 backward_to_nodeX（如果不允许则被守卫拦截）。
+  2. **所有其他 redo 类输入（bare "重做"、产物词、抱怨词、微调词）统一返回 "redo"**，
+     不再猜测 target_node。dispatch 层在 redo + 无 target_node 时发 SSE selection_required，
+     让前端弹 radio 让用户选。
+  3. **confirm / select_topics / start_task / chat_outside / skip / edit 保持原路径**，
+     不涉及 target_node 选择。
+  4. **redo 守卫**：redo 只允许在有 current_node 的情况下触发（c1/c2/c3/c4），
+     finalize 后（phase=done）禁止任何 redo。
+  5. **LLM 兜底**：关键词返回 None 时才走 LLM（doubao-seed-1-6-flash，reason_effort=close）。
+     LLM 也只判断 redo vs confirm vs 其他，不再猜 node。
 
-10 个意图 × 4 个 interrupt 节点的路由矩阵见 _try_keywords 注释。
+意图矩阵见 INTENT 类型注释；关键词短路优先级见 _try_keywords 注释。
 """
 
 from __future__ import annotations
@@ -38,7 +41,6 @@ def _fuzz_match(text: str, words: Iterable[str]) -> int:
     best = 0
     for w in words:
         lower = w.lower()
-        # WRatio 关注词序 + 否定词（"不要重做" vs "重做"）
         score = max(
             fuzz.WRatio(lower, t),
             fuzz.partial_ratio(lower, t),
@@ -46,7 +48,7 @@ def _fuzz_match(text: str, words: Iterable[str]) -> int:
         if score > best:
             best = score
             if best >= FUZZ_THRESHOLD:
-                break  # 够高就提前停
+                break
     return best
 
 
@@ -54,31 +56,75 @@ def _fuzz_any(text: str, words: Iterable[str]) -> bool:
     return _fuzz_match(text, words) >= FUZZ_THRESHOLD
 
 
+# ---------------------------------------------------------------------------
+# 意图全集
+# ---------------------------------------------------------------------------
+# v2 核心变化：
+#   - 所有 redo 类统一为 "redo"（不带 target_node，由前端 radio 选）
+#   - backward_to_nodeX 仅在方向词+第X步显式指定时返回（唯一精确路径）
+#   - redo_generation 废弃（并入 redo）
+#
+# c1/c2/c3 是 Node 完成后的 HITL interrupt 节点：
+#   c1: Node1(商品分析)完成 → 确认报告
+#   c2: Node2(方案)完成 → 选方案
+#   c3: Node3(Prompt)完成 → 确认 prompt
+#   c4: Node4(生图)完成 → 确认/重做（可回退 node2/node3/node4）
+#
+# backward_to_nodeX 是方向词+第X步显式指定的精确定位回退，
+# 由 graph 的 _route_cX_decision 清理下游 state。
+
 INTENT = Literal[
-    "start_task", "confirm_current", "edit_and_confirm_c1",
-    "select_topics", "redo_generation", "confirm_generation",
-    "backward_to_c1", "backward_to_c2", "backward_to_c3",
-    "skip_forward", "chat_outside", "unknown",
+    "start_task",                    # 无任务 → 开新任务
+    "confirm_current",               # c1/c2/c3 通用确认（好的/继续/ok）
+    "confirm_generation",            # 仅 c4：确认生图结果（满意/保存/结束）
+    "edit_and_confirm_c1",           # 仅 c1：自然语言修改报告
+    "select_topics",                 # 仅 c2：选方案（全选/用第1个）
+    "redo",                          # 重做但没说哪一步 → 前端弹 radio 选
+    "backward_to_node1",             # 方向词+第1步显式指定
+    "backward_to_node2",             # 方向词+第2步显式指定
+    "backward_to_node3",             # 方向词+第3步显式指定
+    "backward_to_node4",             # 方向词+第4步显式指定
+    "skip_forward",                  # 拦截跳步（不允许跳过）
+    "chat_outside",                  # 闲聊/非商拍
+    "unknown",                       # LLM 返回了不在白名单里的意图
 ]
 
-# 意图注册集合 —— LLM 返回值必须在里面
 ALLOWED_INTENTS: set[str] = {
-    "start_task", "confirm_current", "edit_and_confirm_c1",
-    "select_topics", "redo_generation", "confirm_generation",
-    "backward_to_c1", "backward_to_c2", "backward_to_c3",
-    "skip_forward", "chat_outside", "unknown",
+    "start_task",
+    "confirm_current",
+    "confirm_generation",
+    "edit_and_confirm_c1",
+    "select_topics",
+    "redo",
+    "backward_to_node1",
+    "backward_to_node2",
+    "backward_to_node3",
+    "backward_to_node4",
+    "skip_forward",
+    "chat_outside",
+    "unknown",
 }
 
 
+# ---------------------------------------------------------------------------
+# LLM System Prompt（意图列表与上面 INTENT 保持同步）
+# ---------------------------------------------------------------------------
+
 CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器。把用户输入归类到以下意图之一，返回合法 JSON。
 
-## 意图列表（按 interrupt 节点）
+## 节点定义（c1-c4）
+- c1: 商品分析完成，等用户确认报告
+- c2: 方案策划完成，等用户选方案
+- c3: Prompt 生成完成，等用户确认 prompt
+- c4: 生图完成，等用户确认或重做
+
+## 意图列表
 
 ### 所有节点都能返回
 - **chat_outside**: 闲聊/商拍无关（"你好"/"天气"/"帮我写代码"）
-- **backward_to_c1**: 明确想回到第1步（报告/商品分析）——"回到报告/重新分析/重来第一步/换商品"
-- **backward_to_c2**: 明确想回到第2步（选题/方案）——"回到选题/重新选方案/重来第二步/换方案"
-- **backward_to_c3**: 明确想回到第3步（提示词）——"回到提示词/重做提示词/重来第三步"
+- **redo**: 用户想重做或回退但没明确指定哪一步。包括但不限于：裸"重做/重来/换一张/不满意/不好看/再试/重新生成"，以及带了模糊产物词的输入（"重做方案"/"回到提示词"/"换一张图"）——这些都归 redo，不需要猜具体 node
+- **backward_to_node1/2/3/4**: 只有当用户用"回到第X步/重做第X步/前往第X步"这种格式**显式指定了步骤编号**时才返回。返回的 node 必须满足"目标步 ≤ 当前步"（只能回到已经跑过的节点）。c1 还永久锁定：backward_to_node1 仅允许在 c1
+- **skip_forward**: 试图跳过工作流步骤（"帮我出图"/"直接生成图"/"跳过分析"）
 
 ### 仅特定节点
 - c1（报告确认）:
@@ -87,13 +133,10 @@ CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器�
 - c2（选题确认）:
   - **confirm_current**: "好的/继续"（默认全选）
   - **select_topics**: "全选/用第1和第3"
-  - 想改 brief/方案 → **backward_to_c1** 或 **backward_to_c2**
-- c3（生图确认）:
-  - **redo_generation**: "重做这张/换一批/换一张/重新生成图"
-  - **confirm_generation**: "就这样/满意/保存/确认"
-- c4（任务完成）:
-  - **redo_generation**: "重新生成图/换一张"（回到 c3 重跑生图）
-  - **confirm_generation**: "保存/满意/结束"
+- c3（Prompt 确认）:
+  - **confirm_current**: "好的/继续/就这样/ok/可以"
+- c4（生图确认）:
+  - **confirm_generation**: "就这样/满意/保存/确认/结束"
 
 ### 无任务（无进行中 interrupt）
 - **start_task**: 有图 + 非闲聊 → 开始新任务
@@ -101,16 +144,13 @@ CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器�
 
 ### 禁止返回的意图
 - **skip_forward**: 跳过前置步骤直接往下走是不允许的，**绝不要返回 skip_forward**
-- edit_and_confirm_c1 仅在 **c1 节点**下有效，c2/c3/c4 下返回它会导致 dispatch 层丢数据
+- edit_and_confirm_c1 仅在 **c1 节点**下有效，其他节点下返回它会导致 dispatch 层丢数据
 
 ## 关键判定法则（请严格遵守）
-1. 当用户说"重新生成"但没有明确说"图"时，**根据 current_node 判断目标**：
-   - c1/c2 下一律走 backward（因为还没到生图）
-   - c3/c4 下若没说图也可能是 redo，但优先看有没有 backward 信号
-2. 当用户说"不行/不满意/再试/不好看"时，**永远不要返回 edit_and_confirm_c1**，
-   这是用户想重跑的信号，按 current_node 走 backward 或 redo
-3. "重新生成XXX"：如果 XXX 是"报告/分析/方案/选题"等前面步骤产物 → backward；
-   如果 XXX 是"图/图片" → redo_generation；无 XXX 则按 current_node 判断
+1. **redo 的范围**：凡是用户表达了"不满意/想重来/换一下/重新生成"这类意图，但没有用"第X步"显式指定步骤号的，一律归为 **redo**。不要猜 node
+2. **只有方向词+第X步**（"回到第一步/重做第2步/前往第3步"）才能返回 backward_to_nodeX
+3. "继续/进入" 单独出现且无步骤编号时 → confirm_current（或 confirm_generation 在 c4）
+4. "保存/结束/完成" 只有在 c4 下才是 confirm_generation
 
 ## 输出格式
 ```json
@@ -125,70 +165,119 @@ CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器�
 
 
 # ---------------------------------------------------------------------------
-# Step 编号映射（给 LLM prompt 里的参考）
+# 节点编号映射（给方向词+第X步 做判断用）
 # ---------------------------------------------------------------------------
-STEP_ORDER = ["s1", "s2", "s3", "s4", "s5", "s6"]
-STEP_NAMES = {
-    "s1": "商品分析", "s2": "报告确认(c1)", "s3": "选题生成",
-    "s4": "选题确认(c2)", "s5": "图片生成", "s6": "生图确认(c3)",
+# Node → 第几步 → interrupt 节点
+_STEP_ORDER: list[str] = ["node1", "node2", "node3", "node4"]
+_STEP_NUM: dict[str, int] = {"node1": 1, "node2": 2, "node3": 3, "node4": 4}
+_NODE_OF_STEP: dict[int, str] = {1: "c1", 2: "c2", 3: "c3", 4: "c4"}
+_INTENT_OF_NODE: dict[str, str] = {
+    "node1": "backward_to_node1",
+    "node2": "backward_to_node2",
+    "node3": "backward_to_node3",
+    "node4": "backward_to_node4",
 }
+_CURRENT_NODE_NUM: dict[str, int] = {"c1": 1, "c2": 2, "c3": 3, "c4": 4}
+
+# ---------------------------------------------------------------------------
+# 方向词 + "第X步" —— v2 唯一能精确定位 target_node 的路径
+# ---------------------------------------------------------------------------
+_DIRECTION_STEP_PATTERN = re.compile(r"第\s*([一二三四1-4])\s*步")
+_CN_STEP_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "1": 1, "2": 2, "3": 3, "4": 4}
+
+
+def _match_direction_step(text: str, current_node: str | None) -> str | None:
+    """方向词 + "第X步" → 返回 backward_to_nodeX / confirm_current / confirm_generation。
+
+    这是 v2 唯一能精确定位 target_node 的路径。
+    所有其他 redo 输入都走 redo → 前端 radio 选择。
+
+    规则：
+      目标步 < 当前节点的编号 → backward_to_node{目标步}（向前回退）
+      目标步 ≥ 当前节点编号  → 确认（向后走）
+    """
+    if current_node not in _CURRENT_NODE_NUM:
+        return None
+    m = _DIRECTION_STEP_PATTERN.search(text)
+    if not m:
+        return None
+    if _has_negation(text):
+        return None
+    if not _fuzz_any(text, [*_CONFIRM_DIRECTION_WORDS, *_BACKWARD_VERBS]):
+        return None
+    target = _CN_STEP_NUM[m.group(1)]
+    cur_num = _CURRENT_NODE_NUM[current_node]
+    if target < cur_num:
+        return _INTENT_OF_NODE[f"node{target}"]
+    # 向后走 → 确认（c4 用 confirm_generation）
+    if current_node == "c4":
+        return "confirm_generation"
+    return "confirm_current"
 
 
 # ---------------------------------------------------------------------------
-# 动作词典（统一用 rapidfuzz 模糊匹配，正则仅保留结构化提取）
+# redo 关键词 —— v2 所有 redo 类统一返回 redo，不再猜 target_node
 # ---------------------------------------------------------------------------
-# 每个词典 key 是路由意图组，value 是一组容忍说法变体的触发词。
-# 词典写得比原正则宽松（"识别"/"商品"/"报告" 单独也能命中），
-# 但所有 _match_* 函数都会叠加 current_node 守卫和"否定词排除"。
-
-# ---------------------------------------------------------------------------
-# 动作词典（统一用 rapidfuzz 模糊匹配，正则仅保留结构化提取）
-# ---------------------------------------------------------------------------
-# 每个路由组 = {动作词} × {产物词}，两边都命中才算匹配。
-# 这样 "重跑一下报告分析" / "再来一次方案" / "换个 prompt" 这类
-# 语序/说法变体都能命中，而不需要在词典里穷举每个组合。
-
-_BACKWARD_VERBS = ["重新", "重做", "重来", "重跑", "再", "换", "改", "回到", "退到", "撤回", "重新做", "重新出"]
-_REDO_VERBS = ["重新生成", "重做", "重来", "再来", "换", "再做", "再出", "再画", "重新画", "重做这张", "重来一张"]
-
-# 产物词 —— 明确指向各个节点的产物
-_C1_PRODUCTS = ["报告", "商品分析", "分析", "识别", "商品", "brief", "briefing", "第一步"]
-_C2_PRODUCTS = ["方案", "选题", "方向", "第二步"]
-_C3_PRODUCTS = ["提示词", "prompt", "第三步"]
-
-# 裸重做：短短语，必须在"不要/别"之外才命中（见 _match_bare_redo 的否定词过滤）
+# 动作词（redo 触发词）
+_BACKWARD_VERBS = ["重新", "重做", "重来", "重跑", "再", "换", "改", "回到", "退到",
+                   "撤回", "重新做", "重新出", "换一下"]
 _BARE_REDO_WORDS = ["重做", "重来", "重跑"]
+_REDO_VERBS = ["重新生成", "重做", "重来", "再来", "换", "再做", "再出", "再画",
+               "重新画", "重做这张", "重来一张"]
+# 抱怨词（redo 触发词，不需要配动词）
+_REDO_COMPLAINT_WORDS = ["不满意", "不太满意", "不好看", "不行", "画得不好",
+                         "这张不行", "不太行", "不好", "太差", "糟糕"]
+# 再试词
+_RETRY_WORDS = ["再试一下", "再试试", "再试", "重新试", "换一个", "换个"]
 
-# redo 抱怨词（独立命中，不需要配动词）
-_REDO_COMPLAINT_WORDS = ["不满意", "不太满意", "不好看", "不行", "画得不好", "这张不行", "不太行"]
+# c3 微调（旧版归 backward_to_node3，v2 归入 redo 让前端选）
+_C3_TUNE_WORDS = ["换背景", "换个背景", "换颜色", "换个颜色", "调暗", "调亮",
+                  "调一下", "换个风格", "换姿势", "换角度", "换滤镜", "修一下"]
 
-# confirm：短短语（去掉容易被 WRatio 误匹配的单字）+ 有方向的"进入第X步"
+# c4 改图（旧版归 redo_generation，v2 归入 redo 让前端选）
+_C4_EDIT_WORDS = ["换背景", "换颜色", "换色调", "调暗", "调亮", "调白", "调粉",
+                  "换个风格", "换姿势", "换pose", "换角度", "换滤镜", "换构图",
+                  "换光线", "换模特", "换衣服", "换服装", "改一下", "修一下",
+                  "再做一下", "重新画"]
+
+
+# ---------------------------------------------------------------------------
+# confirm / select_topics / skip / chat_outside / start_task —— 不变
+# ---------------------------------------------------------------------------
+
+# confirm：短短语（去掉容易被 WRatio 误匹配的单字）
 _CONFIRM_SHORT_WORDS = [
     "好的", "ok", "没问题", "通过", "就这样", "确认", "可以",
-    "可以了", "没问题了", "就这样吧", "满意", "确定", "没错", "保存", "结束",
-    "继续",
-    # 去掉单字 "行" / "过" / "走" —— WRatio 会把 "跳过"/"过一下" 里的单字误命中
+    "可以了", "没问题了", "就这样吧", "满意", "确定", "没错",
+    "继续", "下一步", "下一个",
+    "很好", "不错", "不错的", "行", "行的", "挺好", "挺好的",
+    "棒", "很棒", "好", "对", "好呀", "好啊",
 ]
-_CONFIRM_DIRECTION_WORDS = ["继续", "进入", "走到", "来到", "前往"]
+# confirm 专属 c4 入库/保存词
+_CONFIRM_SAVE_WORDS = ["保存", "结束", "完成", "导出", "落库", "入库", "采纳", "采用"]
+# 单字/极短正向确认词 —— c4 专属
+_C4_CONFIRM_SHORT = ["好", "对", "行", "落", "可", "棒"]
 
-# select_topics："全选" 用完全匹配（避免 "全选换一批" 这种被误吞）
+# 方向词（带"第X步"时用）
+_CONFIRM_DIRECTION_WORDS = ["继续", "进入", "走到", "来到", "前往", "回到"]
+
+# select_topics
 _SELECT_ALL_WORDS = ["全选", "都要", "全部方案", "所有方案", "每个方案"]
 
-# skip_forward：必须在闲聊之前拦截
-_SKIP_WORDS = ["跳过", "绕过去", "省掉", "不用分析", "直接出图", "直接生成图", "直接做图", "直接画图", "帮我出图", "帮我做图"]
-
-# c3 微调（归 redo）
-_C3_TUNE_WORDS = ["换背景", "换个背景", "换颜色", "换个颜色", "调暗", "调亮", "调一下", "换个风格", "换姿势", "换角度", "换滤镜", "修一下"]
-
-# c4 微调/改图（归 redo_generation）—— 产物 + 修改动作
-_C4_EDIT_WORDS = ["换背景", "换颜色", "换色调", "调暗", "调亮", "调白", "调粉", "换个风格", "换姿势", "换 pose", "换角度", "换滤镜", "换构图", "换光线", "换模特", "换衣服", "换服装", "改一下", "修一下", "再做一下", "重新画"]
+# skip_forward（必须在闲聊之前拦截）
+_SKIP_WORDS = ["跳过", "绕过去", "省掉", "不用分析", "直接出图", "直接生成图",
+               "直接做图", "直接画图", "帮我出图", "帮我做图"]
 
 # 纯文本 start_task 兜底（无图）
-_START_TASK_TEXT_WORDS = ["我想做商拍", "帮我做商拍", "我要做商拍", "商拍图", "广告图", "商品主图", "出图", "做图", "画出来", "生成图片"]
+_START_TASK_TEXT_WORDS = ["我想做商拍", "帮我做商拍", "我要做商拍", "商拍图",
+                          "广告图", "商品主图", "出图", "做图", "画出来", "生成图片"]
 
 # 闲聊拦截（最高优先级）
-_CHAT_OUTSIDE_SHORT_WORDS = ["你好", "hi", "hello", "在吗", "喂", "嘿", "嗨", "你是谁", "你叫什么"]
-_CHAT_OUTSIDE_TOPIC_WORDS = ["天气", "今天怎么样", "几点了", "现在时间", "日期", "写 python", "写 java", "写代码", "帮我写代码", "推荐电影", "推荐书", "推荐音乐", "推荐餐厅"]
+_CHAT_OUTSIDE_SHORT_WORDS = ["你好", "hi", "hello", "在吗", "喂", "嘿", "嗨",
+                              "你是谁", "你叫什么"]
+_CHAT_OUTSIDE_TOPIC_WORDS = ["天气", "今天怎么样", "几点了", "现在时间", "日期",
+                              "写 python", "写 java", "写代码", "帮我写代码",
+                              "推荐电影", "推荐书", "推荐音乐", "推荐餐厅"]
 
 # --- 结构提取正则（只负责抽数字/选项，不做意图判定）---
 _SELECT_INDICES_PATTERNS = [
@@ -201,7 +290,8 @@ _SELECT_INDICES_PATTERNS = [
 _TONE_SUFFIXES = ("吧", "啊", "哦", "啦", "呀", "哈", "呢", "咧", "咯", "嘞", "噻")
 
 # --- 否定词：前置出现时，redo 动作词命中不算 ---
-_NEGATION_PREFIXES = ("不要", "别", "不用", "无需", "算了", "算了吧", "暂时不", "先不要")
+_NEGATION_PREFIXES = ("不要", "别", "不用", "无需", "算了", "算了吧",
+                      "暂时不", "先不要")
 
 
 def _strip_tone(text: str) -> str:
@@ -213,101 +303,104 @@ def _strip_tone(text: str) -> str:
     return t
 
 
-# ---------------------------------------------------------------------------
-# 匹配器 —— 每个返回 bool 或具体数据，caller 决定是否短路
-# ---------------------------------------------------------------------------
-
 def _has_negation(text: str) -> bool:
     return any(text.startswith(n) or n in text for n in _NEGATION_PREFIXES)
 
 
-def _match_backward_c1(text: str, current_node: str | None) -> bool:
-    if current_node not in ("c1", "c2", "c3", "c4"):
-        return False
-    if _has_negation(text):
-        return False
-    # 动作动词 × C1 产物词 —— 两边都命中才算
-    return _fuzz_any(text, _BACKWARD_VERBS) and _fuzz_any(text, _C1_PRODUCTS)
+# ---------------------------------------------------------------------------
+# redo 匹配器 —— v2 统一返回 redo（不带 target_node）
+# ---------------------------------------------------------------------------
 
+def _match_redo_any(text: str, current_node: str | None) -> bool:
+    """v2 redo 判定：只要表达了"想重做/回退"的意思就返回 True。
 
-def _match_backward_c2(text: str, current_node: str | None) -> bool:
-    if current_node not in ("c1", "c2", "c3", "c4"):
-        return False
-    if _has_negation(text):
-        return False
-    return _fuzz_any(text, _BACKWARD_VERBS) and _fuzz_any(text, _C2_PRODUCTS)
+    匹配范围（统一归 redo，不分 node）：
+      1. bare_redo（短短语 ≤4字）："重做"、"重来"
+      2. 所有 redo 动作词："重新生成"、"换一下"、"再出一张"
+      3. 抱怨词："不满意"、"不好看"、"不太行"
+      4. 再试词："再试一下"、"重新试"
+      5. c3 微调 / c4 改图词
+      6. backward 动词（"回到"、"退到"、"撤回"）
 
-
-def _match_backward_c3(text: str, current_node: str | None) -> bool:
-    if current_node not in ("c1", "c2", "c3", "c4"):
-        return False
-    if _has_negation(text):
-        return False
-    return _fuzz_any(text, _BACKWARD_VERBS) and _fuzz_any(text, _C3_PRODUCTS)
-
-
-def _match_bare_redo(text: str, current_node: str | None) -> str | None:
-    """裸'重做'——短短语 + 不含否定词。根据 current_node 动态路由。"""
-    if current_node not in ("c1", "c2", "c3", "c4"):
-        return None
-    if _has_negation(text):
-        return None
-    # 只匹配短短语（<= 4 字），避免吞 "重新生成方案" 这种带后缀的
-    t = _strip_tone(text).strip()
-    if len(t) > 4:
-        return None
-    if not _fuzz_any(t, _BARE_REDO_WORDS):
-        return None
-    return {
-        "c1": "backward_to_c1",
-        "c2": "backward_to_c1",
-        "c3": "backward_to_c2",
-        "c4": "backward_to_c3",
-    }[current_node]
-
-
-def _match_redo(text: str, current_node: str | None) -> bool:
-    """redo_generation —— 明确指向重做生图。
-
-    只有 c3 / c4 节点才返回 redo_generation。
-    两条命中路径：
-      1. 抱怨词（"不满意"/"不好看"/"不太行"）独立命中
-      2. redo 动作动词 × 图类产物词 —— 两边都命中才算
+    守卫：
+      - 有否定词不算
+      - 没有 current_node（任务没开始）不算 redo
     """
-    if current_node not in ("c3", "c4"):
+    if not current_node:
         return False
     if _has_negation(text):
         return False
-    # 抱怨词独立命中（c3/c4 守卫已保证上下文正确）
-    if _fuzz_any(text, _REDO_COMPLAINT_WORDS):
+    t = _strip_tone(text).strip()
+
+    # 1. bare_redo（短短语 ≤4字）
+    if len(t) <= 4 and _fuzz_any(t, _BARE_REDO_WORDS):
         return True
-    # 动作动词 × 图产物 组合命中
-    _redo_products = ["图", "画", "图片", "生图", "出图", "这张", "这些"]
-    if _fuzz_any(text, _REDO_VERBS) and _fuzz_any(text, _redo_products):
+
+    # 2. 抱怨词独立命中（≥2字，防止单字误匹配）
+    for w in _REDO_COMPLAINT_WORDS:
+        if len(w) >= 2 and _fuzz_any(text, [w]):
+            return True
+
+    # 3. redo 动作词
+    if _fuzz_any(text, _REDO_VERBS):
         return True
+
+    # 4. 再试词
+    if _fuzz_any(text, _RETRY_WORDS):
+        return True
+
+    # 5. c3 微调 / c4 改图（归 redo 让前端选）
+    if _fuzz_any(text, _C3_TUNE_WORDS) or _fuzz_any(text, _C4_EDIT_WORDS):
+        return True
+
+    # 6. backward 动词（"回到"/"退到"/"撤回" 等）—— 没配产物词也归 redo
+    if _fuzz_any(text, _BACKWARD_VERBS):
+        # 排除"回到好的"/"继续"这种 confirm 语境
+        if not _fuzz_any(text, _CONFIRM_SHORT_WORDS):
+            return True
+
     return False
 
 
+# ---------------------------------------------------------------------------
+# confirm
+# ---------------------------------------------------------------------------
+
 def _match_confirm(text: str, current_node: str | None) -> bool:
+    """confirm —— 短短语完全相等匹配（避免 WRatio 把 "不满意" 里的 "满意" 误吞）。"""
     if not current_node:
         return False
     t = _strip_tone(text).strip()
-    # 短短语：完全相等匹配（避免 WRatio 把 "不满意" 里的 "满意" 吞掉 confirm）
     if t.lower() in {w.lower() for w in _CONFIRM_SHORT_WORDS}:
-        return True
-    if t in ("下一步", "下一个"):
-        return True
-    # "继续/进入/走到..." —— 方向动词本身即确认信号（否定句除外）。
-    # 不再强制要求带"第X步"：单独的"继续推进"/"进入下一步"也是确认。
-    if not _has_negation(t) and _fuzz_any(t, _CONFIRM_DIRECTION_WORDS):
         return True
     return False
 
+
+def _match_confirm_save(text: str, current_node: str | None) -> bool:
+    """confirm_generation 的 c4 专属正向词 —— 入库/保存/结束/落库/采纳等。
+
+    这些词在 c1/c2/c3 下不出现（"保存"在 c1 下可能是 edit_and_confirm_c1），
+    但在 c4 下明确指向确认入库。
+    另外极短正向词（"好"/"对"/"行"/"棒"）也只在 c4 下生效——c1/c2/c3 下容易误吞。
+    """
+    if current_node != "c4":
+        return False
+    if _fuzz_any(text, _CONFIRM_SAVE_WORDS):
+        return True
+    # 单字/极短正向词在 c4 下额外放行
+    t = _strip_tone(text).strip()
+    if t in _C4_CONFIRM_SHORT:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# select_topics（仅 c2）
+# ---------------------------------------------------------------------------
 
 def _match_select_all(text: str, current_node: str | None) -> bool:
     if current_node != "c2":
         return False
-    # "全选" 类用完全相等判断，避免 "全选换一批" 被提前吞掉 redo
     t = _strip_tone(text).strip()
     return t in _SELECT_ALL_WORDS
 
@@ -325,20 +418,12 @@ def _match_select_indices(text: str, current_node: str | None) -> list[int] | No
     return None
 
 
-def _match_c3_tune(text: str) -> bool:
-    return _fuzz_any(text, _C3_TUNE_WORDS)
-
-
-def _match_c4_edit(text: str) -> bool:
-    return _fuzz_any(text, _C4_EDIT_WORDS)
-
+# ---------------------------------------------------------------------------
+# skip / chat_outside / start_task
+# ---------------------------------------------------------------------------
 
 def _match_skip(text: str) -> bool:
     return _fuzz_any(text, _SKIP_WORDS)
-
-
-def _match_start_task_text(text: str) -> bool:
-    return _fuzz_any(text, _START_TASK_TEXT_WORDS)
 
 
 def _match_chat_outside(text: str) -> bool:
@@ -350,8 +435,119 @@ def _match_chat_outside(text: str) -> bool:
     return False
 
 
+def _match_start_task_text(text: str) -> bool:
+    return _fuzz_any(text, _START_TASK_TEXT_WORDS)
+
+
 # ---------------------------------------------------------------------------
-# 主入口 —— 关键词优先，否则走 LLM
+# 意图 × current_node 配对合法性守卫 —— 所有返回值必经此关
+# ---------------------------------------------------------------------------
+# redo 守卫：所有有 current_node 的情况（c1/c2/c3/c4）都允许 redo
+# —— 让前端 radio 选。finalize 后由 chat.py dispatch 层额外拦截。
+#
+# backward_to_nodeX 守卫 = 严格的 "target_node_num ≤ current_node_num"
+# —— 只能回退到已经跑过的节点。
+#
+# node1 永久锁定：backward_to_node1 只能在 c1 还没确认报告时触发。
+#
+# redo_generation 已废弃（并入 redo）。
+
+_INTENT_ALLOWED_CURRENT_NODES: dict[str, tuple[str, ...]] = {
+    # redo：所有 cX 都允许 + 允许 current_node=None 时走 redo
+    # （graph_context.py 的 state_products 兜底会尽量把 current_node 推出来，
+    #  但如果真推不出来，也不要硬拦 redo——让它降级成 chat_outside 是最糟糕的 UX）
+    "redo": (None, "c1", "c2", "c3", "c4"),
+    # 回退到 nodeX —— target 必须 ≤ current（只能回到已经走过的节点）
+    "backward_to_node1": ("c1",),        # 1 ≤ 1 且 node1 永久锁定
+    "backward_to_node2": ("c2", "c3", "c4"),
+    "backward_to_node3": ("c3", "c4"),
+    "backward_to_node4": ("c4",),
+    # confirm_current 在 c1/c2/c3 通用确认阶段
+    "confirm_current": ("c1", "c2", "c3"),
+    # c4 专属
+    "confirm_generation": ("c4",),
+    # edit / select 只在对应节点
+    "edit_and_confirm_c1": ("c1",),
+    "select_topics": ("c2",),
+}
+
+
+def _validate_intent_node(
+    intent: str, current_node: str | None,
+) -> bool:
+    """校验 intent 在给定 current_node 下是否合法。
+
+    当 allowed 表里包含 None 时，current_node=None 也被认为是合法的
+    （比如 redo：虽然我们会尽量用 state 产物兜底推 current_node，
+    但真推不出来时也不要硬拦）。
+    """
+    allowed = _INTENT_ALLOWED_CURRENT_NODES.get(intent)
+    if allowed is None:
+        return True
+    if current_node is None:
+        return None in allowed
+    return current_node in allowed
+
+
+def _enforce_intent_guard(
+    result: dict[str, Any], current_node: str | None,
+) -> dict[str, Any]:
+    """对意图分类结果强制应用守卫表。
+
+    如果 intent 在当前 current_node 下不合法，返回 blocked_result（带友好消息），
+    而不是降级 chat_outside——用户应该明确知道"为什么不行"。
+    """
+    intent = result.get("intent", "")
+    if _validate_intent_node(intent, current_node):
+        return result
+
+    # 构建给用户的友好提示 —— 带上"为什么不允许"的上下文
+    _FRIENDLY_TIPS: dict[str, str] = {
+        # redo 相关：current_node 决定具体原因
+        "redo": f"当前在 {current_node} 阶段，"
+                + {
+                    "c1": "商品分析报告尚未确认，可直接在当前步骤修改或确认后继续。",
+                    "c2": "商品分析报告已确认永久锁定，可回退到方案策划/提示词/生图等后续步骤重新执行。",
+                    "c3": "商品分析报告已确认永久锁定，可回退到方案策划或提示词重新执行。",
+                    "c4": "商品分析报告已确认永久锁定，可回退到方案策划、提示词或图像生成。",
+                    None: "当前任务已结束或尚未开始，暂无法重做。如想重新生成，请开启新任务。",
+                }.get(current_node or "", "当前阶段不允许此操作。"),
+        # backward_to_nodeX 精确回退
+        "backward_to_node1": f"商品分析报告已在 c1 阶段确认并进入方案策划，"
+                             f"node1 永久锁定不可重跑。如需重做请从方案策划重新开始。",
+        "backward_to_node2": f"当前在 {current_node} 阶段，"
+                             f"尚未到达方案策划（第2步），无法回退。请先确认前面的步骤。",
+        "backward_to_node3": f"当前在 {current_node} 阶段，"
+                             f"尚未到达提示词生成（第3步），无法回退。请先确认前面的步骤。",
+        "backward_to_node4": f"当前在 {current_node} 阶段，"
+                             f"尚未到达图像生成（第4步），无法回退。请先确认前面的步骤。",
+        # 其他
+        "confirm_current": f"当前阶段（{current_node}）不支持直接确认，"
+                           f"可能需要先选择方案或编辑报告后再继续。",
+        "edit_and_confirm_c1": f"编辑报告仅在 c1 阶段允许，"
+                               f"当前在 {current_node}，报告已确认进入后续步骤。",
+        "select_topics": f"选择方案仅在 c2 阶段允许，"
+                         f"当前在 {current_node}。",
+    }
+    reason = _FRIENDLY_TIPS.get(
+        intent,
+        f"操作 {intent} 在当前阶段（{current_node}）不允许。",
+    )
+    print(f"[intent] 🛡️ 意图守卫拦截: intent={intent} 在 current_node={current_node}，提示: {reason}",
+          flush=True)
+    return {
+        "intent": "chat_outside",
+        "reasoning": f"意图守卫拦截: {intent} 在 {current_node} 下不允许",
+        "selected_indices": result.get("selected_indices"),
+        "blocked_step": result.get("blocked_step"),
+        "parsed_content": result.get("parsed_content"),
+        "blocked": True,
+        "blocked_reason": reason,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 主入口 —— 关键词优先，否则走 LLM，出口统一过守卫
 # ---------------------------------------------------------------------------
 
 async def classify(
@@ -367,11 +563,12 @@ async def classify(
         message, has_task=has_task, current_node=current_node, has_images=has_images,
     )
     if kw:
+        kw = _enforce_intent_guard(kw, current_node)
         print(f"[intent] 关键词命中 → {kw.get('intent')}", flush=True)
         return kw
 
     try:
-        return await _classify_via_llm(
+        result = await _classify_via_llm(
             message,
             has_task=has_task,
             current_node=current_node,
@@ -379,6 +576,7 @@ async def classify(
             has_images=has_images,
             product_description=product_description,
         )
+        return _enforce_intent_guard(result, current_node)
     except Exception as exc:
         print(f"[intent] LLM 分类失败 → fallback chat_outside: {exc}", flush=True)
         return {
@@ -392,73 +590,66 @@ def _try_keywords(
 ) -> dict[str, Any] | None:
     """关键词快速路径 —— 9 步短路，命中即返回。
 
-    优先级设计：
-      Step 0/1  backward/bare_redo —— 最先匹配，因为 "重做"/"重新生成XXX" 这种
-                  短语很容易被后面的 redo/confirm/edit 误吞。backward 永远优先。
-      Step 2    confirm             —— 极短词，只在有 current_node 时生效
-      Step 3    redo_generation     —— 必须 c3/c4 节点 + 有图信号
-      Step 4    select_topics       —— 只在 c2
-      Step 5    skip_forward        —— 必须在闲聊之前，否则会被 "帮我出图" 这种 skip 吞
-      Step 6    chat_outside        —— 最高优先级的闲聊拦截
-      Step 7    start_task 兜底    —— 无 task + 有图 + 非闲聊
-      Step 8    start_task 纯文本  —— 无 task + 无图 + 商拍关键词
-      Step 9    节点专属 edit 兜底 —— c1 自然语言 → edit_and_confirm_c1;
-                                     c3 微调 → redo_generation;
-                                     c4 微调 → redo_generation;
-                                     c2 改 brief → backward_to_c1
+    v2 优先级设计：
+      Step 0  空消息
+      Step 1  方向词+第X步          —— 唯一精确定位 target_node 的路径
+      Step 2  confirm               —— 短短语完全相等；c4 保存词→confirm_generation
+      Step 3  redo（统一，不带 node） —— 所有 redo 类输入归 redo，前端弹 radio
+      Step 4  select_topics         —— 仅 c2
+      Step 5  skip_forward          —— 必须在闲聊之前拦截
+      Step 6  chat_outside          —— 闲聊拦截
+      Step 7  start_task 兜底
+      Step 8  节点专属兜底          —— c1 自然语言→edit_and_confirm_c1；c2→None 走 LLM
+
+    注意：redo 放到 confirm 之后 —— 避免"不满意"里的"满意"被 confirm 误吞。
     """
     text = message.strip()
 
-    # ────────────────────────────────────── 空消息 ──────────────────────────────────────
+    # ────────────────────────────────────── Step 0: 空消息 ──────────────────────────────────────
     if not text:
         if not has_task and has_images:
             return {"intent": "start_task", "reasoning": "空消息+有图+无任务",
                     "selected_indices": None, "blocked_step": None, "parsed_content": ""}
         if has_task and current_node:
-            return {"intent": "confirm_current", "reasoning": "空消息+在interrupt→默认确认",
+            intent = "confirm_generation" if current_node == "c4" else "confirm_current"
+            return {"intent": intent, "reasoning": "空消息+在 interrupt→默认确认",
                     "selected_indices": None, "blocked_step": None, "parsed_content": ""}
         return {"intent": "chat_outside", "reasoning": "空消息",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
-    # ────────────────────────────────────── Step 0: bare_redo ──────────────────────────────────────
-    # "重做"/"重来"/"重新" —— 单字完全匹配（^锚定，避免吞 "重新生成方案"）
-    bare = _match_bare_redo(text, current_node)
-    if bare:
-        return {"intent": bare,
-                "reasoning": f"关键词: 裸重做→动态路由",
-                "selected_indices": None, "blocked_step": None, "parsed_content": None}
-
-    # ────────────────────────────────────── Step 1: backward 三件套 ──────────────────────────────────────
-    # backward 永远在 redo 之前 —— 任何 "回到报告"/"重新分析"/"改方案" 都不能被 redo 吞
-    if _match_backward_c1(text, current_node):
-        return {"intent": "backward_to_c1",
-                "reasoning": "关键词: 目标=报告/商品分析/第一步",
-                "selected_indices": None, "blocked_step": None, "parsed_content": None}
-    if _match_backward_c2(text, current_node):
-        return {"intent": "backward_to_c2",
-                "reasoning": "关键词: 目标=选题/方案/第二步",
-                "selected_indices": None, "blocked_step": None, "parsed_content": None}
-    if _match_backward_c3(text, current_node):
-        return {"intent": "backward_to_c3",
-                "reasoning": "关键词: 目标=提示词/第三步",
+    # ────────────────────────────────────── Step 1: 方向词+"第X步" ──────────────────────────────────────
+    # v2 唯一能精确定位 target_node 的路径
+    direction_step = _match_direction_step(text, current_node)
+    if direction_step:
+        if direction_step.startswith("backward_to_node"):
+            return {"intent": direction_step,
+                    "reasoning": "关键词: 方向词+第X步,目标在当前之前→精确回退",
+                    "selected_indices": None, "blocked_step": None, "parsed_content": None}
+        return {"intent": direction_step,
+                "reasoning": "关键词: 方向词+第X步,目标在当前之后→确认继续",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
     # ────────────────────────────────────── Step 2: confirm ──────────────────────────────────────
-    # 极短词（剥离语气词后）
+    # 先于 redo："好的/继续" 是确认不是 redo
+    # 但抱怨词含"满意"（"不满意"）—— redo 在这之后，避免 confirm 误吞
     if _match_confirm(text, current_node):
-        if current_node in ("c3", "c4"):
+        if current_node == "c4":
             return {"intent": "confirm_generation",
-                    "reasoning": "关键词: 确认生图结果/保存",
+                    "reasoning": "关键词: c4 下确认生图结果",
                     "selected_indices": None, "blocked_step": None, "parsed_content": None}
         return {"intent": "confirm_current",
                 "reasoning": "关键词: 确认当前步骤继续",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
+    if _match_confirm_save(text, current_node):
+        return {"intent": "confirm_generation",
+                "reasoning": "关键词: c4 下保存/结束生图",
+                "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
-    # ────────────────────────────────────── Step 3: redo_generation ──────────────────────────────────────
-    # 必须 c3/c4 节点 + 有图信号（"重做图"/"重新生成图"/"不满意"）
-    if _match_redo(text, current_node):
-        return {"intent": "redo_generation",
-                "reasoning": "关键词: 重做生图（c3/c4 节点）",
+    # ────────────────────────────────────── Step 3: redo（统一，不带 node） ──────────────────────────────────────
+    # v2：所有 redo 类输入统一归 redo，dispatch 层发 selection_required 让前端选
+    if _match_redo_any(text, current_node):
+        return {"intent": "redo",
+                "reasoning": "关键词: redo 触发词→统一 redo，让前端选目标节点",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
     # ────────────────────────────────────── Step 4: select_topics（仅 c2） ──────────────────────────────────────
@@ -473,8 +664,6 @@ def _try_keywords(
                 "blocked_step": None, "parsed_content": None}
 
     # ────────────────────────────────────── Step 5: skip_forward ──────────────────────────────────────
-    # 允许在任何节点触发（包括无节点时）—— 命中即拦截，告诉用户不能跳
-    # 放这步是因为 skip 信号里有"帮我出图"这种短语，容易被后面的 start_task 或 chat_outside 吞
     if _match_skip(text):
         step_idx = 1
         step_name = "商品分析"
@@ -490,31 +679,21 @@ def _try_keywords(
                 "parsed_content": None}
 
     # ────────────────────────────────────── Step 6: chat_outside ──────────────────────────────────────
-    # 最高优先级闲聊拦截 —— 有/无任务都生效
     if _match_chat_outside(text):
         return {"intent": "chat_outside",
                 "reasoning": "关键词拦截: 闲聊/非商拍",
                 "selected_indices": None, "blocked_step": None, "parsed_content": None}
 
-    # ────────────────────────────────────── Step 7: start_task（无 task + 有图） ──────────────────────────────────────
+    # ────────────────────────────────────── Step 7: start_task 兜底 ──────────────────────────────────────
     if not has_task and has_images:
         return {"intent": "start_task", "reasoning": "关键词兜底: 无 task + 有图",
                 "selected_indices": None, "blocked_step": None, "parsed_content": text}
-
-    # ────────────────────────────────────── Step 8: start_task（无 task + 无图 + 商拍关键词） ──────────────────────────────────────
-    # 场景：用户只打了一句"我想做商拍"就回车 —— 没有图也没有闲聊 → 当作开始任务请求
-    # 前端拿到后会自动提示用户上图（start_task dispatch 时前端会 showUploadPanel）
     if not has_task and _match_start_task_text(text):
         return {"intent": "start_task", "reasoning": "关键词: 纯文本+商拍相关→开始任务",
                 "selected_indices": None, "blocked_step": None, "parsed_content": text}
 
-    # ────────────────────────────────────── Step 9: 节点专属兜底 ──────────────────────────────────────
-    # 走到这里说明：有 current_node 但上面 8 步都没命中 → 看节点专属规则
-
+    # ────────────────────────────────────── Step 8: 节点专属兜底 ──────────────────────────────────────
     if current_node == "c1":
-        # c1 下的自然语言 —— 默认当作编辑报告（改 brief/品牌定位/用户群...）
-        # 但如果用户说的话里含有 redo/抱怨/图相关信号，让 LLM 去判断更安全
-        # （c1 还没图，用户说"重新生成图"可能是想回 c1 重跑、也可能想跳过 → LLM 知道 context）
         _C1_REDO_SIGNAL_WORDS = [
             "图", "画", "背景", "颜色", "色调", "姿势", "风格", "图片",
             "重做", "重新生成", "重新做", "重新出", "再试", "再做", "再出", "再来",
@@ -526,29 +705,7 @@ def _try_keywords(
                 "reasoning": "c1 节点自然语言输入→编辑报告",
                 "selected_indices": None, "blocked_step": None, "parsed_content": text}
 
-    if current_node == "c3":
-        # c3 下的微调（换背景/调暗/换风格）—— 归 redo（让用户基于当前图调）
-        if _match_c3_tune(text):
-            return {"intent": "redo_generation",
-                    "reasoning": "c3 微调描述→重做生图",
-                    "selected_indices": None, "blocked_step": None, "parsed_content": text}
-
-    if current_node == "c4":
-        # c4 下还想改图 —— 归 redo_generation（让 graph 回到 c3 resume redo）
-        # 或者如果明显是想回到更早的步骤，会在 backward 里被命中（Step 1）
-        if _match_c4_edit(text):
-            return {"intent": "redo_generation",
-                    "reasoning": "c4 下改图描述→重做生图（回到 c3）",
-                    "selected_indices": None, "blocked_step": None, "parsed_content": text}
-
-    if current_node == "c2":
-        # c2 下还没命中任何规则 —— 用户可能想改 brief/改方案
-        # dispatch 层 chat.py 对 edit_and_confirm_c1 只在 c1 分支处理，
-        # c2 下发 edit_and_confirm_c1 会导致丢数据 → 走 LLM 兜底
-        # 让 LLM 按 current_node=c2 去判断（大概率会给 backward_to_c1/c2 或 redo）
-        return None
-
-    # 兜底 None → 让 LLM 处理
+    # c2/c3/c4 走到这里没命中任何规则 —— 交给 LLM
     return None
 
 
@@ -586,7 +743,7 @@ async def _classify_via_llm(
         user=user_prompt,
         response_format={"type": "json_object"},
         temperature=0.3,
-        reasoning_effort=None,  # 简单分类关掉推理提速
+        reasoning_effort="close",
     )
 
     try:
@@ -614,8 +771,15 @@ async def _classify_via_llm(
 
 
 # ---------------------------------------------------------------------------
-# 跳步检测工具
+# 跳步检测工具（来自旧版，保留兼容）
 # ---------------------------------------------------------------------------
+
+STEP_ORDER = ["s1", "s2", "s3", "s4", "s5", "s6"]
+STEP_NAMES = {
+    "s1": "商品分析", "s2": "报告确认(c1)", "s3": "选题生成",
+    "s4": "选题确认(c2)", "s5": "Prompt生成", "s6": "生图确认(c3/c4)",
+}
+
 
 def detect_skip(target_step: str, completed_mask: list[bool]) -> dict[str, Any] | None:
     if target_step not in STEP_ORDER:
@@ -639,12 +803,13 @@ def compute_completed_mask(
     n1 = graph_state.get("node1", {}) if graph_state else {}
     n2 = graph_state.get("node2", {}) if graph_state else {}
     n3 = graph_state.get("node3", {}) if graph_state else {}
+    confirmed = graph_state.get("confirmations", {}) if graph_state else {}
 
     if n1.get("product_insight"):
         mask[0] = True
-    if n2.get("generate_prompts") or interrupt_node in ("c2", "c3"):
+    if confirmed.get("c1") or n2.get("schemes") or interrupt_node in ("c2", "c3", "c4"):
         mask[1] = True
-    if n2.get("generate_prompts"):
+    if n2.get("schemes"):
         mask[2] = True
     if (n3.get("outputs") or n3.get("work_items")) or interrupt_node == "c3":
         mask[3] = True
@@ -659,3 +824,45 @@ def compute_completed_mask(
                 mask[i] = True
 
     return mask
+
+
+# ---------------------------------------------------------------------------
+# 工具：生成当前节点允许的 redo 目标选项
+# ---------------------------------------------------------------------------
+
+def build_redo_options(current_node: str | None) -> list[dict[str, str]]:
+    """根据 current_node 生成 allowed redo target 选项列表（供前端 radio 渲染）。
+
+    复用 _INTENT_ALLOWED_CURRENT_NODES 的守卫逻辑：
+      c1 → [{label: "商品分析（第1步）", value: "node1"}]           # 1 选项，dispatch 自动执行
+      c2 → [{label: "方案策划（第2步）", value: "node2"}]           # 1 选项，dispatch 自动执行（node1 已锁定）
+      c3 → [{node2, node3}]                                          # 2 选项，前端弹 radio
+      c4 → [{node2, node3, node4}]                                  # 3 选项，前端弹 radio
+      None → []                                                       # 无任务，不允许 redo
+
+    注意：node1 永久锁定——一旦过了 c1（进入 c2/c3/c4）就不可再重跑，
+    所以选项里只保留 target_node_num ≤ current_node_num 且"当前未过锁定阶段"的 node。
+    """
+    if not current_node or current_node not in _CURRENT_NODE_NUM:
+        return []
+
+    # 守卫表严格定义了每个 current_node 下允许的 backward_to_nodeX
+    # 直接从守卫表反推 allowed node 列表（比手写 node_num 比较更准确，
+    # 还能天然覆盖 node1 永久锁定这种特例）
+    node_labels = {
+        "node1": ("商品分析", 1),
+        "node2": ("方案策划", 2),
+        "node3": ("Prompt 生成", 3),
+        "node4": ("图像生成", 4),
+    }
+    allowed_intents = []
+    for node_key in ("node1", "node2", "node3", "node4"):
+        intent = f"backward_to_{node_key}"
+        allowed_current = _INTENT_ALLOWED_CURRENT_NODES.get(intent, ())
+        if current_node in allowed_current:
+            label, step_num = node_labels[node_key]
+            allowed_intents.append({"label": f"{label}（第{step_num}步）", "value": node_key})
+
+    # 按 node 编号升序排列（先早期后晚期）
+    allowed_intents.sort(key=lambda x: int(x["value"][4:]))
+    return allowed_intents

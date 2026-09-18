@@ -187,6 +187,7 @@ async def _run_single_llm(
         system=RESEARCH_AGENT_SYSTEM_PROMPT,
         user=user_message,
         response_format={"type": "json_object"},
+        reasoning_effort="close",
     )
 
     return _parse_and_validate_research_json(resp.content)

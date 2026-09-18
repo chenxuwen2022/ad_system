@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db
 from wellflow.app.api.utils import ok, StandardResponse
-from wellflow.app.models.task_models import Conversation, ChatMessage, Task
+from wellflow.app.models.task_models import Conversation, ChatMessage, Task, TaskImage
 from wellflow.app.repositories.conversation_repo import ConversationRepo
 from wellflow.app.schemas.conversation_schemas import (
     ConversationListResponse,
@@ -74,6 +74,30 @@ def list_conversations(
             )
         ).scalar() or 0
 
+        # 当前活跃 task 的 phase（可选优化：避免 N+1，集中查询）
+        current_phase: str = ""
+        current_saved_img_count = 0
+        if c.current_task_id:
+            t = db.get(Task, c.current_task_id)
+            if t:
+                current_phase = t.phase or ""
+                current_saved_img_count = db.execute(
+                    select(func.count(TaskImage.image_id)).where(
+                        TaskImage.task_id == t.task_id,
+                        TaskImage.image_type == "output",
+                    )
+                ).scalar() or 0
+
+        # 该 conversation 下所有 task 已保存的 output 图片总数
+        total_saved_img_count = db.execute(
+            select(func.count(TaskImage.image_id))
+            .join(Task, Task.task_id == TaskImage.task_id)
+            .where(
+                Task.conversation_id == c.conversation_id,
+                TaskImage.image_type == "output",
+            )
+        ).scalar() or 0
+
         # 最后一条用户消息预览：优先取 role=user 的 session_index 最大那条，
         # 确保预览稳定（assistant 的 resume_ack/error 等系统消息不应抢占 preview）
         preview: str | None = None
@@ -93,6 +117,9 @@ def list_conversations(
             conversation_id=c.conversation_id,
             title=c.title,
             current_task_id=c.current_task_id,
+            current_phase=current_phase,
+            current_task_saved_image_count=current_saved_img_count,
+            total_saved_image_count=total_saved_img_count,
             latest_message_preview=preview,
             message_count=msg_count,
             task_count=task_count,

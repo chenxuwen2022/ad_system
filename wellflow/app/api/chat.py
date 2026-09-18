@@ -22,7 +22,6 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
-from wellflow.app.workflows.state import cleared
 from wellflow.app.event_bus import (
     publish, drain_and_subscribe, cleanup as _eb_cleanup,
     mark_running, mark_done, is_running,
@@ -33,6 +32,7 @@ from wellflow.app.repositories.conversation_repo import (
 )
 from wellflow.app.llm.intent_classifier import (
     classify,
+    build_redo_options,
     compute_completed_mask,
     detect_skip,
     STEP_NAMES,
@@ -128,19 +128,22 @@ def classify_images(
     return list(images), []
 
 
-async def _aget_graph_state(task_id: str) -> dict[str, Any] | None:
+async def _aget_snapshot(task_id: str) -> tuple[Any, dict[str, Any] | None]:
+    """返回 (snapshot, snapshot.values)。两者都拿不到时返回 (None, None)。
+
+    必须同时返回 snapshot —— graph_context.resolve_current_node 要读 snapshot.next。
+    """
     from wellflow.app.runtime import get_graph as _gg
     g = _gg()
     if g is None:
-        return None
+        return None, None
     try:
         snapshot = await g.aget_state(_langgraph_config(task_id))
     except Exception as exc:
         print(f"[chat] aget_state 失败 task={task_id}: {exc}", flush=True)
-        return None
-    if snapshot and hasattr(snapshot, "values"):
-        return snapshot.values
-    return None
+        return None, None
+    values = snapshot.values if snapshot and hasattr(snapshot, "values") else None
+    return snapshot, values
 
 
 def _extract_interrupt_value(chunk: Any) -> dict[str, Any] | None:
@@ -156,7 +159,7 @@ def _extract_interrupt_value(chunk: Any) -> dict[str, Any] | None:
     return getattr(interrupt_obj, "value", None)
 
 
-def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
+async def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
     from wellflow.app.event_bus import publish as _eb
     from wellflow.app.graph_persist import persist_interrupt, persist_phase
     interrupt_value = _extract_interrupt_value(chunk)
@@ -165,9 +168,8 @@ def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
         phase = f"{interrupt_value.get('node')}_confirm"
         _eb(task_id, "phase", {"phase": phase})
         _eb(task_id, "interrupt", {**interrupt_value, "_phase": phase})
-        asyncio.get_event_loop().run_in_executor(
-            None, persist_interrupt, task_id, interrupt_value, phase
-        )
+        # 按流顺序落库：fire-and-forget 会让更早的 persist_phase 晚提交，覆盖 interrupt 的 phase
+        await asyncio.to_thread(persist_interrupt, task_id, interrupt_value, phase)
         return
 
     if isinstance(chunk, tuple) and chunk[0] == "updates":
@@ -181,9 +183,7 @@ def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
             if not phase:
                 continue
             _eb(task_id, "phase", {"phase": phase})
-            asyncio.get_event_loop().run_in_executor(
-                None, persist_phase, task_id, phase, node_name
-            )
+            await asyncio.to_thread(persist_phase, task_id, phase, node_name)
             if phase == "done":
                 n3_raw = node_out.get("node3") or {}
                 if n3_raw.get("reference_images"):
@@ -208,7 +208,7 @@ async def _start_graph(task_id: str, graph, config, *, initial_state=None, comma
         else:
             return
         async for chunk in stream_iter:
-            _handle_graph_chunk(task_id, chunk)
+            await _handle_graph_chunk(task_id, chunk)
     except Exception as exc:
         print(f"[chat] ❌ graph error task={task_id}: {exc}", flush=True)
         _tb.print_exc()
@@ -299,6 +299,9 @@ async def chat(
     marketing_goal: str = Form(default="acquisition"),
     # c2 界面 checkbox 选中的方案索引（逗号分隔，如 "0,2"），前端输入框发消息时带上
     selected_scheme_indices: str | None = Form(default=None),
+    # 用户在 redo radio 弹层里选的目标节点（node1/node2/node3/node4），
+    # 有此值时跳过意图分类直接走 _handle_backward
+    selected_redo_target: str | None = Form(default=None),
     images: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
@@ -345,20 +348,21 @@ async def chat(
         if not resolved_conv_id and task.conversation_id:
             resolved_conv_id = task.conversation_id
             print(f"[chat] 📎 从 task.conversation_id 反查 conversation={resolved_conv_id}", flush=True)
-        interrupt = task.interrupt_json or {}
-        current_node = interrupt.get("node")
-        # 兜底：如果 interrupt_json 缺失（异常中断），从 DB phase 反推
-        if not current_node and task.phase:
-            _PHASE_TO_NODE = {
-                "c1_confirm": "c1",
-                "c2_confirm": "c2",
-                "c3_confirm": "c3",
-                "c4_generating": "c4",
-            }
-            current_node = _PHASE_TO_NODE.get(task.phase)
-            if current_node:
-                print(f"[chat] interrupt_json 缺失，从 phase={task.phase} 反推 node={current_node}", flush=True)
-        graph_state = await _aget_graph_state(t_id)
+
+        # ---------- 🔑 current_node 多源校验（核心修复）----------
+        # 以 LangGraph checkpoint snapshot 为主（唯一真相源），DB 的 interrupt_json/phase 为辅。
+        # snapshot 包含 graph 运行时的完整状态；DB 层可能因 _clear_interrupt / 异常中断而丢失。
+        from wellflow.app.graph_context import resolve_current_node
+        snapshot, graph_state = await _aget_snapshot(t_id)
+        ctx = resolve_current_node(
+            snapshot=snapshot,
+            state=graph_state,
+            db_interrupt_json=task.interrupt_json,
+            db_phase=task.phase,
+        )
+        current_node = ctx.current_node
+
+        # ---------- 从 state 取产物 ----------
         if graph_state:
             completed_mask = compute_completed_mask(graph_state, current_node)
             existing_report = str(graph_state.get("node1", {}).get("product_insight", "") or "")
@@ -375,16 +379,50 @@ async def chat(
         images, has_task=has_task, current_node=current_node, message=message,
     )
 
-    intent_result = await classify(
-        message,
-        has_task=has_task,
-        current_node=current_node,
-        completed_mask=completed_mask,
-        has_images=len(images) > 0,
-        product_description=message[:500],
-    )
-    intent = intent_result.get("intent", "chat_outside")
-    print(f"[chat] 意图={intent} reason={intent_result.get('reasoning', '')[:60]}", flush=True)
+    # ------------------------------------------------------------------
+    # 🎯 selected_redo_target：用户在 redo radio 弹层里选了目标节点 →
+    # 跳过意图分类，直接组装 backward_to_nodeX intent 走 dispatch。
+    # 校验 node 合法性（守卫），不合法直接拦截。
+    # ------------------------------------------------------------------
+    redo_target_from_radio: str | None = None
+    if selected_redo_target and has_task:
+        allowed = build_redo_options(current_node)
+        allowed_values = {opt["value"] for opt in allowed}
+        if selected_redo_target in allowed_values:
+            redo_target_from_radio = selected_redo_target
+            intent = f"backward_to_{selected_redo_target}"
+            intent_result = {"intent": intent, "reasoning": f"redo radio 回传→{intent}",
+                             "selected_indices": None, "blocked_step": None, "parsed_content": None}
+            print(f"[chat] 🎯 selected_redo_target={selected_redo_target} → 跳过分类，intent={intent}", flush=True)
+        else:
+            print(f"[chat] 🛡️ selected_redo_target={selected_redo_target} 不在允许列表 {allowed_values}，拦截", flush=True)
+            async def _bad_target_sse():
+                yield _sse("message", {"text": f"当前阶段不允许回退到 {selected_redo_target}"})
+                yield _sse("done", {"phase": "blocked"})
+            return StreamingResponse(_bad_target_sse(), media_type="text/event-stream")
+    else:
+        intent_result = await classify(
+            message,
+            has_task=has_task,
+            current_node=current_node,
+            completed_mask=completed_mask,
+            has_images=len(images) > 0,
+            product_description=message[:500],
+        )
+        intent = intent_result.get("intent", "chat_outside")
+        print(f"[chat] 意图={intent} reason={intent_result.get('reasoning', '')[:60]}", flush=True)
+
+    # ------------------------------------------------------------------
+    # 🛡️ 意图守卫拦截：返回 blocked=True → 直接 SSE 友好消息，绝对不启动 graph。
+    # 防止不合法的 backward_to_nodeX 穿透到 graph 重跑大模型。
+    # ------------------------------------------------------------------
+    if intent_result.get("blocked"):
+        blocked_reason = intent_result.get("blocked_reason", "当前操作不允许")
+        print(f"[chat] 🛡️ 意图守卫拦截: {blocked_reason}", flush=True)
+        async def _blocked_sse():
+            yield _sse("message", {"text": blocked_reason})
+            yield _sse("done", {"phase": "blocked"})
+        return StreamingResponse(_blocked_sse(), media_type="text/event-stream")
 
     # ------------------------------------------------------------------
     # 🛡️ start_task 守卫：已有任务时绝不允许开新任务跑 Node1。
@@ -600,13 +638,118 @@ async def chat(
                             pass
                     yield ev
 
+            # ------------------------------------------------------------------
+            # 🛡️ graph runtime 守卫（独立前置检查，不在 if-elif-else 链里）：
+            #   paused  → 放行到下面的 dispatch
+            #   running → 拦截（graph 真在执行）
+            #   stale   → 尝试 astream(None) 续跑；恢复失败则拦截
+            #   done    → 放行（让 redo/backward_to_nodeX 走 _handle_backward 路径 B）
+            # ------------------------------------------------------------------
+            _NEEDS_RUNTIME_CHECK = (
+                "confirm_current", "confirm_generation", "redo",
+                "backward_to_node1", "backward_to_node2",
+                "backward_to_node3", "backward_to_node4",
+            )
+            if has_task and intent in _NEEDS_RUNTIME_CHECK:
+                from wellflow.app.graph_context import check_graph_runtime_state
+                _rt_state, _rt_age = check_graph_runtime_state(snapshot)
+                if _rt_state == "done":
+                    print(f"[chat] ✅ graph已END(done)，放行 intent={intent}", flush=True)
+                elif _rt_state == "running":
+                    print(f"[chat] 🛡️ graph 正在执行（checkpoint 年龄 {_rt_age:.0f}s），拦截 intent={intent}",
+                          flush=True)
+                    yield _sse("message", {
+                        "text": "任务正在执行中，暂不支持当前操作，请稍候再试。",
+                    })
+                    yield _sse("done", {"phase": "processing"})
+                    return
+                elif _rt_state == "stale":
+                    print(f"[chat] ⚠️ graph checkpoint 过旧（{_rt_age:.0f}s），"
+                          f"可能已挂，尝试 astream(None) 恢复 intent={intent}",
+                          flush=True)
+                    try:
+                        graph = _get_graph()
+                        if graph is None:
+                            raise RuntimeError("LangGraph 未初始化")
+                        config = _langgraph_config(t_id)
+                        async for _chunk in graph.astream(None, config, stream_mode="updates"):
+                            pass
+                        print(f"[chat] ✅ astream(None) 续跑完成", flush=True)
+                        _, _new_snap = await _aget_snapshot(t_id)
+                        if _new_snap and hasattr(_new_snap, "next"):
+                            from wellflow.app.graph_context import is_graph_paused
+                            if is_graph_paused(_new_snap):
+                                yield _sse("message", {
+                                    "text": "检测到任务中断，已自动恢复执行完成。请等待返回最新状态后继续操作。",
+                                })
+                                yield _sse("done", {"phase": "recovered"})
+                                return
+                    except Exception as _exc:
+                        print(f"[chat] ❌ astream(None) 恢复失败: {_exc}", flush=True)
+                    yield _sse("message", {
+                        "text": "检测到任务执行中断，但自动恢复失败。请重开窗口启动新任务。",
+                    })
+                    yield _sse("done", {"phase": "failed"})
+                    return
+                # paused → 放行
+
+            # ------------------------------------------------------------------
+            # dispatch：四种互斥分支
+            # ------------------------------------------------------------------
             if intent == "start_task":
                 async for ev in _pipe(_handle_start_task(
                     message, product_images, platform, image_type, marketing_goal, graph,
                     conversation_id=conv_id_for_this_turn,
                 )):
                     yield ev
-            elif intent in ("backward_to_c1", "backward_to_c2", "backward_to_c3"):
+
+            elif intent == "redo":
+                # ------------------------------------------------------------------
+                # v2 redo dispatch：
+                #   - 只有 1 个允许选项（c1/c2）→ 直接走 backward_to_nodeX（自动执行）
+                #   - ≥2 个允许选项（c3/c4）→ 发 SSE selection_required，让前端弹 radio
+                # ------------------------------------------------------------------
+                allowed = build_redo_options(current_node)
+                if len(allowed) == 1:
+                    auto_intent = f"backward_to_{allowed[0]['value']}"
+                    print(f"[chat] redo dispatch: 仅 1 个选项，自动执行 {auto_intent}", flush=True)
+                    async for ev in _pipe(_handle_backward(auto_intent, t_id or '', graph,
+                                                           product_images=product_images)):
+                        yield ev
+                elif len(allowed) > 1:
+                    print(f"[chat] redo dispatch: {len(allowed)} 个选项 → 发 selection_required", flush=True)
+                    yield _sse("selection_required", {
+                        "message": "请选择要重新执行的步骤：",
+                        "options": allowed,
+                        "task_id": t_id or "",
+                    })
+                    yield _sse("done", {"phase": "waiting_selection"})
+                    # 持久化 redo 等待状态到 LangGraph checkpoint。
+                    # 注意：只能用 TaskState 里已注册的 channel（phase / interrupt），
+                    # 未注册的新 key（如 redo_waiting）会被 LangGraph 静默丢弃！
+                    try:
+                        graph = _get_graph()
+                        config = _langgraph_config(t_id)
+                        await graph.aupdate_state(config, {
+                            "phase": "waiting_selection",
+                            # 复用已注册的 interrupt channel 存 redo 选项
+                            "interrupt": {
+                                "node": "redo_selection",
+                                "schema": {
+                                    "mode": "redo_selection",
+                                    "options": allowed,
+                                },
+                                "hint": "请选择要重新执行的步骤",
+                            },
+                        })
+                        print(f"[chat] ✅ checkpoint 已持久化 phase=waiting_selection", flush=True)
+                    except Exception as exc:
+                        print(f"[chat] ⚠️ 持久化 waiting_selection 失败（不阻塞 SSE）: {exc}", flush=True)
+                else:
+                    # 无选项（理论上不会，redo 守卫已经挡了无 current_node）
+                    yield _sse("message", {"text": "当前阶段不允许重做。"})
+                    yield _sse("done", {"phase": "done"})
+            elif intent.startswith("backward_to_node"):
                 async for ev in _pipe(_handle_backward(intent, t_id or '', graph,
                                                        product_images=product_images)):
                     yield ev
@@ -617,6 +760,7 @@ async def chat(
                     existing_report, existing_schemes,
                     existing_model_images, graph,
                     selected_scheme_indices=selected_scheme_indices,
+                    graph_state=graph_state,
                 )):
                     yield ev
         except Exception as exc:
@@ -725,82 +869,141 @@ async def _handle_backward(
     from wellflow.app.utils.image_store import save_upload
 
     # ------------------------------------------------------------------
-    # 流程约束守卫：
-    #   1. phase == done（已确认入库）→ 禁止任何回跳重做；
-    #   2. backward_to_c1（重做 node1）仅允许在 c1_confirm 阶段——
-    #      一旦确认进入 node2，node1 永久锁定。
+    # 意图 → 回退目标映射（统一 nodeX → resume_node + redo_target）
+    #   backward_to_node1 → resume c1, redo node1（只能在 c1 触发，node1 永久锁定）
+    #   backward_to_node2 → resume c2, redo node2
+    #   backward_to_node3 → resume c3, redo node3
+    #   backward_to_node4 → resume c4, redo node4
     # ------------------------------------------------------------------
-    def _get_phase() -> str | None:
+    _INTENT_MAP = {
+        "backward_to_node1": ("c1", "node1", 1),
+        "backward_to_node2": ("c2", "node2", 2),
+        "backward_to_node3": ("c3", "node3", 3),
+        "backward_to_node4": ("c4", "node4", 4),
+    }
+    if intent not in _INTENT_MAP:
+        yield _sse("message", {"text": f"不认识的回退意图: {intent}"})
+        yield _sse("done", {"phase": "done"})
+        return
+    resume_node, redo_target, step_num = _INTENT_MAP[intent]
+
+    # ------------------------------------------------------------------
+    # 流程守卫：
+    #   1. phase == done → 允许 redo（Command(goto='c4_review_result') 从 finalize 回跳）
+    #      原来是硬拦"任务已确认入库，不能再回退重做"——这是历史遗留策略，
+    #      用户明确说"重做"时我们应该让 graph 从 END 续跑，而不是拒绝。
+    #      LangGraph 的 Command(goto=X) 在 END checkpoint 上会把 goto 当作
+    #      "从 X 继续跑"——state 会保留 checkpoint 上已有的 node1/2/3/4 产物。
+    #   2. backward_to_node1 仅允许 interrupt_node == c1（node1 永久锁定）
+    # ------------------------------------------------------------------
+    def _get_state() -> tuple[str | None, str | None]:
         try:
             with session_scope() as db:
                 t = TaskRepo(db).get(task_id)
-                return t.phase if t else None
+                if not t:
+                    return None, None
+                node = (t.interrupt_json or {}).get("node") if t.interrupt_json else None
+                return t.phase, node
         except Exception:
-            return None
+            return None, None
 
-    current_phase = await asyncio.to_thread(_get_phase)
-    if current_phase == "done":
-        print(f"[backward] 🛡️ task={task_id} 已入库(done)，拒绝回跳 intent={intent}", flush=True)
-        yield _sse("message", {"text": "任务已确认入库，不能再回退重做。"})
-        yield _sse("done", {"phase": "done"})
-        return
-    if intent == "backward_to_c1" and current_phase != "c1_confirm":
-        print(f"[backward] 🛡️ task={task_id} phase={current_phase}，node1 已锁定，拒绝回跳 c1", flush=True)
+    current_phase, interrupt_node = await asyncio.to_thread(_get_state)
+    # phase=done 不再硬拦——用户明确说"重做"时让 graph 从 END 续跑到 c4_review_result
+    if intent == "backward_to_node1" and interrupt_node != "c1":
+        print(f"[backward] 🛡️ task={task_id} interrupt={interrupt_node}，"
+              f"node1 已锁定（只能在 c1 回退），拒绝 backward_to_node1", flush=True)
         yield _sse("message", {"text": "商品报告已确认进入方案阶段，不能再重做商品识别。"})
         yield _sse("done", {"phase": "done"})
         return
 
-    if intent == "backward_to_c1":
-        # 跳到 Node1 执行节点（不是 interrupt 节点），跑完 VLM 自动流到 c1_confirm
-        # cleared() 整体替换：reducer 字段级 merge 会把 {} 当 no-op，清不掉旧数据
-        goto_node = "node1_product_analyzer"
-        goto_clean = "c1"
-        clean_update: dict[str, Any] = {
-            "node1": cleared(), "node2": cleared(), "node3": cleared(), "node4": cleared(),
-            "phase": "c1_confirm", "interrupt": None,
-        }
-        step_num = 2
-    elif intent == "backward_to_c2":
-        # 跳到 Node2 执行节点（整体替换清空下游 node3/node4）
-        goto_node = "node2_planning_scheme"
-        goto_clean = "c2"
-        clean_update: dict[str, Any] = {
-            "node3": cleared(), "node4": cleared(), "phase": "c2_confirm", "interrupt": None,
-        }
-        step_num = 4
-    else:  # backward_to_c3
-        # 跳到 Node3 执行节点（整体替换清空下游 node4）
-        goto_node = "node3_prompt_generation"
-        goto_clean = "c3"
-        clean_update: dict[str, Any] = {
-            "node3": cleared(), "node4": cleared(), "phase": "c3_confirm", "interrupt": None,
-        }
-        step_num = 6
-
     # 如果用户上传了新商品图 → 落盘 + 更新 request.product_images
+    cmd_update: dict[str, Any] = {}
     if product_images:
         raw = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
         new_paths = save_upload(task_id, raw, prefix="p")
         # 读取旧 request 并 merge（保持 request 中其他字段不变）
-        graph_state = await _aget_graph_state(task_id)
+        _, graph_state = await _aget_snapshot(task_id)
         old_request = (graph_state or {}).get("request", {}) if graph_state else {}
         merged_request = {**old_request, "product_images": new_paths,
                           "product_image_names": [f.filename for f in product_images],
                           "image_count": len(product_images),
                           "has_images": True}
-        clean_update["request"] = merged_request
+        cmd_update["request"] = merged_request
         print(f"[backward] 🔄 商品图已更新: {len(new_paths)} 张, intent={intent}", flush=True)
 
     q = await drain_and_subscribe(task_id)
     config = _langgraph_config(task_id)
 
-    # 🔑 LangGraph 1.2.x 的 Command 原生支持 update + goto 原子提交。
-    # 旧写法：先 aupdate_state(clean_update) 再 Command(goto=...)，在 LangGraph 1.2 里
-    # 会把两次写入折叠到同一 superstep，LastValue channel 收到 2 个值直接炸 InvalidUpdateError。
-    # 新写法：Command(update=clean_update, goto=goto_node) —— update 和 goto 在同一条
-    # Command 里原子落地，子图节点的输出写入落到下一个 superstep，完美避免双写冲突。
-    cmd = Command(update=clean_update, goto=goto_node)
-    print(f"[backward] 🎯 Command(update=..., goto={goto_node}) task={task_id} keys={list(clean_update.keys())}", flush=True)
+    # ------------------------------------------------------------------
+    # Command 组装：两种路径
+    #   A) graph 停在 cX interrupt → Command(resume=...) 让 _cX_decision 做清理 + 路由
+    #      （原有逻辑）
+    #   B) graph 已 END（phase=done 或无 interrupt）→ Command(goto=目标执行节点) +
+    #      API 层手动做 state 清理（复用 _c4_review_result 里的分层清理规则）
+    #      LangGraph 在 END checkpoint 上 goto 会从目标节点继续跑，state 保留 checkpoint 里的内容。
+    # ------------------------------------------------------------------
+    _EXEC_NODE_OF_TARGET = {
+        "node1": "node1_product_analyzer",
+        "node2": "node2_planning_scheme",
+        "node3": "node3_prompt_generation",
+        "node4": "node4_generate_image",
+    }
+
+    if current_phase == "done":
+        # ── 路径 B：graph 已 END，手动清理 state + goto 到目标执行节点 ──
+        # 先读最新 graph_state 来做正确的清理
+        _, latest_state = await _aget_snapshot(task_id)
+        latest_state = latest_state or {}
+
+        from wellflow.app.workflows.state import cleared
+        node1 = latest_state.get("node1", {}) or {}
+        node2 = latest_state.get("node2", {}) or {}
+        node3 = latest_state.get("node3", {}) or {}
+        node4 = latest_state.get("node4", {}) or {}
+
+        redo_target_cleanup: dict[str, dict[str, Any]] = {}
+        # 复用 _c4_review_result 里的分层清理规则（node1 已永久锁定，只清 2/3/4）
+        if redo_target == "node2":
+            redo_target_cleanup = {
+                "node2": cleared(),
+                "node3": cleared(model_images=node3.get("model_images", []),
+                                 ratio=node3.get("ratio"), image_model=node3.get("image_model")),
+                "node4": cleared(),
+                "phase": "c4_review",
+            }
+        elif redo_target == "node3":
+            redo_target_cleanup = {
+                "node3": cleared(model_images=node3.get("model_images", []),
+                                 ratio=node3.get("ratio"), image_model=node3.get("image_model")),
+                "node4": cleared(),
+                "phase": "c4_review",
+            }
+        else:  # node4
+            new_node4 = dict(node4) if isinstance(node4, dict) else {}
+            items = new_node4.get("work_items", []) or []
+            for it in items:
+                if isinstance(it, dict):
+                    it["status"] = "pending"
+            new_node4["outputs"] = []
+            new_node4["failed_items"] = []
+            redo_target_cleanup = {
+                "node4": new_node4,
+                "phase": "c4_review",
+            }
+
+        update_dict = {**redo_target_cleanup, **cmd_update} if cmd_update else redo_target_cleanup
+        exec_node = _EXEC_NODE_OF_TARGET.get(redo_target, redo_target)
+        cmd = Command(goto=exec_node, update=update_dict)
+        print(f"[backward] 🎯 graph已END → Command(goto={exec_node}) cleanup_keys={list(redo_target_cleanup.keys())}", flush=True)
+    else:
+        # ── 路径 A：graph 停在 cX interrupt → Command(resume=...) ──
+        # 🔑 redo 必须走 resume 语义：interrupt 节点（_cX_*）的 redo 分支负责清理下游
+        # state（cleared() 整体替换）并通过 _route_cX_decision 路由回目标执行节点。
+        # 不能用 Command(goto=...)：graph 处于 interrupt 态时 goto 不会跳过当前 interrupt
+        # 节点，interrupt() 会以已清空的 state 立刻重新抛出，表现为"秒回一个空报告"。
+        resume_values = {"node": resume_node, "decision": "redo", "redo_target": redo_target}
+        cmd = Command(resume=resume_values, **({"update": cmd_update} if cmd_update else {}))
+        print(f"[backward] 🎯 Command(resume={resume_values}) task={task_id} update_keys={list(cmd_update.keys())}", flush=True)
 
     def _clear_interrupt():
         try:
@@ -812,10 +1015,10 @@ async def _handle_backward(
     await asyncio.to_thread(_clear_interrupt)
 
     asyncio.create_task(_start_graph(task_id, graph, config, command=cmd))
-    _sync_db_after_jump(task_id, goto_clean, list(clean_update.keys()))
+    _sync_db_after_jump(task_id, resume_node, [redo_target])
 
     yield _sse("resume_ack", {
-        "task_id": task_id, "node": goto_clean,
+        "task_id": task_id, "node": resume_node,
         "message": f"好的，已回到第 {step_num} 步。",
     })
 
@@ -837,12 +1040,35 @@ async def _handle_resume(
     graph,
     *,
     selected_scheme_indices: str | None = None,
+    graph_state: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
     if not current_node:
         yield _sse("message", {"text": "当前没有可继续的节点，请先开始一个任务。"})
         yield _sse("done", {"phase": "done"})
+        return
+
+    # ------------------------------------------------------------------
+    # 🛡️ 硬性规则校验：绝不允许跳过损坏 / 数据缺失的节点
+    #   场景：current_node=c2，但 node2.schemes=[] → 阻断向下流转，
+    #   只允许 retry 当前 node2。
+    # ------------------------------------------------------------------
+    from wellflow.app.graph_context import validate_current_node_products
+    ok, missing = validate_current_node_products(current_node, graph_state)
+    if not ok:
+        print(
+            f"[resume] 🛡️ 硬性守卫拦截 current_node={current_node}，"
+            f"缺失产物: {missing} → 拒绝 resume，请 retry 当前 node",
+            flush=True,
+        )
+        yield _sse("message", {
+            "text": (
+                f"当前节点({current_node})产物缺失或损坏({missing})，"
+                "请重试当前节点，不允许跳过向下流转。"
+            ),
+        })
+        yield _sse("done", {"phase": "blocked"})
         return
 
     q = await drain_and_subscribe(task_id)
@@ -862,6 +1088,13 @@ async def _handle_resume(
     node = current_node
     resume_values: dict[str, Any] = {"node": node}
 
+    # ------------------------------------------------------------------
+    # 各节点 resume_values 组装
+    #   - c1: confirm_current / edit_and_confirm_c1（改报告）→ 走 decision/redo 分支前已处理
+    #   - c2: confirm_current → 确认（默认全选或 selected_scheme_indices）
+    #   - c3: confirm_current → 确认 prompt（不再有 redo，c3 的重做统一 backward_to_node3）
+    #   - c4: confirm_generation / redo_generation → decision + redo_target
+    # ------------------------------------------------------------------
     if node == "c1":
         # C1 阶段无需传图，用户直接确认/编辑报告即可继续
 
@@ -903,12 +1136,24 @@ async def _handle_resume(
             resume_values["model_images"] = model_image_paths
 
     elif node == "c3":
-        if intent == "redo_generation":
-            resume_values["action"] = "redo"
-        else:
-            resume_values["action"] = "confirm"
+        # C3 只有 confirm_current：用户确认 prompt 进入 Node4 生图。
+        # C3 下的重做意图（比如"换背景"）已在意图分类阶段归为 backward_to_node3，
+        # 由 _handle_backward 单独处理，不会走到这里。
+        # 历史上曾有 resume_values["action"] = "redo" 的残留分支，
+        # 但 graph 的 _c3_confirm_prompt 读的是 decision 字段而非 action，导致 c3 redo 从未生效。
+        # 新设计下此问题已自然消除。
         if model_image_paths:
             resume_values["model_images"] = model_image_paths
+
+    elif node == "c4":
+        # C4 独占 confirm_generation / redo_generation 两个意图。
+        # 统一走 decision + redo_target（graph 的 _c4_review_result 读这两个字段）。
+        if intent == "redo_generation":
+            resume_values["decision"] = "redo"
+            resume_values["redo_target"] = "node4"  # 默认只重生图，保留上游 node1/2/3
+        else:
+            # confirm_generation（c4 下所有非 redo 的意图都当作确认）
+            resume_values["decision"] = "confirm"
 
     print(f"[chat] resume_values node={node}: {list(resume_values.keys())}", flush=True)
 
@@ -927,7 +1172,7 @@ async def _handle_resume(
     cmd_kwargs: dict[str, Any] = {"resume": resume_values}
     if product_image_paths:
         # 读取旧 request 并合并（商品图追加合并，超过 3 张取最新）
-        graph_state = await _aget_graph_state(task_id)
+        _, graph_state = await _aget_snapshot(task_id)
         old_request = (graph_state or {}).get("request", {}) if graph_state else {}
 
         # 追加合并商品图：旧 + 新，取最后 3 张

@@ -28,15 +28,15 @@ class Settings(BaseSettings):
 
 
     # ====== Node1 ======
-    llm_reasoning_effort: str | None = "medium"   # Node1 商品识别需要深度思考
+    llm_reasoning_effort: str = "medium"   # Node1 商品识别需要深度思考
     http_proxy_url: str | None = "http://127.0.0.1:7890"  # Node1 调研 tools（web_search / competitor / trend）走代理
 
     # ====== Node2 ======
-    node2_reasoning_effort: str | None = "none"   # Node2 生成方案，关 Deep Thinking 但走流式
+    node2_reasoning_effort: str = "close"   # Node2 生成方案，强制关 Deep Thinking 但走流式
     node2_prompt_count_default: int = 3       # Node2 生成提示词数量（默认 3，前端 C1 可覆盖）
 
     # ====== Node3 ======
-    node3_reasoning_effort: str | None = "none"   # Node3 生成生图 prompt，关 Deep Thinking 但走流式
+    node3_reasoning_effort: str = "close"   # Node3 生成生图 prompt，强制关 Deep Thinking 但走流式
     node3_images_per_prompt_default: int = 1  # 每个提示词生成几张图（C2 interrupt 前端选择，默认 1）
     node3_gen_concurrency: int = 10           # Node3 并行生图并发上限（Semaphore），越大越快但易触发 429
 

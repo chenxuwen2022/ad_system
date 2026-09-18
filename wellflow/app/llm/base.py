@@ -101,14 +101,14 @@ class BaseLLMClient(ABC):
         user: str,
         response_format: dict[str, Any] | None = None,
         temperature: float = 0.3,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str = "close",
         extra_params: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """纯文本/结构化输出。
 
         Args:
-            reasoning_effort: 推理/思考强度控制，可选值 "none" / "low" / "medium" / "high"。
-                None 表示使用模型默认行为。
+            reasoning_effort: 推理/思考强度控制，可选值 "close" / "low" / "medium" / "high"。
+                "close" 表示强制关闭思考；不允许传 None（必须显式指定）。
             extra_params: 透传到 payload 的额外扩展字段，供网关识别模型特定参数。
         """
         ...
@@ -120,7 +120,7 @@ class BaseLLMClient(ABC):
         user: str,
         image_uris: list[str],
         response_format: dict[str, Any] | None = None,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str = "close",
         extra_params: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """多模态 VLM 调用（完整响应）。"""
@@ -132,7 +132,7 @@ class BaseLLMClient(ABC):
         system: str,
         user: str,
         image_uris: list[str],
-        reasoning_effort: str | None = None,
+        reasoning_effort: str = "close",
         extra_params: dict[str, Any] | None = None,
     ) -> Any:
         """多模态 VLM 流式调用。
@@ -521,7 +521,7 @@ class BaseLLMClient(ABC):
 
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-        _prompt_preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
+        _prompt_preview = prompt[:200] + ("..." if len(prompt) > 200 else "") + '，严格参考图片五官等特征'
         print(f"[llm-edits] 📤 POST {base_url}/images/edits model={model_name} "
               f"refs={len(refs) if refs else 0} size={size} quality=high n={n}", flush=True)
         print(f"[llm-edits]   prompt: {_prompt_preview}", flush=True)

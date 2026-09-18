@@ -15,6 +15,40 @@ import httpx
 from wellflow.app.llm.base import BaseLLMClient, LLMResponse
 
 
+def _apply_reasoning_control(payload: dict[str, Any], model: str, reasoning_effort: str) -> None:
+    """按模型族应用 thinking 开关。
+
+    - effort == "close"：强制关闭 thinking。GLM/Qwen 默认开启推理，仅靠"不传字段"
+      无法关闭——thinking 会吞掉 completion token 预算导致 content 被截断。
+    - effort 为 "low"/"medium"/"high" 等：透传 reasoning_effort（Gemini 等支持）。
+    - effort 为 None：不允许，调用方必须显式指定（防止"忘了关思考"的静默错误）。
+    """
+    if reasoning_effort is None:
+        raise ValueError(
+            f"reasoning_effort 不允许为 None (model={model})，"
+            "请显式传 'close'（强制关闭思考）或 'low'/'medium'/'high'"
+        )
+    if reasoning_effort != "close":
+        payload["reasoning_effort"] = reasoning_effort
+        return
+    m = model.lower()
+    if "glm" in m:
+        payload["thinking"] = {"type": "disabled"}   # GLM 官方关闭参数，new-api 透传
+    elif "qwen" in m:
+        payload["enable_thinking"] = False           # Qwen3 系列关闭参数
+    elif "doubao" in m or "seed" in m:
+        payload["thinking"] = {"type": "disabled"}   # 豆包 Seed 系列（Ark）关闭参数
+    elif "deepseek" in m:
+        # DeepSeek 托管渠道（阿里/SiliconFlow 风格）认 enable_thinking；
+        # reasoning_effort="none" 兜 OpenRouter 风格渠道。两者并存风险低：
+        # OpenAI 兼容服务对未知 body 字段通常忽略而非报错。
+        # 之前"不传字段即关闭"的假设对 deepseek 不成立——它默认开思考，
+        # 会把 completion 预算吃光导致 content 为空（node2 已踩坑）。
+        payload["enable_thinking"] = False
+        payload["reasoning_effort"] = "none"
+    # gemini 等其余模型默认不传字段即可关闭
+
+
 class OfoxGateway(BaseLLMClient):
     """Ofox 网关：纯 OpenAI 协议，透传 extra_params。"""
 
@@ -39,9 +73,9 @@ class OfoxGateway(BaseLLMClient):
         self,
         system: str,
         user: str,
+        reasoning_effort: str,
         response_format: dict[str, Any] | None = None,
         temperature: float = 0.3,
-        reasoning_effort: str | None = None,
         extra_params: dict[str, Any] | None = None,
         *,
         user_content: Any = None,
@@ -61,8 +95,8 @@ class OfoxGateway(BaseLLMClient):
         system: str,
         user: str,
         image_uris: list[str],
+        reasoning_effort: str,
         response_format: dict[str, Any] | None = None,
-        reasoning_effort: str | None = None,
         extra_params: dict[str, Any] | None = None,
     ) -> LLMResponse:
         user_content: list[dict[str, Any]] = [{"type": "text", "text": user}]
@@ -89,7 +123,7 @@ class OfoxGateway(BaseLLMClient):
         system: str,
         user: str,
         image_uris: list[str],
-        reasoning_effort: str | None = None,
+        reasoning_effort: str,
         extra_params: dict[str, Any] | None = None,
     ):
         """流式多模态 VLM 调用，yield delta 文本片段。"""
@@ -141,7 +175,7 @@ class OfoxGateway(BaseLLMClient):
         user: str,
         response_format: dict[str, Any] | None,
         temperature: float,
-        reasoning_effort: str | None,
+        reasoning_effort: str,
         extra_params: dict[str, Any] | None,
         user_content: Any,
     ) -> LLMResponse:
@@ -165,11 +199,8 @@ class OfoxGateway(BaseLLMClient):
             "temperature": temperature,
         }
 
-        # 深度思考 / Reasoning 控制（OpenAI 协议透传，Gemini 等模型支持）
-        # 约定：reasoning_effort 为 "none" 时**不传该字段**，让模型用默认值（通常关闭推理）。
-        # OpenAI 官方合法值为 low/medium/high；传 "none" 字符串可能被网关忽略后仍返回 thinking。
-        if reasoning_effort is not None and reasoning_effort != "none":
-            payload["reasoning_effort"] = reasoning_effort
+        # 深度思考 / Reasoning 控制（按模型族处理，GLM/Qwen 需显式关闭）
+        _apply_reasoning_control(payload, self.model, reasoning_effort)
 
         if response_format and response_format.get("type") == "json_object":
             payload["response_format"] = {"type": "json_object"}
@@ -255,7 +286,7 @@ class OfoxGateway(BaseLLMClient):
         self,
         system: str,
         user: str,
-        reasoning_effort: str | None,
+        reasoning_effort: str,
         extra_params: dict[str, Any] | None,
         user_content: Any,
     ):
@@ -288,11 +319,9 @@ class OfoxGateway(BaseLLMClient):
             "stream": True,
         }
 
-        # ✅ ofox 网关流式多模态 + reasoning_effort 先尝试传
-        # 如果底层不支持会抛异常，Node1 的流式调用方会 catch 并降级到非流式
-        # 约定同非流式：effort=="none" 时**不传**，避免模型忽略后仍返回 thinking
-        if reasoning_effort is not None and reasoning_effort != "none":
-            payload["reasoning_effort"] = reasoning_effort
+        # 深度思考 / Reasoning 控制（按模型族处理，GLM/Qwen 需显式关闭）
+        # 流式调用方（Node1）会 catch 不支持 thinking 参数的异常并降级到非流式
+        _apply_reasoning_control(payload, self.model, reasoning_effort)
 
         if extra_params:
             payload.update(extra_params)

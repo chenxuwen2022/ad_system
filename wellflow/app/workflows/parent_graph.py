@@ -28,9 +28,9 @@
 
 HITL interrupt 数据流：
   C1  resume:   confirmed_report, model_images(file), ratio, image_model
-  C2  resume:   selected_scheme_indices + decision("confirm"|"redo") + redo_target("node2")
-  C3  resume:   edited_prompts[], per_prompt_count[], per_prompt_size[], ratio, image_model
-                + decision("confirm"|"redo") + redo_target("node2"~"node3")
+  C2  resume:   selected_scheme_indices + per_scheme_count + decision("confirm"|"redo") + redo_target("node2")
+  C3  resume:   edited_prompts[], selected_prompt_indices[], per_prompt_size[], ratio, image_model
+                + decision("confirm"|"redo") + redo_target("node2"|"node3")
   C4  resume:   decision("confirm"|"redo"), redo_target("node2"~"node4")
 
 State 分层（TaskState）：
@@ -62,6 +62,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from wellflow.app.workflows.state import cleared
+
 
 # ---------------------------------------------------------------------------
 # 构建父图
@@ -76,7 +78,7 @@ def build_graph(checkpointer=None):
             "langgraph 未安装。请 pip install langgraph langgraph-checkpoint-postgres"
         ) from exc
 
-    from wellflow.app.workflows.state import TaskState, cleared
+    from wellflow.app.workflows.state import TaskState
     from wellflow.app.workflows import (
         node1_graph as _n1,
         node2_graph as _n2,
@@ -219,6 +221,7 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
             "node2": cleared(),
             "node3": cleared(),
             "node4": cleared(),
+            "confirmations": {"c1": False},  # redo → 需重新确认
             "_redo_target": "node1",
         }
         return new_state
@@ -247,7 +250,9 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     if image_model:
         new_node3["image_model"] = image_model
 
-    return {"phase": "c1_confirm", "node1": new_node1, "node3": new_node3, "_redo_target": None}
+    # 用户点"生成方案"走到这里 → c1 确认落库（checkpoint 持久化，任务失败/interrupt 丢失后可反推）
+    return {"phase": "c1_confirm", "node1": new_node1, "node3": new_node3,
+            "confirmations": {"c1": True}, "_redo_target": None}
 
 
 def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
@@ -315,6 +320,21 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         # 没选就默认全选
         new_node2["selected_scheme_indices"] = list(range(len(node2.get("schemes", []))))
 
+    # ---- per_scheme_count：每套选中方案要生成几份 prompt ----
+    counts = interrupt_value.get("per_scheme_count")
+    n_selected = len(new_node2["selected_scheme_indices"])
+    if counts and isinstance(counts, list):
+        counts = [max(1, int(c)) for c in counts]
+        if len(counts) >= n_selected:
+            new_node2["per_scheme_count"] = counts[:n_selected]
+        elif counts:
+            # 前端数组长度不够：用 counts 前几个 + 剩余补 1
+            new_node2["per_scheme_count"] = counts + [1] * (n_selected - len(counts))
+    else:
+        new_node2["per_scheme_count"] = [1] * n_selected
+    print(f"[c2_select] ✅ selected={new_node2['selected_scheme_indices']} "
+          f"per_scheme_count={new_node2['per_scheme_count']}", flush=True)
+
     # 前端可能覆盖 ratio / image_model / model_images
     new_node3 = dict(state.get("node3", {}))
     ratio = interrupt_value.get("ratio")
@@ -331,16 +351,18 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
-    """C3：用户确认每套 prompt 的最终内容 + 选张数 + 选规格。
+    """C3：用户确认每套 prompt 的最终内容 + 选规格。
 
-    interrupt 让前端展示 Node3 的 generate_prompts + prompts_detail，
-    用户可以：
+    interrupt 让前端展示 Node3 的 generate_prompts + prompts_detail（已按
+    per_scheme_count 展开为多份变体 prompt），用户可以：
       - 编辑每套 prompt（edited_prompts）
-      - 为每套选生成张数（per_prompt_count: [3, 1, ...]）
       - 为每套选图片规格（per_prompt_size: ["3:4", "3:4", ...]）
       - redo 回到上游 Node2/Node3（node1 已锁定，node4 尚未执行）
 
-    resume 写入 node3.generate_prompts（可能被编辑）+ per_prompt_count + per_prompt_size。
+    ⚠️ per_prompt_count 已弃用：Node3 已按 per_scheme_count 展开成多份 prompt，
+      Node4 一 prompt → 一张图（n 强制=1）。后端忽略前端传入的 count，全量兜底成 1。
+
+    resume 写入 node3.generate_prompts（可能被编辑）+ per_prompt_size。
     也支持 decision("confirm"|"redo") + redo_target("node2"|"node3") 做 redo。
     """
     from langgraph.types import interrupt
@@ -400,7 +422,10 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
 
         return new_state
 
-    # ---- confirm：正常处理 prompt 编辑 + 张数 + 规格 + 选中过滤 ----
+    # ---- confirm：正常处理 prompt 编辑 + 规格 + 选中过滤 ----
+    # ✅ 新语义：per_prompt_count 已彻底删除。Node3 已按 per_scheme_count 展开成多份 prompt，
+    #   Node4 永远一 prompt → 一张图（n 强制 =1）。
+    #   前端如果还传了 per_prompt_count 一律忽略。
     new_node3 = dict(node3)
 
     # prompt 编辑覆盖
@@ -408,20 +433,13 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     if edited and isinstance(edited, list):
         new_node3["generate_prompts"] = list(edited)
 
-    # 每 prompt 张数
-    per_count = interrupt_value.get("per_prompt_count")
-    if per_count and isinstance(per_count, list):
-        new_node3["per_prompt_count"] = [int(n) for n in per_count]
-
-    # 每 prompt 规格
+    # 每 prompt 规格（保留 —— 每张图规格仍有用）
     per_size = interrupt_value.get("per_prompt_size")
     if per_size and isinstance(per_size, list):
         new_node3["per_prompt_size"] = list(per_size)
 
-    # 兜底：没有 count/size 默认每张 1 张、默认规格
+    # 兜底 size
     prompts = new_node3.get("generate_prompts", [])
-    if not new_node3.get("per_prompt_count"):
-        new_node3["per_prompt_count"] = [1] * len(prompts)
     if not new_node3.get("per_prompt_size"):
         new_node3["per_prompt_size"] = ["3:4"] * len(prompts)
 
@@ -440,10 +458,6 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
             if new_node3.get("prompts_detail"):
                 new_node3["prompts_detail"] = [
                     new_node3["prompts_detail"][i] for i in sel_sorted
-                ]
-            if new_node3.get("per_prompt_count"):
-                new_node3["per_prompt_count"] = [
-                    new_node3["per_prompt_count"][i] for i in sel_sorted
                 ]
             if new_node3.get("per_prompt_size"):
                 new_node3["per_prompt_size"] = [

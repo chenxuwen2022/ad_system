@@ -103,6 +103,7 @@ class SchemeState(TypedDict, total=False):
     schemes: list[dict[str, Any]]          # 3 套完整 12 维 JSON（每套 = PLANNING_AGENT_SYSTEM_PROMPT 输出）
     scheme_raw: str                         # VLM 原始 JSON 文本（前端展示/调试）
     selected_scheme_indices: list[int]      # C2 选的方案索引，如 [0, 2] 或 [0, 1, 2]
+    per_scheme_count: list[int]             # C2 每套选中方案要生成几份 prompt，如 [3, 1]（len = len(selected_scheme_indices)）
     thinking_text: str                      # VLM 深度思考过程文本
 
 
@@ -116,13 +117,12 @@ class PromptState(TypedDict, total=False):
     ratio: str                              # C1 用户选的画面比例
     image_model: str                        # 生图模型选择
 
-    # 由 Node3 产出（循环 N 次，N = 选中方案数）
-    generate_prompts: list[str]             # 每套选中方案 → 1 个最终 prompt 字符串
-    prompts_detail: list[dict[str, Any]]    # 对应每个 prompt 的详情：{scheme_index, prompt_raw, ...}
+    # 由 Node3 产出（循环 N 次，N = sum(node2.per_scheme_count)）
+    generate_prompts: list[str]             # N 份最终 prompt 字符串（每份 = 一张生图）
+    prompts_detail: list[dict[str, Any]]    # 对应每个 prompt 的详情：{scheme_index, variant_index, prompt_raw, ...}
     prompt_raw: str                         # VLM 原始输出拼接（调试用）
 
     # C3 interrupt 后 resume 写入
-    per_prompt_count: list[int]             # 每个 prompt 生成几张图，如 [3, 1]
     per_prompt_size: list[str]              # 每个 prompt 的图片规格，如 ["3:4", "3:4"]
     compressed_model_images: list[str]      # 模特图 data URI 缓存
     thinking_text: str                      # VLM 深度思考过程文本（多个方案的 thinking 拼接）
@@ -162,6 +162,9 @@ class TaskState(TypedDict, total=False):
     node2: Annotated[SchemeState, REDUCER]
     node3: Annotated[PromptState, REDUCER]
     node4: Annotated[Node4State, REDUCER]
+    # HITL 确认记录：{"c1": True, ...}。用户点"生成方案"确认 c1 时由 _c1_confirm_report 写入，
+    # 供 compute_completed_mask 反推已完成步骤（interrupt 丢失后仍能识别 c1 已确认）
+    confirmations: Annotated[dict[str, bool], REDUCER]
     progress: Annotated[Progress, REDUCER]
     cost: Annotated[CostSummary, REDUCER]
     interrupt: Annotated[InterruptSnapshot | None, REDUCER]

@@ -381,6 +381,7 @@ def _call_vlm_recognize(raw: bytes):
             user=prompt,
             image_uris=[f"data:image/png;base64,{b64}"],
             response_format={"type": "json_object"},
+            reasoning_effort="close",
         )
         return resp.content or ""
 
@@ -626,6 +627,7 @@ async def auto_tag(body: OutfitAutoTagRequest):
         resp, used_model = await pool.chat_with_images(
             system=system, user=user_text, image_uris=data_uris,
             response_format={"type": "json_object"},
+            reasoning_effort="close",
         )
         content = (resp.content or "").strip()
         if content.startswith("```"):

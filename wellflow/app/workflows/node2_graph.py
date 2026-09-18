@@ -2,7 +2,7 @@
 
 流式/非流式策略（和 Node1 一致）：
   - effort == "low"        → 非流式 plan_schemes()（强制 JSON，response_format=json_object）
-  - effort == None / "none" / "medium" / "high" → 流式 stream_plan_schemes()
+  - effort == "close" / "medium" / "high" → 流式 stream_plan_schemes()
 三套方案要求在方案定位、视觉主题、场景设定、模特气质、光影风格上有显著差异。
 
 输出写入 state.node2（SchemeState）。
@@ -128,7 +128,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
                 continue
 
             if item_type == "thinking":
-                # Node2 设计上不向前端展示思考过程（reasoning_effort=none/关闭推理）
+                # Node2 设计上不向前端展示思考过程（reasoning_effort=close 强制关闭推理）
                 # 这里继续累积内部日志但不再 publish 到 SSE，前端不会收到 thinking_chunk 事件
                 think_parts.append(text)
                 think_chunk_index += 1
@@ -151,7 +151,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         print(f"[node2] 🎬 流式 VLM 完成: content len={len(raw_content)}, "
               f"thinking len={len(''.join(think_parts))}, 总耗时={time.time() - t0:.2f}s", flush=True)
 
-        # 🔍 诊断：打印原始输出前 800 字，确认 gpt-5.6-sol 输出格式
+        # 🔍 诊断：打印原始输出前 800 字，确认模型输出格式（Node2 统一走 model_pool 轮询）
         print(f"[node2] 🔍 raw_content 前 800 字:\n{raw_content[:800]}", flush=True)
         print(f"[node2] 🔍 raw_content 后 200 字:\n{raw_content[-200:]}", flush=True)
 

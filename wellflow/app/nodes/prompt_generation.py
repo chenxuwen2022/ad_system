@@ -225,8 +225,13 @@ async def stream_generate_prompt(
     model_images: list[str] | None = None,
     user_requirement: str = "",
     reasoning_effort: str | None = None,
+    variant_index: int | None = None,
+    variant_total: int | None = None,
 ):
-    """流式为单个方案生成最终 prompt（yield {"type": "thinking"|"content", "text": "..."}）。"""
+    """流式为单个方案的一个变体生成最终 prompt（yield {"type": "thinking"|"content", "text": "..."}）。
+
+    variant_index / variant_total 为 None 时视为"单变体"，不追加变体提示。
+    """
     from wellflow.app.config import settings
 
     pool = get_model_pool()
@@ -246,6 +251,14 @@ async def stream_generate_prompt(
         user_text_parts.append(f"【商品识别报告】\n{product_insight}")
     if user_requirement:
         user_text_parts.append(f"【用户原始需求】\n{user_requirement}")
+
+    # 变体提示：同一方案多份 prompt 时，明确要求不同的构图/镜头/氛围
+    if variant_index is not None and variant_total and variant_total > 1:
+        user_text_parts.append(
+            f"【变体要求】当前为该方案第 {variant_index + 1} / {variant_total} 份 prompt，"
+            "请在保持方案核心卖点与商品一致性的前提下，主动变化镜头语言、构图、"
+            "光影、模特姿势或场景氛围，使这一份与生图结果和同方案的其他变体明显区分。"
+        )
 
     product_images = product_images or []
     model_images = model_images or []
@@ -299,8 +312,12 @@ async def generate_prompt_for_scheme(
     model_images: list[str] | None = None,
     user_requirement: str = "",
     reasoning_effort: str | None = None,
+    variant_index: int | None = None,
+    variant_total: int | None = None,
 ) -> dict[str, Any]:
-    """为单个方案生成最终 prompt。
+    """为单个方案的一个变体生成最终 prompt。
+
+    variant_index / variant_total 为 None 时视为"单变体"，不追加变体提示。
 
     Returns:
         {"prompt": str, "negative_prompt": str | None, "prompt_detail": dict,
@@ -324,6 +341,14 @@ async def generate_prompt_for_scheme(
         user_text_parts.append(f"【商品识别报告】\n{product_insight}")
     if user_requirement:
         user_text_parts.append(f"【用户原始需求】\n{user_requirement}")
+
+    # 变体提示
+    if variant_index is not None and variant_total and variant_total > 1:
+        user_text_parts.append(
+            f"【变体要求】当前为该方案第 {variant_index + 1} / {variant_total} 份 prompt，"
+            "请在保持方案核心卖点与商品一致性的前提下，主动变化镜头语言、构图、"
+            "光影、模特姿势或场景氛围，使这一份与生图结果和同方案的其他变体明显区分。"
+        )
 
     product_images = product_images or []
     model_images = model_images or []
@@ -352,7 +377,12 @@ async def generate_prompt_for_scheme(
 
     all_images = product_images + model_images
 
-    print(f"[prompt_generation] 调用: scheme #{scheme_index}, "
+    _variant_label = (
+        f" variant {variant_index+1}/{variant_total}"
+        if variant_index is not None and variant_total
+        else ""
+    )
+    print(f"[prompt_generation] 调用: scheme #{scheme_index}{_variant_label}, "
           f"product_images={n_prod}, model_images={n_model}, "
           f"reasoning_effort={effort}",
           flush=True)
@@ -367,13 +397,13 @@ async def generate_prompt_for_scheme(
 
     raw = resp.content or ""
     thinking_text = getattr(resp, "thinking", None)
-    print(f"[prompt_generation] scheme #{scheme_index}: 原始文本 len={len(raw)}, "
+    print(f"[prompt_generation] scheme #{scheme_index}{_variant_label}: 原始文本 len={len(raw)}, "
           f"thinking={len(thinking_text) if thinking_text else 0}", flush=True)
 
     detail = _extract_json(raw)
     prompt, negative_prompt = _json_to_natural_prompt(detail)
 
-    print(f"[prompt_generation] ✅ scheme #{scheme_index}: prompt len={len(prompt)}, "
+    print(f"[prompt_generation] ✅ scheme #{scheme_index}{_variant_label}: prompt len={len(prompt)}, "
           f"negative_prompt={'有' if negative_prompt else '无'}", flush=True)
 
     return {

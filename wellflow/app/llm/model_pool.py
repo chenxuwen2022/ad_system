@@ -18,7 +18,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -168,7 +167,7 @@ class ModelPool:
         user: str,
         response_format: dict[str, Any] | None = None,
         temperature: float = 0.3,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str,
     ) -> tuple[Any, str]:
         from wellflow.app.llm.ofox_gateway import OfoxGateway
         original_retries = OfoxGateway.MAX_RETRIES
@@ -194,7 +193,7 @@ class ModelPool:
         self, group: list[_ModelState],
         *, system: str, user: str,
         response_format: dict[str, Any] | None,
-        temperature: float, reasoning_effort: str | None,
+        temperature: float, reasoning_effort: str,
     ) -> tuple[Any, str] | None:
         n = len(group)
         start = self._pick_start(n)
@@ -238,7 +237,7 @@ class ModelPool:
         user: str,
         image_uris: list[str],
         response_format: dict[str, Any] | None = None,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str,
     ) -> tuple[Any, str]:
         from wellflow.app.llm.ofox_gateway import OfoxGateway
         original_retries = OfoxGateway.MAX_RETRIES
@@ -266,7 +265,7 @@ class ModelPool:
         self, group: list[_ModelState],
         *, system: str, user: str, image_uris: list[str],
         response_format: dict[str, Any] | None,
-        reasoning_effort: str | None,
+        reasoning_effort: str,
     ) -> tuple[Any, str] | None:
         n = len(group)
         start = self._pick_start(n)
@@ -309,7 +308,8 @@ class ModelPool:
         system: str,
         user: str,
         image_uris: list[str],
-        reasoning_effort: str | None = None,
+        reasoning_effort: str,
+        extra_params: dict[str, Any] | None = None,
     ):
         """流式多模态 VLM 调用，yield {"type": "thinking"|"content", "text": "..."}。
 
@@ -325,6 +325,7 @@ class ModelPool:
             gen = self._stream_chat_with_images_internal(
                 self._domestic, system=system, user=user,
                 image_uris=image_uris, reasoning_effort=reasoning_effort,
+                extra_params=extra_params,
             )
             async for item in gen:
                 yield item
@@ -334,6 +335,7 @@ class ModelPool:
             gen = self._stream_chat_with_images_internal(
                 [self._fallback], system=system, user=user,
                 image_uris=image_uris, reasoning_effort=reasoning_effort,
+                extra_params=extra_params,
             )
             async for item in gen:
                 yield item
@@ -343,7 +345,8 @@ class ModelPool:
     async def _stream_chat_with_images_internal(
         self, group: list[_ModelState],
         *, system: str, user: str, image_uris: list[str],
-        reasoning_effort: str | None,
+        reasoning_effort: str,
+        extra_params: dict[str, Any] | None = None,
     ):
         """内部实现：遍历模型，连接期 failover，流式 yield。"""
         n = len(group)
@@ -360,19 +363,35 @@ class ModelPool:
             print(f"[model-pool] 📤 stream → {state.model_key} (imgs={n_img}, eff={reasoning_effort})", flush=True)
 
             _stream_started = False
+            _got_content = False
             try:
                 async for delta in client.stream_chat_with_images(
                     system=system, user=user, image_uris=image_uris,
                     reasoning_effort=reasoning_effort,
+                    extra_params=extra_params,
                 ):
                     if not _stream_started:
                         _stream_started = True
                         state.record_success()
                         print(f"[model-pool] ✅ {state.model_key} 流已建立", flush=True)
+                    # 记录是否收到过真正的 content（thinking 不算）
+                    if isinstance(delta, dict):
+                        if delta.get("type") == "content" and delta.get("text"):
+                            _got_content = True
+                    elif delta:
+                        _got_content = True
                     yield delta
                 # 流正常结束（[DONE]）
                 if _stream_started:
-                    return  # 正常结束，不再遍历其他模型
+                    if _got_content:
+                        return  # 正常结束，不再遍历其他模型
+                    # 只收到 thinking、content 为空 → thinking 吞掉 completion 预算
+                    # （eff=close 未生效的典型症状）。视为可 failover 的失败，切下一个模型。
+                    # 注意：此时已向下游 yield 过 thinking 块，node2 会丢弃 thinking，无副作用。
+                    print(f"[model-pool] ⚠️ {state.model_key} 流结束但 content 为空"
+                          f"（疑似 thinking 未关闭吞掉预算），试下一个", flush=True)
+                    state.record_failure()
+                    continue
                 # 没 yield 任何东西就退出了？可能是模型返回空流
                 print(f"[model-pool] ⚠️ {state.model_key} 空流，试下一个", flush=True)
                 continue

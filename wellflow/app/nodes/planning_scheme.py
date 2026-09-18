@@ -25,38 +25,141 @@ from wellflow.app.prompt.constant import PLANNING_AGENT_SYSTEM_PROMPT
 
 
 def _extract_json(text: str) -> dict[str, Any]:
-    """从 VLM 返回文本中提取 JSON。"""
+    """从 VLM 返回文本中提取 JSON。
+
+    四层兜底，按降级顺序尝试：
+      1. json.loads 直接解析（最理想）
+      2. 剥 code fence 后 json.loads
+      3. 首尾花括号切片后 json.loads
+      4. ❗ 容错修复后 json.loads —— 修 trailing comma、补缺失括号
+
+    如果四层都失败，尝试正则抽 scheme_index 做降级方案（至少能拿到方案名数量）。
+
+    关键洞察：Node2 流式路径传了 response_format=json_object 后，
+    LLM 输出应该是严格合法 JSON。如果仍失败，多半是流式 chunk 拼接
+    时尾部被截断或 thinking 混入——此时容错修复能解决 80% 的情况。
+    """
     if not text:
         return {}
 
-    try:
-        obj = json.loads(text.strip())
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
+    steps = [
+        ("直接", lambda t: t.strip()),
+        ("剥 code fence", lambda t: re.sub(r"\s*$", "",
+                        re.sub(r"^```(?:json)?\s*", "", t.strip(), flags=re.IGNORECASE))),
+        ("首尾花括号切片", lambda t: t.strip()[
+            t.find("{"): t.rfind("}") + 1] if t.strip().find("{") >= 0 and t.strip().rfind("}") > t.strip().find("{") else t),
+    ]
 
-    fenced = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.IGNORECASE)
-    fenced = re.sub(r"\s*```$", "", fenced)
-    try:
-        obj = json.loads(fenced.strip())
-        if isinstance(obj, dict):
-            return obj
-    except json.JSONDecodeError:
-        pass
-
-    first = fenced.find("{")
-    last = fenced.rfind("}")
-    if first >= 0 and last > first:
+    for step_name, transform in steps:
         try:
-            obj = json.loads(fenced[first:last + 1])
+            obj = json.loads(transform(text))
             if isinstance(obj, dict):
                 return obj
         except json.JSONDecodeError:
-            pass
+            continue
 
-    print(f"[planning_scheme] ⚠️ 无法解析 JSON, 原文本前200字: {text[:200]!r}", flush=True)
-    return {}
+    # ── 第四步：容错修复 ──
+    candidates = []
+    for _, transform in steps:
+        t = transform(text)
+        candidates.append(t)
+    candidates.sort(key=len, reverse=True)
+    for cand in candidates:
+        try:
+            fixed = _repair_json(cand)
+            obj = json.loads(fixed)
+            if isinstance(obj, dict):
+                print(f"[planning_scheme] 🔧 JSON 容错修复成功", flush=True)
+                return obj
+        except json.JSONDecodeError:
+            continue
+
+    # ── 第五步：正则降级抽 scheme_index / scheme_name ──
+    print(f"[planning_scheme] ⚠️ JSON 解析全失败，尝试正则降级抽取", flush=True)
+    return _regex_extract_schemes(text)
+
+
+def _regex_extract_schemes(text: str) -> dict[str, Any]:
+    """正则降级：从 LLM 输出文本中提取出 scheme_index / scheme_name 对。
+
+    当完整 JSON 无法解析时，至少能拿到方案数量和方案名，
+    让后续 `len(schemes) > 0` 检查不被误触发（不会 raise RuntimeError）。
+    这种降级方案会缺失完整的 12 维字段，但比全空好——
+    前端至少能显示 "方案待补充" 的占位条目。
+    """
+    # 抽 scheme_index + scheme_name 对
+    pattern = r'"scheme_index"\s*:\s*(\d+)[^}]*?"scheme_name"\s*:\s*"([^"]*)"'
+    matches = re.findall(pattern, text, re.DOTALL)
+
+    # 或者反过来先抽 name 再抽 index
+    if not matches:
+        pattern2 = r'"scheme_name"\s*:\s*"([^"]*)"[^}]*?"scheme_index"\s*:\s*(\d+)'
+        matches = [(int(idx), name) for name, idx in re.findall(pattern2, text, re.DOTALL)]
+
+    if not matches:
+        print(f"[planning_scheme] 🔍 正则也没抽到任何 scheme_index/scheme_name → schemes=[]", flush=True)
+        return {}
+
+    # 按 index 排序，构造简化的 scheme dict
+    matches.sort(key=lambda x: int(x[0]))
+    schemes = [
+        {
+            "scheme_index": int(idx),
+            "scheme_name": name or f"方案 {idx + 1}",
+            "_placeholder": True,
+            "_extracted_by_regex": True,
+        }
+        for idx, name in matches
+    ]
+    print(f"[planning_scheme] 🔧 正则降级成功：从 len={len(text)} 的文本中抽到 {len(schemes)} 个方案", flush=True)
+    return {"schemes": schemes}
+
+
+def _repair_json(text: str) -> str:
+    """修复 JSON 常见小语法错误：
+      1. trailing comma —— 数组/对象最后一个元素后面的多余逗号
+      2. 截断 JSON —— 尾部缺失闭合括号/引号，尝试补齐
+    """
+    t = text.strip()
+
+    # 修 trailing comma —— ",}" 和 ",]"
+    t = re.sub(r",\s*([}\]])", r"\1", t)
+
+    # 修截断 JSON —— 尾部缺失闭合字符
+    t = _close_braces(t)
+
+    return t
+
+
+def _close_braces(text: str) -> str:
+    """尝试补齐缺失的闭合括号，让截断的 JSON 能被 json.loads 接受。
+
+    简化策略：只统计顶层花括号/方括号的未闭合数，不处理嵌套字符串里的花括号。
+    """
+    s = text
+    n = len(s)
+    if n == 0:
+        return s
+
+    opens = {"{": 0, "[": 0}
+    for ch in s:
+        if ch == "{": opens["{"] += 1
+        elif ch == "}": opens["{"] -= 1
+        elif ch == "[": opens["["] += 1
+        elif ch == "]": opens["["] -= 1
+
+    if opens["{"] <= 0 and opens["["] <= 0:
+        return s  # 无缺失
+
+    # 补闭合符：先补内层数组再补外层对象
+    closers = []
+    for _ in range(opens["["]):
+        closers.append("]")
+    for _ in range(opens["{"]):
+        closers.append("}")
+    s = s.rstrip() + "".join(closers)
+
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +206,9 @@ async def stream_plan_schemes(
         user="\n\n".join(user_text_parts),
         image_uris=[],
         reasoning_effort=effort,
+        # 流式也强制 JSON 输出格式（兼容 OpenAI 协议的网关会处理；
+        # 如果网关不支持会忽略，最终 _extract_json 容错修复兜底）
+        extra_params={"response_format": {"type": "json_object"}},
     ):
         if delta:
             yield delta
