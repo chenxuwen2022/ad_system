@@ -22,6 +22,7 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
+from wellflow.app.workflows.state import cleared
 from wellflow.app.event_bus import (
     publish, drain_and_subscribe, cleanup as _eb_cleanup,
     mark_running, mark_done, is_running,
@@ -723,29 +724,56 @@ async def _handle_backward(
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
+    # ------------------------------------------------------------------
+    # 流程约束守卫：
+    #   1. phase == done（已确认入库）→ 禁止任何回跳重做；
+    #   2. backward_to_c1（重做 node1）仅允许在 c1_confirm 阶段——
+    #      一旦确认进入 node2，node1 永久锁定。
+    # ------------------------------------------------------------------
+    def _get_phase() -> str | None:
+        try:
+            with session_scope() as db:
+                t = TaskRepo(db).get(task_id)
+                return t.phase if t else None
+        except Exception:
+            return None
+
+    current_phase = await asyncio.to_thread(_get_phase)
+    if current_phase == "done":
+        print(f"[backward] 🛡️ task={task_id} 已入库(done)，拒绝回跳 intent={intent}", flush=True)
+        yield _sse("message", {"text": "任务已确认入库，不能再回退重做。"})
+        yield _sse("done", {"phase": "done"})
+        return
+    if intent == "backward_to_c1" and current_phase != "c1_confirm":
+        print(f"[backward] 🛡️ task={task_id} phase={current_phase}，node1 已锁定，拒绝回跳 c1", flush=True)
+        yield _sse("message", {"text": "商品报告已确认进入方案阶段，不能再重做商品识别。"})
+        yield _sse("done", {"phase": "done"})
+        return
+
     if intent == "backward_to_c1":
         # 跳到 Node1 执行节点（不是 interrupt 节点），跑完 VLM 自动流到 c1_confirm
+        # cleared() 整体替换：reducer 字段级 merge 会把 {} 当 no-op，清不掉旧数据
         goto_node = "node1_product_analyzer"
         goto_clean = "c1"
         clean_update: dict[str, Any] = {
-            "node1": {}, "node2": {}, "node3": {},
+            "node1": cleared(), "node2": cleared(), "node3": cleared(), "node4": cleared(),
             "phase": "c1_confirm", "interrupt": None,
         }
         step_num = 2
     elif intent == "backward_to_c2":
-        # 跳到 Node2 执行节点
+        # 跳到 Node2 执行节点（整体替换清空下游 node3/node4）
         goto_node = "node2_planning_scheme"
         goto_clean = "c2"
         clean_update: dict[str, Any] = {
-            "node3": {}, "phase": "c2_confirm", "interrupt": None,
+            "node3": cleared(), "node4": cleared(), "phase": "c2_confirm", "interrupt": None,
         }
         step_num = 4
     else:  # backward_to_c3
-        # 跳到 Node3 执行节点
+        # 跳到 Node3 执行节点（整体替换清空下游 node4）
         goto_node = "node3_prompt_generation"
         goto_clean = "c3"
         clean_update: dict[str, Any] = {
-            "node3": {}, "phase": "c3_confirm", "interrupt": None,
+            "node3": cleared(), "node4": cleared(), "phase": "c3_confirm", "interrupt": None,
         }
         step_num = 6
 

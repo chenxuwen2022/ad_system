@@ -416,6 +416,10 @@ async def resume_task(
     if not task:
         raise HTTPException(404, f"task {task_id} 不存在")
 
+    # 终态守卫：确认入库（done）后禁止任何 redo / resume
+    if task.phase == TaskPhase.DONE.value:
+        raise HTTPException(409, "任务已确认入库，禁止任何重做操作")
+
     interrupt = task.interrupt_json or {}
     current_node = interrupt.get("node")
     if not current_node or current_node != node:

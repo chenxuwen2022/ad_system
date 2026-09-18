@@ -10,12 +10,12 @@ COPY wellflow/requirements.txt wellflow/requirements.txt
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     -r requirements.txt -r wellflow/requirements.txt
 
-# 源码：根目录广告投放子系统 + wellflow/ 商拍子系统 + 根目录 .env（config.py 从 /app/.env 读取）
-COPY routes/ routes/
-COPY static/ static/
-COPY templates/ templates/
-COPY main.py config.py db.py models.py douyin_api.py file_service.py token_manager.py ./
+# 源码：ad/ 广告投放子系统 + wellflow/ 商拍子系统 + 根目录 .env（config.py 从 /app/.env 读取）
+COPY ad/ ad/
+COPY main.py ./
 COPY wellflow/ wellflow/
+# main.py 会挂载 /static，目录必须存在；内容为运行时生成，不打进镜像
+RUN mkdir -p static
 COPY .env .
 
 EXPOSE 8000

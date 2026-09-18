@@ -6,40 +6,43 @@
   Node3 (子图)  — prompt_generation (单节点): 按选中方案顺序循环调 VLM → N 条最终生图 prompt
   Node4 (子图)  — prepare → run_generation → archive (3 节点): 并发调 LLM 生图 + 归档
 
-主干拓扑（全部支持 redo 跳回上游）：
+主干拓扑（redo 受阶段约束）：
   START ──→ Node1 ──→ C1 ──→ Node2 ──→ C2 ──→ Node3 ──→ C3 ──→ Node4 ──┐
                                                      ↑ C2 redo           │
-                                              (回到 Node1~3)              │
+                                              (只能回 Node2)             │
                                                                          _route_after_node4
                                                                          (永远返回 c4_review)
                                                                               ↓
                                                                           C4_review_result
                                                                               │
-                                                    ┌──────────────────────────┼──────────────────────────┐
-                                                    ↓                          ↓                          ↓
-                                                confirm                     redo:1                       redo:2~4
-                                                    │                          │                          │
-                                                    ↓                          ↓                          ↓
-                                                 finalize                   回 Node1                  回到对应 Node
-                                                    │                    （全清 state）              （分层清理 state）
+                                                    ┌──────────────────────────┴─────────────┐
+                                                    ↓                                         ↓
+                                                 confirm                                  redo:2~4
+                                                    │                                         │
+                                                    ↓                                  回到对应 Node
+                                                 finalize                            （分层清理 state）
+                                                    │
                                                     ↓
                                                    END
+                                                 (done 后禁止任何 redo)
 
 HITL interrupt 数据流：
   C1  resume:   confirmed_report, model_images(file), ratio, image_model
-  C2  resume:   selected_scheme_indices + decision("confirm"|"redo") + redo_target("node1"~"node3")
+  C2  resume:   selected_scheme_indices + decision("confirm"|"redo") + redo_target("node2")
   C3  resume:   edited_prompts[], per_prompt_count[], per_prompt_size[], ratio, image_model
-                + decision("confirm"|"redo") + redo_target("node1"~"node4")
-  C4  resume:   decision("confirm"|"redo"), redo_target("node1"~"node4")
+                + decision("confirm"|"redo") + redo_target("node2"~"node3")
+  C4  resume:   decision("confirm"|"redo"), redo_target("node2"~"node4")
 
 State 分层（TaskState）：
   request（不变） ─ node1 ─ node2 ─ node3 ─ node4 ─ progress/cost/interrupt/error
 
 redo 分层清理（C2 / C3 / C4 统一逻辑）：
-  redo→node1: 清 node1+2+3+4，重跑 VLM 商品识别
+  【强制约束】node1 仅在 C1 阶段允许重做；一旦推进到 Node2，node1 永久锁定。
+  C2 仅可 redo→node2；C3 可 redo→node2/node3；C4 可 redo→node2/node3/node4。
+  finalize（phase=done，确认入库）后禁止任何 redo。
   redo→node2: 清 node2+3+4，保留 node1 报告 + node3.model_images/ratio/image_model
   redo→node3: 清 node3+4，保留 node1 + node2.schemes + node3.model_images/ratio/image_model
-  redo→node4: 清 node4.outputs/failed_items，重置 work_items 为 pending（仅 C3/C4 可达）
+  redo→node4: 清 node4.outputs/failed_items，重置 work_items 为 pending（仅 C4 可达）
 
 Phase 枚举（前端 PHASE_LABELS 对齐）：
   input → node1_input_check → node1_vlm_analyzing → node1_vlm_done
@@ -73,7 +76,7 @@ def build_graph(checkpointer=None):
             "langgraph 未安装。请 pip install langgraph langgraph-checkpoint-postgres"
         ) from exc
 
-    from wellflow.app.workflows.state import TaskState
+    from wellflow.app.workflows.state import TaskState, cleared
     from wellflow.app.workflows import (
         node1_graph as _n1,
         node2_graph as _n2,
@@ -115,14 +118,13 @@ def build_graph(checkpointer=None):
 
     graph.add_edge("node2_planning_scheme", "c2_select_scheme")
 
-    # ---- C2 条件路由：confirm → Node3，redo → Node1/2 ----
-    # 注意：C2 在 Node2 之后、Node3 之前，redo 只能回到 node1 或 node2，
-    # 不支持跳到 node3（必须经过 node2）。
+    # ---- C2 条件路由：confirm → Node3，redo → Node2 ----
+    # 注意：C2 在 Node2 之后、Node3 之前，按约束只能重做 node2；
+    # node1 在 C1 确认后永久锁定，不提供回退路径。
     graph.add_conditional_edges(
         "c2_select_scheme",
         _route_c2_decision,
         {
-            "node1_product_analyzer": "node1_product_analyzer",
             "node2_planning_scheme": "node2_planning_scheme",
             "node3_prompt_generation": "node3_prompt_generation",
         },
@@ -130,19 +132,18 @@ def build_graph(checkpointer=None):
 
     graph.add_edge("node3_prompt_generation", "c3_confirm_prompt")
 
-    # ---- C3 条件路由：confirm → Node4，redo → Node1/2/3 ----
+    # ---- C3 条件路由：confirm → Node4，redo → Node2/3 ----
     graph.add_conditional_edges(
         "c3_confirm_prompt",
         _route_c3_decision,
         {
-            "node1_product_analyzer": "node1_product_analyzer",
             "node2_planning_scheme": "node2_planning_scheme",
             "node3_prompt_generation": "node3_prompt_generation",
             "node4_generate_image": "node4_generate_image",
         },
     )
 
-    # ---- C4 条件路由：redo 可选择回到任意 Node1-4，confirm 进 finalize ----
+    # ---- C4 条件路由：redo 可回 Node2/3/4，confirm 进 finalize ----
     graph.add_conditional_edges(
         "node4_generate_image",
         _route_after_node4,
@@ -155,7 +156,6 @@ def build_graph(checkpointer=None):
         "c4_review_result",
         _route_c4_decision,
         {
-            "node1_product_analyzer": "node1_product_analyzer",
             "node2_planning_scheme": "node2_planning_scheme",
             "node3_prompt_generation": "node3_prompt_generation",
             "node4_generate_image": "node4_generate_image",
@@ -199,6 +199,8 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
         "phase": "c1_confirm",
         "hint": "请确认商品识别报告，可修改后继续",
         "report": state.get("node1", {}).get("product_insight", ""),
+        # 结构化四块（稳定 key），前端重点洞察面板优先消费，避免耦合 prompt 字段名
+        "report_sections": state.get("node1", {}).get("report_sections"),
     })
 
     if not interrupt_value:
@@ -210,20 +212,15 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     # ---- redo：只支持 redo→node1（C1 刚跑完 Node1，没有其他上游）----
     if decision == "redo":
         print(f"[c1_confirm_report] 🔄 redo → {redo_target}", flush=True)
-        new_state: dict[str, Any] = {"phase": "c1_confirm"}
-        if redo_target == "node1":
-            # 清 node1-4，重跑 VLM 商品识别
-            new_state["node1"] = {}
-            new_state["node2"] = {}
-            new_state["node3"] = {}
-            new_state["node4"] = {}
-        else:
-            # 兜底：C1 只有 redo→node1 有意义
-            new_state["node1"] = {}
-            new_state["node2"] = {}
-            new_state["node3"] = {}
-            new_state["node4"] = {}
-        new_state["_redo_target"] = "node1"
+        # 清 node1-4（cleared() 整体替换，防止 reducer 字段级 merge 残留旧数据），重跑 VLM
+        new_state: dict[str, Any] = {
+            "phase": "c1_confirm",
+            "node1": cleared(),
+            "node2": cleared(),
+            "node3": cleared(),
+            "node4": cleared(),
+            "_redo_target": "node1",
+        }
         return new_state
 
     # ---- confirm：正常处理 ----
@@ -234,6 +231,9 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     confirmed_report = interrupt_value.get("confirmed_report")
     if confirmed_report:
         new_node1["product_insight"] = confirmed_report
+        # 用户可能编辑过报告，四块结构按编辑后文本重新归一化
+        from wellflow.app.prompt.report_sections import build_report_sections
+        new_node1["report_sections"] = build_report_sections(confirmed_report)
 
     model_images = interrupt_value.get("model_images")
     if model_images:
@@ -257,7 +257,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     用户可以选方案（selected_scheme_indices）或选择 redo 回到上游。
 
     resume 写入 node2.selected_scheme_indices。
-    也支持 decision("confirm"|"redo") + redo_target("node1"~"node3") 做 redo。
+    也支持 decision("confirm"|"redo") + redo_target("node2") 做 redo（仅允许 node2）。
     """
     from langgraph.types import interrupt
     from wellflow.app.event_bus import publish
@@ -285,40 +285,25 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     decision = interrupt_value.get("decision", "confirm")
     redo_target = interrupt_value.get("redo_target", "node2")
 
-    # ---- redo：按 target 分层清理 state ----
+    # ---- redo：C2 阶段仅允许重做 node2（node1 已永久锁定）----
     if decision == "redo":
         print(f"[c2_select] 🔄 redo → {redo_target}", flush=True)
-        new_state: dict[str, Any] = {"phase": "c2_select"}
 
-        if redo_target == "node1":
-            print("  → 全清 node1-4，回 Node1", flush=True)
-            new_state["node1"] = {}
-            new_state["node2"] = {}
-            new_state["node3"] = {}
-            new_state["node4"] = {}
-        elif redo_target == "node2":
-            print("  → 清 node2-4，保留 node1 报告，回 Node2", flush=True)
-            new_state["node1"] = node1
-            new_state["node2"] = {}
-            new_state["node3"] = {
-                "model_images": node3.get("model_images", []),
-                "ratio": node3.get("ratio"),
-                "image_model": node3.get("image_model"),
-            }
-            new_state["node4"] = {}
-        else:
-            # 默认回 Node2
-            print("  → 默认回 Node2", flush=True)
-            new_state["node1"] = node1
-            new_state["node2"] = {}
-            new_state["node3"] = {
-                "model_images": node3.get("model_images", []),
-                "ratio": node3.get("ratio"),
-                "image_model": node3.get("image_model"),
-            }
-            new_state["node4"] = {}
-
-        new_state["_redo_target"] = redo_target
+        # 无论请求目标是什么，C2 只允许回 Node2：整体替换清 node2-4，保留 node1 报告
+        # 以及 node3 里 C1 上传的模特图/比例/模型选择（用户已传资产不丢）
+        print("  → 清 node2-4，保留 node1 报告，回 Node2", flush=True)
+        new_state: dict[str, Any] = {
+            "phase": "c2_select",
+            "node1": node1,
+            "node2": cleared(),
+            "node3": cleared(
+                model_images=node3.get("model_images", []),
+                ratio=node3.get("ratio"),
+                image_model=node3.get("image_model"),
+            ),
+            "node4": cleared(),
+            "_redo_target": "node2",
+        }
         return new_state
 
     # ---- confirm：正常处理 selected_scheme_indices ----
@@ -353,10 +338,10 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
       - 编辑每套 prompt（edited_prompts）
       - 为每套选生成张数（per_prompt_count: [3, 1, ...]）
       - 为每套选图片规格（per_prompt_size: ["3:4", "3:4", ...]）
-      - redo 回到任意上游 Node1-4
+      - redo 回到上游 Node2/Node3（node1 已锁定，node4 尚未执行）
 
     resume 写入 node3.generate_prompts（可能被编辑）+ per_prompt_count + per_prompt_size。
-    也支持 decision("confirm"|"redo") + redo_target("node1"~"node4") 做 redo。
+    也支持 decision("confirm"|"redo") + redo_target("node2"|"node3") 做 redo。
     """
     from langgraph.types import interrupt
     from wellflow.app.event_bus import publish
@@ -365,7 +350,6 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     node1 = state.get("node1", {})
     node2 = state.get("node2", {})
     node3 = state.get("node3", {})
-    node4 = state.get("node4", {})
 
     if task_id:
         publish(task_id, "phase", {"phase": "c3_confirm"})
@@ -385,46 +369,35 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     decision = interrupt_value.get("decision", "confirm")
     redo_target = interrupt_value.get("redo_target", "node3")
 
-    # ---- redo：按 target 分层清理 state ----
+    # ---- redo：C3 阶段仅允许重做 node2/node3（node1 已锁定，node4 未执行）----
     if decision == "redo":
         print(f"[c3_confirm] 🔄 redo → {redo_target}", flush=True)
         new_state: dict[str, Any] = {"phase": "c3_confirm"}
 
-        if redo_target == "node1":
-            print("  → 全清 node1-4，回 Node1", flush=True)
-            new_state["node1"] = {}
-            new_state["node2"] = {}
-            new_state["node3"] = {}
-            new_state["node4"] = {}
-        elif redo_target == "node2":
+        if redo_target == "node2":
             print("  → 清 node2-4，保留 node1 报告，回 Node2", flush=True)
             new_state["node1"] = node1
-            new_state["node2"] = {}
-            new_state["node3"] = {
-                "model_images": node3.get("model_images", []),
-                "ratio": node3.get("ratio"),
-                "image_model": node3.get("image_model"),
-            }
-            new_state["node4"] = {}
-        elif redo_target == "node3":
+            new_state["node2"] = cleared()
+            new_state["node3"] = cleared(
+                model_images=node3.get("model_images", []),
+                ratio=node3.get("ratio"),
+                image_model=node3.get("image_model"),
+            )
+            new_state["node4"] = cleared()
+            new_state["_redo_target"] = "node2"
+        else:
+            # 默认回 Node3：清 node3-4，保留 node1+node2
             print("  → 清 node3-4，保留 node1+node2，回 Node3", flush=True)
             new_state["node1"] = node1
             new_state["node2"] = node2
-            new_state["node3"] = {
-                "model_images": node3.get("model_images", []),
-                "ratio": node3.get("ratio"),
-                "image_model": node3.get("image_model"),
-            }
-            new_state["node4"] = {}
-        else:
-            # redo→node4 或其他：重置 Node4
-            print("  → 重置 node4，保留上游全部", flush=True)
-            new_state["node1"] = node1
-            new_state["node2"] = node2
-            new_state["node3"] = node3
-            new_state["node4"] = {}
+            new_state["node3"] = cleared(
+                model_images=node3.get("model_images", []),
+                ratio=node3.get("ratio"),
+                image_model=node3.get("image_model"),
+            )
+            new_state["node4"] = cleared()
+            new_state["_redo_target"] = "node3"
 
-        new_state["_redo_target"] = redo_target
         return new_state
 
     # ---- confirm：正常处理 prompt 编辑 + 张数 + 规格 + 选中过滤 ----
@@ -495,15 +468,15 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
-    """C4：用户查看生图结果，选择 confirm 或 redo 到任意 Node。
+    """C4：用户查看生图结果，选择 confirm 或 redo 到 Node2/3/4（node1 已锁定）。
 
     interrupt 让前端展示 Node4 的 outputs（生图结果）+ failed_items（失败明细），
     用户可以：
-      - confirm：进 finalize 归档
-      - redo_to='node1'：清 node1+node2+node3+node4（保留 request），回 Node1 重新分析
+      - confirm：进 finalize 归档（入库后禁止任何 redo）
       - redo_to='node2'：清 node2+node3+node4（保留 node1 报告 + node3.model_images/ratio）
       - redo_to='node3'：清 node3+node4（保留 node1+node2 方案）
       - redo_to='node4'：只重置 node4.work_items status + 清 outputs（原来的 redo）
+    按约束 node1 已永久锁定，不提供 redo→node1。
     """
     from langgraph.types import interrupt
     from wellflow.app.event_bus import publish
@@ -533,49 +506,43 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         return {"phase": "c4_review"}
 
     decision = interrupt_value.get("decision", "confirm")  # "confirm" or "redo"
-    redo_target = interrupt_value.get("redo_target", "node4")  # "node1" / "node2" / "node3" / "node4"
+    redo_target = interrupt_value.get("redo_target", "node4")  # "node2" / "node3" / "node4"
 
     if decision == "confirm":
         return {"phase": "c4_review", "_redo_target": None}
 
-    # ---- redo：按 target 分层清理 state ----
+    # ---- redo：按 target 分层清理 state（node1 已锁定，仅允许 node2/3/4）----
     new_state: dict[str, Any] = {"phase": "c4_review"}
 
-    if redo_target == "node1":
-        # 全清：Node1 重新跑 VLM 商品识别
-        print(f"[c4_review] 🔄 redo → Node1（全清 node1-4）", flush=True)
-        new_state["node1"] = {}
-        new_state["node2"] = {}
-        new_state["node3"] = {}
-        new_state["node4"] = {}
-
-    elif redo_target == "node2":
-        # 清 node2+node3+node4，保留 node1 报告
+    if redo_target == "node2":
+        # 整体替换清 node2+node3+node4，保留 node1 报告
         print(f"[c4_review] 🔄 redo → Node2（清 node2-4，保留 node1）", flush=True)
         new_state["node1"] = node1  # 保留报告
-        new_state["node2"] = {}
+        new_state["node2"] = cleared()
         # node3 清方案产物，但保留 C1 上传的模特图/比例/模型选择
-        new_state["node3"] = {
-            "model_images": node3.get("model_images", []),
-            "ratio": node3.get("ratio"),
-            "image_model": node3.get("image_model"),
-        }
-        new_state["node4"] = {}
+        new_state["node3"] = cleared(
+            model_images=node3.get("model_images", []),
+            ratio=node3.get("ratio"),
+            image_model=node3.get("image_model"),
+        )
+        new_state["node4"] = cleared()
+        new_state["_redo_target"] = "node2"
 
     elif redo_target == "node3":
         # 清 node3+node4，保留 node1+node2
         print(f"[c4_review] 🔄 redo → Node3（清 node3-4，保留 node1-2）", flush=True)
         new_state["node1"] = node1
         new_state["node2"] = node2
-        new_state["node3"] = {
-            "model_images": node3.get("model_images", []),
-            "ratio": node3.get("ratio"),
-            "image_model": node3.get("image_model"),
-        }
-        new_state["node4"] = {}
+        new_state["node3"] = cleared(
+            model_images=node3.get("model_images", []),
+            ratio=node3.get("ratio"),
+            image_model=node3.get("image_model"),
+        )
+        new_state["node4"] = cleared()
+        new_state["_redo_target"] = "node3"
 
-    elif redo_target == "node4":
-        # 只重置 work_items status + 清 outputs（原来的行为）
+    else:
+        # redo_target == "node4" 或其他非法值：只重置 work_items status + 清 outputs（原来的行为）
         print(f"[c4_review] 🔄 redo → Node4（只重置 work_items）", flush=True)
         new_state["node1"] = node1
         new_state["node2"] = node2
@@ -587,9 +554,9 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         new_node4["outputs"] = []
         new_node4["failed_items"] = []
         new_state["node4"] = new_node4
+        new_state["_redo_target"] = "node4"
 
     # 🔑 写入 _redo_target：让 _route_c4_decision 知道该路由到哪个 Node
-    new_state["_redo_target"] = redo_target
     return new_state
 
 
@@ -622,26 +589,24 @@ def _route_c1_decision(state: dict[str, Any]) -> str:
 def _route_c2_decision(state: dict[str, Any]) -> str:
     """C2 interrupt resume 后的路由：
       - confirm → Node3 (prompt_generation)
-      - redo    → 按 state._redo_target 决定回到 Node1 或 Node2
-                  （C2 在 Node2 之后，不支持跳回 Node3 —— 那是 C3 的事）
+      - redo    → 只能回 Node2（node1 在 C1 确认后永久锁定）
     """
     redo_target = state.get("_redo_target")
     if redo_target:
-        # C2 只允许 redo 到 node1 或 node2；如果前端传了 node3/node4，兜底回 node2
-        safe_targets = {"node1", "node2"}
-        target = redo_target if redo_target in safe_targets else "node2"
-        return _node_mapping()[target]
+        return "node2_planning_scheme"
     return "node3_prompt_generation"
 
 
 def _route_c3_decision(state: dict[str, Any]) -> str:
     """C3 interrupt resume 后的路由：
       - confirm → Node4 (generate_image)
-      - redo    → 按 state._redo_target 决定回到 Node1/2/3/4
+      - redo    → 按 state._redo_target 回到 Node2/Node3（非法值兜底回 Node3）
     """
     redo_target = state.get("_redo_target")
     if redo_target:
-        return _node_mapping().get(redo_target, "node3_prompt_generation")
+        safe_targets = {"node2", "node3"}
+        target = redo_target if redo_target in safe_targets else "node3"
+        return _node_mapping()[target]
     return "node4_generate_image"
 
 
@@ -658,9 +623,11 @@ def _route_after_node4(state: dict[str, Any]) -> str:
 def _route_c4_decision(state: dict[str, Any]) -> str:
     """C4 interrupt resume 后的路由：
       - confirm → finalize
-      - redo    → 按 state._redo_target 决定回到 Node1-4
+      - redo    → 按 state._redo_target 回到 Node2/3/4（node1 已锁定，非法值兜底回 Node4）
     """
     redo_target = state.get("_redo_target")
     if redo_target:
-        return _node_mapping().get(redo_target, "node4_generate_image")
+        safe_targets = {"node2", "node3", "node4"}
+        target = redo_target if redo_target in safe_targets else "node4"
+        return _node_mapping()[target]
     return "finalize"
