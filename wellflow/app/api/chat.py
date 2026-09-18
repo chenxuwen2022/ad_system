@@ -718,15 +718,12 @@ async def chat(
                         yield ev
                 elif len(allowed) > 1:
                     print(f"[chat] redo dispatch: {len(allowed)} 个选项 → 发 selection_required", flush=True)
-                    yield _sse("selection_required", {
-                        "message": "请选择要重新执行的步骤：",
-                        "options": allowed,
-                        "task_id": t_id or "",
-                    })
-                    yield _sse("done", {"phase": "waiting_selection"})
-                    # 持久化 redo 等待状态到 LangGraph checkpoint。
-                    # 注意：只能用 TaskState 里已注册的 channel（phase / interrupt），
-                    # 未注册的新 key（如 redo_waiting）会被 LangGraph 静默丢弃！
+
+                    # ⚠️ 必须先持久化 checkpoint，再 yield _sse("done")！
+                    # 前端收到 done 后会停止读 SSE → ASGI 关闭连接 → generator 被 asyncio 取消。
+                    # 如果 aupdate_state 放在 yield done 之后，它会被 CancelledError 中断
+                    # （CancelledError 是 BaseException 子类，except Exception 兜不住），
+                    # 导致 checkpoint 里永远没有 phase=waiting_selection，刷新后 redo 卡片丢失。
                     try:
                         graph = _get_graph()
                         config = _langgraph_config(t_id)
@@ -743,8 +740,23 @@ async def chat(
                             },
                         })
                         print(f"[chat] ✅ checkpoint 已持久化 phase=waiting_selection", flush=True)
-                    except Exception as exc:
-                        print(f"[chat] ⚠️ 持久化 waiting_selection 失败（不阻塞 SSE）: {exc}", flush=True)
+                    except BaseException as exc:
+                        # CancelledError、Exception 全都捕获打日志，方便确认是否还有其他来源的取消
+                        import asyncio as _asio
+                        if isinstance(exc, _asio.CancelledError):
+                            print(f"[chat] ❌ aupdate_state 被 CancelledError 取消"
+                                  f"（graph 可能未初始化或连接提前关闭）", flush=True)
+                        else:
+                            print(f"[chat] ❌ 持久化 waiting_selection 失败: {exc!r}", flush=True)
+                            import traceback as _tb
+                            _tb.print_exc()
+
+                    yield _sse("selection_required", {
+                        "message": "请选择要重新执行的步骤：",
+                        "options": allowed,
+                        "task_id": t_id or "",
+                    })
+                    yield _sse("done", {"phase": "waiting_selection"})
                 else:
                     # 无选项（理论上不会，redo 守卫已经挡了无 current_node）
                     yield _sse("message", {"text": "当前阶段不允许重做。"})
