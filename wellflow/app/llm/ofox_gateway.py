@@ -188,7 +188,11 @@ class OfoxGateway(BaseLLMClient):
         last_exc: Exception | None = None
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout, proxy=self.proxy_url) as client:
+                async with httpx.AsyncClient(
+                    timeout=self.timeout,
+                    proxy=self.proxy_url,
+                    trust_env=False,
+                ) as client:
                     resp = await client.post(
                         f"{self.base_url}/chat/completions",
                         headers=headers,
@@ -197,9 +201,12 @@ class OfoxGateway(BaseLLMClient):
                     if resp.status_code in self.RETRYABLE_STATUS and attempt < self.MAX_RETRIES:
                         last_exc = httpx.HTTPStatusError(str(resp.status_code), request=resp.request, response=resp)
                         continue
-                    resp.raise_for_status()
                     if resp.status_code >= 400:
-                        print(f"[llm] ❌ HTTP {resp.status_code} body={resp.text[:500]}", flush=True)
+                        print(
+                            f"[llm] ❌ HTTP {resp.status_code} body={resp.text[:1000]}",
+                            flush=True,
+                        )
+                    resp.raise_for_status()
                     data = resp.json()
                 # DEBUG: 打印原始响应结构，排查 content 为 None 的问题
                 raw_content = data.get("choices", [{}])[0].get("message", {}).get("content")
@@ -326,7 +333,11 @@ class OfoxGateway(BaseLLMClient):
                 _last_flush_ts = _time.time()
 
             try:
-                async with httpx.AsyncClient(timeout=None, proxy=self.proxy_url) as client:
+                async with httpx.AsyncClient(
+                    timeout=None,
+                    proxy=self.proxy_url,
+                    trust_env=False,
+                ) as client:
                     _t0 = _time.time()
                     print(f"[llm] → POST {self.base_url}/chat/completions model={self.model} stream=True ...", flush=True)
                     async with client.stream(
