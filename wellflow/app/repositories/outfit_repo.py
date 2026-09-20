@@ -73,6 +73,7 @@ class OutfitRepo:
         original_storage_uri: str | None = None,
         items: list[dict[str, Any]] | None = None,
         dims: dict[str, list[str]] | None = None,
+        status: str | None = None,
     ) -> Outfit:
         obj = self.get(outfit_id)
         if obj is None:
@@ -91,6 +92,8 @@ class OutfitRepo:
             obj.items = items
         if dims is not None:
             obj.dims = dims
+        if status is not None:
+            obj.status = status
         obj.updated_at = datetime.now(timezone.utc)
         self.db.flush()
         return obj
