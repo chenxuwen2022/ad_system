@@ -30,6 +30,7 @@ class ModelOption(BaseModel):
 class ModelOptionsResponse(BaseModel):
     source: str = "newapi"
     capability: str | None = None
+    channel_id: int | None = None
     items: list[ModelOption] = Field(default_factory=list)
 
 
@@ -89,6 +90,35 @@ async def _fetch_newapi_models() -> list[dict[str, Any]]:
     return [item for item in raw_items if isinstance(item, dict)]
 
 
+async def _fetch_channel_models(channel_id: int) -> list[dict[str, Any]]:
+    if not settings.newapi_admin_access_token:
+        raise HTTPException(status_code=503, detail="New API 管理接口尚未配置")
+
+    url = f"{settings.newapi_admin_base_url.rstrip('/')}/api/channel/{channel_id}"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+            response = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {settings.newapi_admin_access_token}"},
+            )
+        response.raise_for_status()
+        body = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="New API 渠道模型列表请求失败") from exc
+
+    channel = (
+        body.get("data")
+        if isinstance(body, dict) and body.get("success") is True
+        else None
+    )
+    models = channel.get("models") if isinstance(channel, dict) else None
+    if not isinstance(models, str):
+        raise HTTPException(status_code=502, detail="New API 渠道模型列表格式错误")
+
+    names = dict.fromkeys(name.strip() for name in models.split(",") if name.strip())
+    return [{"id": name} for name in names]
+
+
 def _to_option(item: dict[str, Any]) -> ModelOption | None:
     model_id = item.get("id")
     if not isinstance(model_id, str) or not model_id.strip():
@@ -116,10 +146,26 @@ async def list_model_options(
         alias="type",
         description="capability 的别名，如 image / video / text / vlm",
     ),
+    channel_id: int | None = Query(
+        default=None,
+        gt=0,
+        description="New API 渠道 ID",
+    ),
 ):
     selected_capability = capability or model_type
-    raw_items = await _fetch_newapi_models()
+    raw_items = (
+        await _fetch_channel_models(channel_id)
+        if channel_id is not None
+        else await _fetch_newapi_models()
+    )
     items = [option for item in raw_items if (option := _to_option(item))]
     if selected_capability:
         items = [item for item in items if selected_capability in item.capabilities]
-    return ok(ModelOptionsResponse(capability=selected_capability, items=items))
+    return ok(
+        ModelOptionsResponse(
+            source="newapi-channel" if channel_id is not None else "newapi",
+            capability=selected_capability,
+            channel_id=channel_id,
+            items=items,
+        )
+    )

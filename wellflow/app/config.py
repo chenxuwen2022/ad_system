@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     # new-api 中转网关 — 所有 LLM/VLM/生图请求统一走这里
     newapi_base_url: str = "http://192.168.110.254/v1"
     newapi_api_key: str | None = None              # ← .env 提供
+    newapi_admin_access_token: str | None = None    # 管理员面板 PAT，不是模型调用 API Key
 
     # 通用 VLM 模型轮询池 —— Node1/2/3 + 意图识别 + 模特打标 全部走这里
     model_pool_domestic_models: list[str] = [
@@ -79,6 +80,11 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
+    @property
+    def newapi_admin_base_url(self) -> str:
+        """管理接口与 /v1 模型接口位于同一 New API 服务。"""
+        return self.newapi_base_url.rstrip("/").removesuffix("/v1")
+
     @field_validator("http_proxy_url", "image_gen_proxy_url", mode="before")
     @classmethod
     def _empty_str_to_none(cls, v):
