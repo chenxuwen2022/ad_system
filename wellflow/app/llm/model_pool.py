@@ -279,7 +279,9 @@ class ModelPool:
                 print(f"[model-pool] 📤 stream → {state.model_key}", flush=True)
 
                 _stream_started = False
+                _first_content_logged = False
                 _got_content = False
+                _stream_start_ts: float | None = None
                 try:
                     async for delta in client.stream_chat_with_images(
                         system=system, user=user, image_uris=image_uris,
@@ -289,7 +291,22 @@ class ModelPool:
                         if not _stream_started:
                             _stream_started = True
                             state.record_success()
-                            print(f"[model-pool] ✅ {state.model_key} 流已建立", flush=True)
+                            _stream_start_ts = time.time()
+                            print(
+                                f"[model-pool] ✅ {state.model_key} 流已建立 "
+                                f"@ {time.strftime('%H:%M:%S')}",
+                                flush=True,
+                            )
+                        has_text = isinstance(delta, dict) and delta.get("type") == "content" and delta.get("text")
+                        if (has_text or delta) and not _first_content_logged and _stream_start_ts is not None:
+                            _first_content_logged = True
+                            _got_content = True
+                            print(
+                                f"[model-pool] ⚡ {state.model_key} 首 token 到达 "
+                                f"@ {time.strftime('%H:%M:%S')} "
+                                f"(流建立→首 token 耗时={time.time() - _stream_start_ts:.2f}s)",
+                                flush=True,
+                            )
                         if isinstance(delta, dict):
                             if delta.get("type") == "content" and delta.get("text"):
                                 _got_content = True

@@ -74,6 +74,9 @@ def _is_last_refine_succeeded(graph_state: dict | None, target_node: str) -> boo
     不管 refine 节点本身执行成功还是报错都会写入 history。所以 history 里有指令
     ≠ refine 成功。必须检查目标节点产物是否存在且非空才能确认。
 
+    🔴 _refine_history 已按 node 隔离为 dict 格式，且已通过 build_refine_history_update 写入。
+    本函数只查产物是否存在，不依赖 _refine_history 的旧 flat list 格式。
+
     Args:
         graph_state: LangGraph checkpoint state
         target_node: "node1" / "node2" / "node3"
@@ -464,10 +467,12 @@ async def chat(
                      "node3": "c3_confirm", "node4": "c4_review"}
     _TARGET_CN_MAP = {"node1": "报告", "node2": "方案", "node3": "提示词", "node4": "生图"}
     if has_task and graph_state and message:
-        _h = graph_state.get("_refine_history") or []
+        from wellflow.app.workflows.state import get_node_refine_history
         _FALLBACK_NODE = {"c1": "node1", "c2": "node2",
                           "c3": "node3", "c4": "node4"}
         _tgt = _FALLBACK_NODE.get(current_node or "", "node2")
+        # 🔴 重复检测也必须按 node 隔离 —— node2 的历史不能误拦截 node3 的同名字指令
+        _h = get_node_refine_history(graph_state, _tgt)
         if _h and isinstance(_h[-1], str) and normalize_instruction(message) == normalize_instruction(_h[-1]):
             # 指令重复 → 还要看上一轮 refine 是否真的成功产出了数据
             # 如果上一轮 refine 因为 bug/异常没成功（产物为空或被清掉），就不能 block，
@@ -1052,8 +1057,10 @@ async def chat(
                 # 但必须同时满足"上一轮 refine 成功产出了有效数据"——如果上一轮 refine
                 # 因为 bug/异常没成功（产物为空或被清掉），就不能 block，必须允许重新执行
                 if _instruction and _instruction.strip() and isinstance(graph_state, dict):
-                    _history = graph_state.get("_refine_history") or []
-                    print(f"[chat] 🔍 重复检测: instruction={_instruction[:60]} | _refine_history={_history}", flush=True)
+                    from wellflow.app.workflows.state import get_node_refine_history
+                    # 🔴 重复检测按 node 隔离 —— 只看 _target（即将 refine 的那个 node）自己的历史
+                    _history = get_node_refine_history(graph_state, _target)
+                    print(f"[chat] 🔍 重复检测(target={_target}): instruction={_instruction[:60]} | per-node_history={_history}", flush=True)
                     if _history and normalize_instruction(_instruction) == normalize_instruction(_history[-1]):
                         if not _is_last_refine_succeeded(graph_state, _target):
                             # 指令重复，但上一轮 refine 没成功（产物为空）→ 放行让它重新跑
@@ -1320,11 +1327,14 @@ async def _handle_backward(
                 yield _sse("message", {"text": f"不支持的 refine 目标: {redo_target}"})
                 yield _sse("done", {"phase": "done"})
                 return
+            from wellflow.app.workflows.state import build_refine_history_update
+            _prev_history = latest_state.get("_refine_history")
             refine_update = {
                 "_refine_target": redo_target,
                 "_refine_instruction": _instruction,
                 "_refine_selected_indices": refine_selected_indices,  # None for non-node2 refine → refine_node2_schemes 会兜底传全部
-                "_refine_history": list(latest_state.get("_refine_history") or []) + [_instruction],
+                # 🔴 历史按 node 隔离写入（只写入 redo_target 对应的 list，其他 node 的历史通过全局 dict merge 保留）
+                "_refine_history": build_refine_history_update(_prev_history, redo_target, _instruction or ""),
                 "_redo_target": None,
             }
             update_dict = {**refine_update, **cmd_update} if cmd_update else refine_update

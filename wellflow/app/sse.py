@@ -105,6 +105,14 @@ async def stream_task(task_id: str, request: Request, db: Session = Depends(get_
                 elif event_type == "report_chunk_done":
                     yield _sse("report_chunk_done", event_data)
 
+                elif event_type == "scheme_chunk":
+                    # Node2 商拍方案流式输出片段（和 Node3 的 prompt_chunk 并列）
+                    yield _sse("scheme_chunk", event_data)
+
+                elif event_type == "scheme_chunk_done":
+                    # Node2 单个方案完整生成完成（逐个推给前端，不要等全部跑完）
+                    yield _sse("scheme_chunk_done", event_data)
+
                 elif event_type == "prompt_chunk":
                     # Node3 生图 prompt 流式输出片段
                     yield _sse("prompt_chunk", event_data)

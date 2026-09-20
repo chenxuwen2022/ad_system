@@ -74,9 +74,9 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
 
     pool = get_model_pool()
 
-    # 多轮 refine 历史 —— 让 LLM 知道之前用户还提过哪些修改要求，
-    # 才能处理"上一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"这类场景
-    refine_history: list[str] = state.get("_refine_history", []) or []
+    # 多轮 refine 历史（**只取 node1 自己的**——避免 node2/node3 的 refine 指令混进来）
+    from wellflow.app.workflows.state import get_node_refine_history
+    refine_history: list[str] = get_node_refine_history(state, "node1")
     history_block = ""
     if len(refine_history) >= 2:
         # 倒数第一条是本轮（已经在【修改指令】里单独列），前面的才是"历史"
@@ -102,7 +102,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     resp, used_model = await pool.chat(
         system=REFINE_NODE1_REPORT_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="none",
+        reasoning_effort="close",
         temperature=0.3,
     )
     raw_report: str = resp.content or ""
@@ -267,8 +267,9 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     _clean_old = _strip_internal_keys(old_schemes)
     old_json = json_mod.dumps({"schemes": _clean_old}, ensure_ascii=False, indent=2)
 
-    # 多轮 refine 历史
-    refine_history: list[str] = state.get("_refine_history", []) or []
+    # 多轮 refine 历史（**只取 node2 自己的**——避免 node1/node3 的 refine 指令混进来）
+    from wellflow.app.workflows.state import get_node_refine_history
+    refine_history: list[str] = get_node_refine_history(state, "node2")
     history_block = ""
     if len(refine_history) >= 2:
         prev_history = refine_history[:-1]
@@ -294,7 +295,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     resp, used_model = await pool.chat(
         system=REFINE_NODE2_SCHEMES_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="none",
+        reasoning_effort="close",
         temperature=0.3,
     )
     raw_text: str = resp.content or ""
@@ -522,11 +523,14 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         publish(task_id, "phase", {"phase": "node3_refining"})
 
     pool = get_model_pool()
-    # 用 "---PROMPT_SEP---" 分隔多条 prompt，让 LLM 清晰知道边界
-    old_prompts_text = "\n---PROMPT_SEP---\n".join(old_prompts)
+    # 给每条旧 prompt 加 [i] 序号前缀，让 LLM 清楚知道边界和总数
+    _numbered_old = [f"[{i + 1}] {p}" for i, p in enumerate(old_prompts)]
+    old_prompts_text = "\n---PROMPT_SEP---\n".join(_numbered_old)
+    n_total = len(old_prompts)
 
-    # 多轮 refine 历史
-    refine_history: list[str] = state.get("_refine_history", []) or []
+    # 多轮 refine 历史（**只取 node3 自己的**——避免 node1/node2 的 refine 指令混进来）
+    from wellflow.app.workflows.state import get_node_refine_history
+    refine_history: list[str] = get_node_refine_history(state, "node3")
     history_block = ""
     if len(refine_history) >= 2:
         prev_history = refine_history[:-1]
@@ -539,12 +543,14 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         )
 
     user_message = (
-        f"【原生图提示词列表】\n{old_prompts_text}\n\n"
+        f"【原生图提示词列表】（共 {n_total} 条，每条带序号前缀 [i]）\n"
+        f"{old_prompts_text}\n\n"
         f"{history_block}"
         f"【本轮修改指令】\n{refine_instruction}\n\n"
-        f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整提示词列表。"
-        f"输出格式：每条 prompt 单独一段，用 ---PROMPT_SEP--- 分隔，"
-        f"保持与输入同样的条数，除非指令明确要求增删。"
+        f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整提示词列表。\n"
+        f"🔴 条数约束：**当前共 {n_total} 条 prompt，请输出恰好 {n_total} 条**。\n"
+        f"🔴 输出格式：每条 prompt 单独一段，用 ---PROMPT_SEP--- 分隔。\n"
+        f"🔴 未被指令提及的那条必须原封不动复制返回，一字不改。"
     )
 
     print(f"[refine_node3] 📤 chat → refine prompts (instruction_len={len(refine_instruction)})", flush=True)
@@ -553,7 +559,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     resp, used_model = await pool.chat(
         system=REFINE_NODE3_PROMPTS_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="none",
+        reasoning_effort="close",
         temperature=0.3,
     )
     raw_text: str = resp.content or ""
@@ -564,9 +570,38 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     # 兜底：如果 LLM 没按分隔符返回（只返回了一个大段），就把整段当作一条
     if not new_prompts:
         new_prompts = [raw_text.strip()] if raw_text.strip() else old_prompts
-    # 如果返回条数和原来差太多（比如 LLM 合并了多条），打印警告但仍用结果
-    if abs(len(new_prompts) - len(old_prompts)) > 3:
-        print(f"[refine_node3] ⚠️ 返回条数变化较大: {len(old_prompts)} → {len(new_prompts)}", flush=True)
+
+    # LLM 输出可能也带 [i] 序号前缀（因为喂的时候带了）——统一剥掉
+    import re as _re
+    _idx_prefix = _re.compile(r"^\s*\[\d+\]\s*")
+    new_prompts = [_idx_prefix.sub("", p).strip() for p in new_prompts]
+
+    # ---- 🔴 代码层硬兜底：条数强制对齐 ----
+    # 判断用户指令是否明确要求增删 —— 只有用户明确说了才允许条数变化
+    _DELETE_KWS = ("删除", "删掉", "去掉", "移除", "减掉", "少一条", "少一条", "删一条", "删第")
+    _ADD_KWS = ("增加", "添加", "新增", "加一条", "多一条", "补充一条", "再来一条", "补一条")
+    _user_wants_change_quantity = any(kw in refine_instruction for kw in _DELETE_KWS + _ADD_KWS)
+
+    if not _user_wants_change_quantity and len(new_prompts) != n_total:
+        print(
+            f"[refine_node3] 🛡️ 触发条数兜底：用户未提增删，"
+            f"LLM 返回 {len(new_prompts)} 条 ≠ 原 {n_total} 条 → 强制对齐",
+            flush=True,
+        )
+        # LLM 返回的前 M 条按顺序贴到旧列表前 M 个位置，剩余位置用旧内容原封不动回填
+        _merged = list(old_prompts)   # 先复制旧列表作底稿
+        for _i in range(min(len(new_prompts), n_total)):
+            _merged[_i] = new_prompts[_i]
+        new_prompts = _merged
+        print(f"[refine_node3]  ✅ 对齐完成 → 最终 {len(new_prompts)} 条", flush=True)
+    elif _user_wants_change_quantity and len(new_prompts) != n_total:
+        print(
+            f"[refine_node3] ℹ️ 用户明确要求增删({len(new_prompts)}→{len(old_prompts)})，"
+            f"接受 LLM 返回条数变化",
+            flush=True,
+        )
+    elif abs(len(new_prompts) - n_total) > 3:
+        print(f"[refine_node3] ⚠️ 返回条数变化较大: {n_total} → {len(new_prompts)}", flush=True)
 
     total_ts = time.time() - t0
     print(f"[refine_node3] ✅ 完成: model={used_model}, "

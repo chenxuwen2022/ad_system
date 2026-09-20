@@ -184,7 +184,8 @@ class NewApiGateway(BaseLLMClient):
         last_exc: Exception | None = None
         for attempt in range(self.MAX_RETRIES + 1):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout, proxy=self.proxy_url, trust_env=False) as client:
+                # 非流式也去掉 timeout —— 上游推理慢（尤其带 thinking 的模型）时不再被 60s 截断
+                async with httpx.AsyncClient(timeout=None, proxy=self.proxy_url, trust_env=False) as client:
                     resp = await client.post(
                         f"{self.base_url}/chat/completions",
                         headers=self._build_headers(),

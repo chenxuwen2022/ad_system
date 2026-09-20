@@ -54,6 +54,54 @@ def cleared(**keep: Any) -> dict[str, Any]:
 REDUCER = _merge_state_values
 
 
+def _normalize_refine_history(raw: Any) -> dict[str, list[str]]:
+    """兼容老 checkpoint 的历史格式归一化 helper。
+
+    老任务的 checkpoint 里 _refine_history 可能还是旧的 flat list[str]。
+    统一归一成 dict[node_name, list[str]]，方便后续按 node 隔离读写。
+
+    旧 list 的处理策略：**不做 node 归属猜测，把它丢弃**——
+    因为 flat list 无法判断每条指令属于哪个 node，硬塞反而会继续污染新逻辑。
+    （老任务续跑时，后续 refine 会正常按 node 写入，历史指令只丢失旧的 flat 部分，可接受）
+    """
+    if isinstance(raw, dict):
+        return {k: list(v) for k, v in raw.items() if isinstance(v, list)}
+    # 老格式：list[str] → 丢弃（无法判断归属哪个 node）
+    return {}
+
+
+def get_node_refine_history(state: Any, node_name: str) -> list[str]:
+    """从 state 里取某一 node 的 refine 历史（带旧格式兼容）。
+
+    用法：
+        from wellflow.app.workflows.state import get_node_refine_history
+        h = get_node_refine_history(state, "node1")  # list[str]
+    """
+    if not isinstance(state, dict):
+        return []
+    raw = state.get("_refine_history")
+    normalized = _normalize_refine_history(raw)
+    return list(normalized.get(node_name, []))
+
+
+def build_refine_history_update(
+    prev_history: Any, node_name: str, new_instruction: str
+) -> dict[str, list[str]]:
+    """构造 `_refine_history` 的写入值：只更新指定 node 的历史，其他 node 保持原样。
+
+    用法（parent_graph / chat.py 的 refine 入口）：
+        from wellflow.app.workflows.state import build_refine_history_update
+        new_val = build_refine_history_update(prev, "node1", "补品牌调性")
+        # 返回值形如 {"node1": ["旧1", "旧2", "补品牌调性"]}
+        # 全局 REDUCER 对 dict 做 a|b 键级 merge，会自动保留 node2/node3 旧历史
+    """
+    normalized = _normalize_refine_history(prev_history)
+    node_list = list(normalized.get(node_name, []))
+    if new_instruction:
+        node_list.append(new_instruction)
+    return {node_name: node_list}
+
+
 class Progress(TypedDict, total=False):
     phase: str
     total_work_items: int
@@ -190,8 +238,9 @@ class TaskState(TypedDict, total=False):
     # node2 refine 专用：LLM 意图分类器返回的 selected_indices
     # 决定 refine_node2_schemes 能看到哪几套原方案（用户明确点名了哪些 → 只传那些；"all"或None → 全部传）
     _refine_selected_indices: Annotated[list[int] | str | None, REDUCER]
-    # 多轮 refine 历史：每轮 refine 前把本轮指令 append 进去
+    # 多轮 refine 历史（按 node 隔离，避免 node1/node2/node3 指令互相污染）
+    # 旧格式兼容：如果 checkpoint 里还是 list（老任务），_get_node_refine_history helper 会自动 wrap 成 {'nodeX': list}
     # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）
-    _refine_history: Annotated[list[str], REDUCER]       # 历史 refine 指令列表（按时间顺序，包含本轮）
+    _refine_history: Annotated[dict[str, list[str]], REDUCER]  # {node1|node2|node3: [instruction,...]}，含本轮
     # redo 路径：仅 C4 redo→node4 保留（其他节点都走 refine）
     _redo_target: Annotated[str | None, REDUCER]         # "node4" | None

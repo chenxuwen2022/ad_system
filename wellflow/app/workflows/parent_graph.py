@@ -255,13 +255,14 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
             print("[c1_confirm_report] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c1_confirm"}
         print(f"[c1_confirm_report] 🔧 refine → node1 报告, instruction={refine_instruction}", flush=True)
-        # 追加到多轮 refine 历史 —— refine 节点会用它做指令整合
-        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
+        # 追加到多轮 refine 历史 —— refine 节点会用它做指令整合（**按 node1 隔离**）
+        from wellflow.app.workflows.state import build_refine_history_update
+        prev_history = state.get("_refine_history") if isinstance(state, dict) else None
         return {
             "phase": "c1_confirm",
             "_refine_target": "node1",
             "_refine_instruction": refine_instruction,
-            "_refine_history": list(prev_history) + [refine_instruction],
+            "_refine_history": build_refine_history_update(prev_history, "node1", refine_instruction),
             "_redo_target": None,
         }
 
@@ -365,13 +366,14 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         _refine_sel_idx = interrupt_value.get("refine_selected_indices")
         print(f"[c2_select] 🔧 refine → node2 商拍方案, instruction={refine_instruction}, "
               f"refine_selected_indices={_refine_sel_idx}", flush=True)
-        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
+        from wellflow.app.workflows.state import build_refine_history_update
+        prev_history = state.get("_refine_history") if isinstance(state, dict) else None
         return {
             "phase": "c2_select",
             "_refine_target": "node2",
             "_refine_instruction": refine_instruction,
             "_refine_selected_indices": _refine_sel_idx,
-            "_refine_history": list(prev_history) + [refine_instruction],
+            "_refine_history": build_refine_history_update(prev_history, "node2", refine_instruction),
             "_redo_target": None,
         }
 
@@ -464,13 +466,14 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         _refine_sel_idx = interrupt_value.get("refine_selected_indices") if refine_target == "node2" else None
         print(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
               f"refine_selected_indices={_refine_sel_idx}", flush=True)
-        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
+        from wellflow.app.workflows.state import build_refine_history_update
+        prev_history = state.get("_refine_history") if isinstance(state, dict) else None
         return {
             "phase": "c3_confirm",
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
             "_refine_selected_indices": _refine_sel_idx,
-            "_refine_history": list(prev_history) + [refine_instruction],
+            "_refine_history": build_refine_history_update(prev_history, refine_target, refine_instruction),
             "_redo_target": None,
         }
 
@@ -580,13 +583,14 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         _refine_sel_idx = interrupt_value.get("refine_selected_indices") if refine_target == "node2" else None
         print(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
               f"refine_selected_indices={_refine_sel_idx}", flush=True)
-        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
+        from wellflow.app.workflows.state import build_refine_history_update
+        prev_history = state.get("_refine_history") if isinstance(state, dict) else None
         return {
             "phase": "c4_review",
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
             "_refine_selected_indices": _refine_sel_idx,
-            "_refine_history": list(prev_history) + [refine_instruction],
+            "_refine_history": build_refine_history_update(prev_history, refine_target, refine_instruction),
             "_redo_target": None,
         }
 
