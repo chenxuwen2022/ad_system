@@ -32,6 +32,9 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
 
     输入：state.node1.product_insight（旧报告） + state._refine_instruction（用户指令）
     输出：更新后的 node1.product_insight（完整 Markdown 报告）+ report_sections（重归一化）
+
+    🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被用户确认并锁定，
+    当前任务内不得再修改 —— 直接拒绝，返回 phase=c1_confirm 且不改动 node1 任何字段。
     """
     from wellflow.app.llm.model_pool import get_model_pool
     from wellflow.app.prompt.constant import REFINE_NODE1_REPORT_SYSTEM_PROMPT
@@ -40,6 +43,23 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     task_id = state.get("task_id", "")
     refine_instruction = state.get("_refine_instruction", "").strip()
     old_report: str = state.get("node1", {}).get("product_insight", "") or ""
+
+    # —— 锁定守卫（第一行就查，避免已锁定后还白白调 LLM）——
+    if bool((state.get("node1") or {}).get("report_locked")):
+        print("[refine_node1] 🛡️ node1 报告已锁定，拒绝 refine", flush=True)
+        if task_id:
+            publish(task_id, "phase", {"phase": "c1_confirm"})
+            publish(task_id, "message", {
+                "text": (
+                    "产品报告已确认并锁定，本任务内无法再修改。"
+                    "如需调整商品信息，请新建任务重新生成报告。"
+                ),
+            })
+        return {
+            "phase": "c1_confirm",
+            "_refine_target": None,
+            "_refine_instruction": None,
+        }
 
     if not refine_instruction:
         print("[refine_node1] ⚠️ 没有 refine_instruction，跳过编辑", flush=True)
@@ -53,10 +73,27 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
         publish(task_id, "phase", {"phase": "node1_refining"})
 
     pool = get_model_pool()
+
+    # 多轮 refine 历史 —— 让 LLM 知道之前用户还提过哪些修改要求，
+    # 才能处理"上一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"这类场景
+    refine_history: list[str] = state.get("_refine_history", []) or []
+    history_block = ""
+    if len(refine_history) >= 2:
+        # 倒数第一条是本轮（已经在【修改指令】里单独列），前面的才是"历史"
+        prev_history = refine_history[:-1]
+        history_block_lines = [f"第{i + 1}轮：{h}" for i, h in enumerate(prev_history)]
+        history_block = (
+            f"\n【历史 refine 指令（多轮对话中用户之前提过的修改要求，"
+            f"请结合本轮指令一并理解，处理指令间的重叠/矛盾/去重）】\n"
+            + "\n".join(history_block_lines)
+            + "\n\n"
+        )
+
     user_message = (
         f"【商品识别报告原文】\n{old_report}\n\n"
-        f"【修改指令】\n{refine_instruction}\n\n"
-        f"请基于修改指令，输出更新后的完整报告。"
+        f"{history_block}"
+        f"【本轮修改指令】\n{refine_instruction}\n\n"
+        f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整报告。"
     )
 
     print(f"[refine_node1] 📤 chat → refine report (instruction_len={len(refine_instruction)})", flush=True)
@@ -68,10 +105,13 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
         reasoning_effort="none",
         temperature=0.3,
     )
-    new_report: str = resp.content or ""
+    raw_report: str = resp.content or ""
 
     # 去除可能存在的 ```markdown / ``` 包裹
-    new_report = _strip_code_fence(new_report)
+    raw_report = _strip_code_fence(raw_report)
+
+    # 拆分：报告正文 vs 引导语（LLM 按 prompt 用 ---NEXT--- 分隔）
+    new_report, next_actions = _split_next_actions(raw_report)
 
     from wellflow.app.prompt.report_sections import build_report_sections
     new_sections = build_report_sections(new_report) if new_report else None
@@ -80,11 +120,15 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     print(f"[refine_node1] ✅ 完成: model={used_model}, "
           f"旧报告={len(old_report)}字 → 新报告={len(new_report)}字, 耗时={total_ts:.1f}s", flush=True)
 
+    # —— next_actions 同样不再独立 publish SSE message，改为存入 node1 state，
+    #    由 parent_graph 在 C1 interrupt 时作为 hint 下发。
+
     return {
         "phase": "c1_confirm",
         "node1": {
             "product_insight": new_report,
             "report_sections": new_sections,
+            "next_actions": next_actions,
             # 保留 VLM 缓存图、thinking 等，refine 只改文本
             "compressed_images": state.get("node1", {}).get("compressed_images", []),
             "input_analysis": state.get("node1", {}).get("input_analysis"),
@@ -108,6 +152,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     from wellflow.app.llm.model_pool import get_model_pool
     from wellflow.app.prompt.constant import REFINE_NODE2_SCHEMES_SYSTEM_PROMPT
     from wellflow.app.event_bus import publish
+    import re  # 用于路径2降级时正则提取 _meta 片段
 
     task_id = state.get("task_id", "")
     refine_instruction = state.get("_refine_instruction", "").strip()
@@ -126,10 +171,25 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
 
     pool = get_model_pool()
     old_json = json_mod.dumps({"schemes": old_schemes}, ensure_ascii=False, indent=2)
+
+    # 多轮 refine 历史
+    refine_history: list[str] = state.get("_refine_history", []) or []
+    history_block = ""
+    if len(refine_history) >= 2:
+        prev_history = refine_history[:-1]
+        history_block_lines = [f"第{i + 1}轮：{h}" for i, h in enumerate(prev_history)]
+        history_block = (
+            f"\n【历史 refine 指令（多轮对话中用户之前提过的修改要求，"
+            f"请结合本轮指令一并理解，处理指令间的重叠/矛盾/去重）】\n"
+            + "\n".join(history_block_lines)
+            + "\n\n"
+        )
+
     user_message = (
         f"【原商拍方案 JSON】\n{old_json}\n\n"
-        f"【修改指令】\n{refine_instruction}\n\n"
-        f"请基于修改指令，输出更新后的完整 JSON。"
+        f"{history_block}"
+        f"【本轮修改指令】\n{refine_instruction}\n\n"
+        f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整 JSON。"
     )
 
     print(f"[refine_node2] 📤 chat → refine schemes (instruction_len={len(refine_instruction)})", flush=True)
@@ -144,30 +204,167 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     raw_text: str = resp.content or ""
     raw_text = _strip_code_fence(raw_text)
 
-    # 尝试解析 JSON
-    new_schemes = old_schemes  # 失败兜底保留旧方案
+    # 尝试解析 JSON —— 三级降级：完整 JSON → trailing comma 修复 → 逐 scheme 解析
+    new_schemes = old_schemes  # 最终兜底还是旧方案
+    _parsed_ok = False
+    _llm_meta: dict[str, Any] | None = None  # LLM 显式声明的意图判断（_meta 字段）
+
+    # 路径 1：完整 JSON 解析（_extract_json 内部已含 trailing comma 修复）
     try:
         parsed = _extract_json(raw_text)
-        new_schemes = parsed.get("schemes", []) or old_schemes
-        if not isinstance(new_schemes, list) or not new_schemes:
-            print(f"[refine_node2] ⚠️ LLM 返回的 schemes 解析为空，保留旧方案", flush=True)
-            new_schemes = old_schemes
+        _raw_schemes = parsed.get("schemes", []) or []
+        # 提取 LLM 的显式意图声明（如果有的话）
+        _llm_meta = parsed.get("_meta") if isinstance(parsed.get("_meta"), dict) else None
+        if isinstance(_raw_schemes, list) and _raw_schemes:
+            new_schemes = _raw_schemes
+            _parsed_ok = True
     except Exception as exc:
-        print(f"[refine_node2] ⚠️ JSON 解析失败: {exc}，保留旧方案", flush=True)
+        print(f"[refine_node2] ⚠️ 完整 JSON 解析失败: {exc}", flush=True)
+
+    # 路径 2：逐 scheme 单独解析，跳过损坏的单个 scheme
+    #         同时尝试用正则提取 _meta（路径 1 完整 JSON 解析失败但 _meta 片段本身合法的情况）
+    if not _parsed_ok:
+        _indiv = _extract_schemes_individually(raw_text)
+        if _indiv is not None:
+            new_schemes = _indiv
+            _parsed_ok = True
+        # 尝试用正则单独提取 _meta JSON 片段作为补偿
+        if _llm_meta is None:
+            _meta_match = re.search(r'"_meta"\s*:\s*(\{.*?\})\s*,?\s*"schemes"', raw_text, re.DOTALL)
+            if _meta_match:
+                try:
+                    _llm_meta = json_mod.loads(_meta_match.group(1))
+                    print(f"[refine_node2] 🧩 路径2：从 raw_text 正则提取到 _meta", flush=True)
+                except Exception:
+                    pass
+
+    if not _parsed_ok:
+        print(f"[refine_node2] ❌ 所有降级都失败，保留旧方案（{len(old_schemes)} 套）", flush=True)
+
+    # 最终校验：解析出的 schemes 非空才替换；否则保留旧方案
+    if not isinstance(new_schemes, list) or not new_schemes:
+        print(f"[refine_node2] ⚠️ 解析结果为空，保留旧方案", flush=True)
+        new_schemes = old_schemes
+
+    # —— 方案数量校验 / 修正（三层防线，从上到下优先用更精确的判定）——
+    #
+    # 🔑 第一层（最精确）：LLM 在 _meta.output_count 里显式声明了它想输出几套
+    #     信任 LLM 的意图判断，但如果它自己声明 output_count=N 却输出了 M 套，
+    #     说明 LLM 没按自己说的做 → 截断到 N 套
+    if _llm_meta:
+        _declared_count = _llm_meta.get("output_count")
+        _intent_type = _llm_meta.get("intent_type", "?")
+        _reasoning = _llm_meta.get("reasoning", "")[:100]
+        print(
+            f"[refine_node2] 🧠 LLM 显式意图: intent={_intent_type}, "
+            f"declared_count={_declared_count}, actual={len(new_schemes)}, "
+            f"reasoning='{_reasoning}'",
+            flush=True,
+        )
+        if isinstance(_declared_count, int) and _declared_count > 0:
+            _actual_before = len(new_schemes)
+            if _actual_before > _declared_count:
+                # —— 截断策略：fusion 类尽量保留含"融合"标识的方案，
+                #    非 fusion 类直接取前 N 套 ——
+                _is_fusion_declared = (_intent_type == "fusion")
+                _to_keep = _declared_count
+
+                if _is_fusion_declared and _to_keep == 1:
+                    # fusion + 只要 1 套 → 优先挑含"融合/整合/混搭"标识的方案，
+                    # 找不到再退化成取前 1 套
+                    _FUSION_MARKERS = ("融合", "整合", "混搭", "合并", "新方案", "方案融合")
+                    _fusion_schemes = [
+                        s for s in new_schemes
+                        if isinstance(s, dict) and any(
+                            mk in (s.get("scheme_name") or "") for mk in _FUSION_MARKERS
+                        )
+                    ]
+                    if _fusion_schemes:
+                        new_schemes = [_fusion_schemes[0]]
+                        print(
+                            f"[refine_node2] 🛡️ fusion 类：从 {len(_fusion_schemes)} 个含融合标识的方案中保留 1 套"
+                            f"（原 {_actual_before} 套）",
+                            flush=True,
+                        )
+                    else:
+                        new_schemes = new_schemes[:_to_keep]
+                        print(
+                            f"[refine_node2] 🛡️ fusion 类：未找到融合标识方案，保守保留前 1 套"
+                            f"（原 {_actual_before} 套）",
+                            flush=True,
+                        )
+                else:
+                    new_schemes = new_schemes[:_to_keep]
+                    print(
+                        f"[refine_node2] 🛡️ LLM 声明 output_count={_declared_count} 但实际输出了 "
+                        f"{_actual_before} 套 → 截断到 {_to_keep} 套",
+                        flush=True,
+                    )
+            elif _actual_before < _declared_count:
+                # LLM 说要输出 N 套但只输出了 M 套 → 比较少见，保留 M 套（宁少勿错）
+                print(
+                    f"[refine_node2] ⚠️ LLM 声明 output_count={_declared_count} 但只输出了 "
+                    f"{len(new_schemes)} 套，保留实际数量",
+                    flush=True,
+                )
+
+    # 第二层（关键词兜底）：LLM 没输出 _meta（路径2 或旧模型），
+    #     用关键词检测做保守的融合类兜底 —— 命中融合关键词且输出 >1 套 → 只留第 1 套
+    #     宁可漏判也别误杀 batch_modify 场景（所以只识别强信号关键词）
+    else:
+        _FUSION_KEYWORDS = ("融合", "合并", "混搭", "重组")
+        if refine_instruction and any(kw in refine_instruction for kw in _FUSION_KEYWORDS) \
+                and len(new_schemes) > 1:
+            print(
+                f"[refine_node2] 🛡️ （关键词兜底）融合类指令但输出了 {len(new_schemes)} 套 → "
+                f"只保留第 1 套",
+                flush=True,
+            )
+            new_schemes = [new_schemes[0]]
+
+    # —— scheme_index 通用重归一化 ——
+    # LLM 返回时可能残留旧 index（如融合方案带着 2 或 3），统一按 0..N-1 重编号
+    if isinstance(new_schemes, list):
+        for _i, _s in enumerate(new_schemes):
+            if isinstance(_s, dict):
+                _s["scheme_index"] = _i
 
     total_ts = time.time() - t0
     print(f"[refine_node2] ✅ 完成: model={used_model}, "
           f"旧 schemes={len(old_schemes)} → 新 schemes={len(new_schemes)}, 耗时={total_ts:.1f}s", flush=True)
 
-    # 保留 C2 用户选的方案索引 / 每套 count，refine 只改方案内容
     node2_state = state.get("node2", {})
+
+    # —— selected_scheme_indices / per_scheme_count 重置策略 ——
+    # 方案数量变了（增删/融合）→ 旧索引全失效，清空让用户到 C2 重新选
+    # 方案数量没变（rule #2 单套/多套同字段修改）→ 保留用户之前选的索引
+    _n_schemes_changed = len(new_schemes) != len(old_schemes)
+    if _n_schemes_changed:
+        print(
+            f"[refine_node2] 🔄 方案数变化 {len(old_schemes)}→{len(new_schemes)}，"
+            f"清空 selected_scheme_indices / per_scheme_count 让用户重新选择",
+            flush=True,
+        )
+        _selected_indices: list[int] = []
+        _per_count: list[int] = []
+    else:
+        _selected_indices = list(node2_state.get("selected_scheme_indices", []) or [])
+        _per_count = list(node2_state.get("per_scheme_count", []) or [])
+        # 额外防御：过滤掉越界的旧索引
+        _selected_indices = [i for i in _selected_indices if 0 <= i < len(new_schemes)]
+
+    # —— scheme_raw 清理：只存 {"schemes": [...]}，剥离 _meta ——
+    # 否则 _meta 会被父图 interrupt / tasks.get_task 透传给前端，
+    # 前端如果直接展示这个 JSON，会看到内部校验字段
+    _scheme_raw_clean = json_mod.dumps({"schemes": new_schemes}, ensure_ascii=False, indent=2)
+
     return {
         "phase": "c2_select",
         "node2": {
             "schemes": new_schemes,
-            "scheme_raw": raw_text,
-            "selected_scheme_indices": node2_state.get("selected_scheme_indices", []),
-            "per_scheme_count": node2_state.get("per_scheme_count", []),
+            "scheme_raw": _scheme_raw_clean,
+            "selected_scheme_indices": _selected_indices,
+            "per_scheme_count": _per_count,
             "thinking_text": "",
         },
         "_refine_target": None,
@@ -207,10 +404,25 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     pool = get_model_pool()
     # 用 "---PROMPT_SEP---" 分隔多条 prompt，让 LLM 清晰知道边界
     old_prompts_text = "\n---PROMPT_SEP---\n".join(old_prompts)
+
+    # 多轮 refine 历史
+    refine_history: list[str] = state.get("_refine_history", []) or []
+    history_block = ""
+    if len(refine_history) >= 2:
+        prev_history = refine_history[:-1]
+        history_block_lines = [f"第{i + 1}轮：{h}" for i, h in enumerate(prev_history)]
+        history_block = (
+            f"\n【历史 refine 指令（多轮对话中用户之前提过的修改要求，"
+            f"请结合本轮指令一并理解，处理指令间的重叠/矛盾/去重）】\n"
+            + "\n".join(history_block_lines)
+            + "\n\n"
+        )
+
     user_message = (
         f"【原生图提示词列表】\n{old_prompts_text}\n\n"
-        f"【修改指令】\n{refine_instruction}\n\n"
-        f"请基于修改指令，输出更新后的完整提示词列表。"
+        f"{history_block}"
+        f"【本轮修改指令】\n{refine_instruction}\n\n"
+        f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整提示词列表。"
         f"输出格式：每条 prompt 单独一段，用 ---PROMPT_SEP--- 分隔，"
         f"保持与输入同样的条数，除非指令明确要求增删。"
     )
@@ -281,22 +493,127 @@ def _strip_code_fence(text: str) -> str:
     return t
 
 
+def _split_next_actions(raw: str) -> tuple[str, str]:
+    """按 ---NEXT--- 把 LLM 返回拆成 (正文, 引导语)。
+
+    找不到分隔符时完整 raw 当正文，引导语返回空串（调用方走 hardcoded 兜底）。
+    """
+    if not raw:
+        return "", ""
+    marker = "---NEXT---"
+    idx = raw.rfind(marker)
+    if idx == -1:
+        return raw.strip(), ""
+    body = raw[:idx].rstrip()
+    actions = raw[idx + len(marker):].strip()
+    return body, actions
+
+
 def _extract_json(text: str) -> dict[str, Any]:
-    """从可能带前后噪声的文本里提取第一个完整 JSON 对象。"""
+    """从可能带前后噪声的文本里提取第一个完整 JSON 对象。
+
+    三级降级：
+      1. 直接解析
+      2. 取第一个 { 到最后一个 } 之间
+      3. trailing comma 修复（LLM 常见错误：数组/对象末尾多了一个逗号）
+    """
     import re
     text = text.strip()
+
+    def _try_load(t: str) -> dict[str, Any] | None:
+        """尝试 json.loads，失败返回 None。"""
+        try:
+            return json_mod.loads(t)
+        except Exception:
+            return None
+
+    def _fix_trailing_commas(t: str) -> str:
+        """去掉 JSON 里数组/对象末尾的多余逗号（最常见的 LLM 输出错误）。
+
+        例子：
+          {"schemes": [{"a": 1,}, {"b": 2},]} → {"schemes": [{"a": 1}, {"b": 2}]}
+        """
+        # 去除 ,] 和 ,} 之间的逗号——因为 ]/} 一定不会被字符串里的字符误匹配
+        # （字符串里的逗号后面不会紧跟 ]/}，只会紧跟非 ]/} 字符或字符串结束）
+        fixed = re.sub(r',\s*([\]\}])', r'\1', t)
+        return fixed
+
     # 1. 直接解析
-    try:
-        return json_mod.loads(text)
-    except Exception:
-        pass
+    if r := _try_load(text):
+        return r
+
     # 2. 取第一个 { 到最后一个 } 之间
     first = text.find("{")
     last = text.rfind("}")
     if first != -1 and last != -1 and last > first:
         sub = text[first:last + 1]
-        return json_mod.loads(sub)
-    raise ValueError("JSON 提取失败")
+        if r := _try_load(sub):
+            return r
+
+        # 3. trailing comma 修复 + 截取
+        fixed = _fix_trailing_commas(sub)
+        if r := _try_load(fixed):
+            return r
+
+    raise ValueError("JSON 提取失败（已尝试直接解析、截取、trailing comma 修复）")
+
+
+def _extract_schemes_individually(raw_text: str) -> list[dict[str, Any]] | None:
+    """当整个 JSON 修复后仍解析失败时，尝试把每个 scheme 对象单独抽出来解析。
+
+    扫描 raw_text 里顶层 schemes 数组，逐对大括号匹配抽出每个 scheme JSON，
+    逐个解析成功后组装成 list。
+    """
+    import re
+
+    # 先尝试定位 "schemes" 数组的起始位置
+    m = re.search(r'"schemes"\s*:\s*\[', raw_text)
+    if not m:
+        return None
+
+    start = m.end()
+    schemes: list[dict[str, Any]] = []
+    depth = 0
+    brace_start = -1
+
+    i = start
+    while i < len(raw_text):
+        ch = raw_text[i]
+        # 简单跳过字符串内容（避免把字符串里的 { } 当作结构）
+        if ch == '"':
+            i += 1
+            while i < len(raw_text):
+                if raw_text[i] == '\\' and i + 1 < len(raw_text):
+                    i += 2
+                    continue
+                if raw_text[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == '{':
+            if depth == 0:
+                brace_start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and brace_start != -1:
+                scheme_text = raw_text[brace_start:i + 1]
+                brace_start = -1
+                # 尝试解析这一个 scheme
+                try:
+                    scheme = json_mod.loads(scheme_text)
+                    if isinstance(scheme, dict):
+                        schemes.append(scheme)
+                except Exception:
+                    # 单个 scheme 也解析失败就跳过——宁可少一套也不保留坏数据
+                    pass
+        i += 1
+
+    if schemes:
+        print(f"[refine_json_fallback] ✅ 逐 scheme 解析成功: {len(schemes)} 套", flush=True)
+        return schemes
+    return None
 
 
 def _rebuild_prompts_detail(old_details: list[dict[str, Any]], new_prompts: list[str]) -> list[dict[str, Any]]:

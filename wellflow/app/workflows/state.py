@@ -90,8 +90,16 @@ class TaskError(TypedDict, total=False):
 class Node1State(TypedDict, total=False):
     input_analysis: dict[str, Any]
     product_insight: str             # VLM 输出的 Markdown 报告全文
+    report_sections: dict[str, Any]   # 归一化的四块结构（前端"重点洞察"面板使用）
+    next_actions: str                 # LLM 动态生成的下一步引导语（报告正文 ---NEXT--- 分隔线之下的部分）
     compressed_images: list[str]      # 商品图 data URI 缓存（给下游复用）
     thinking_text: str                # VLM 深度思考过程文本（用于刷新后恢复展示）
+    # —— 确认/锁定相关字段（由 C1 confirm 写入，锁定后任何入口都不得修改）——
+    report_locked: bool               # True = 用户已确认并锁定；当前任务内不可再改
+    report_hash: str                  # 当次确认时 product_insight 的哈希（版本绑定）
+    confirmed_at: float               # 当次确认的 unix 时间戳
+    # —— 多轮修改计数（调试用，可选）——
+    refine_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -175,5 +183,8 @@ class TaskState(TypedDict, total=False):
     # refine 路径：interrupt resume(decision="refine") 写入，refine 节点消费后清 None
     _refine_target: Annotated[str | None, REDUCER]       # "node1" | "node2" | "node3" | None
     _refine_instruction: Annotated[str | None, REDUCER]  # 用户修改指令文本
+    # 多轮 refine 历史：每轮 refine 前把本轮指令 append 进去
+    # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）
+    _refine_history: Annotated[list[str], REDUCER]       # 历史 refine 指令列表（按时间顺序，包含本轮）
     # redo 路径：仅 C4 redo→node4 保留（其他节点都走 refine）
     _redo_target: Annotated[str | None, REDUCER]         # "node4" | None

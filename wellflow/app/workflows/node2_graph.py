@@ -99,13 +99,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         # Node2 设计上不向前端展示思考过程，跳过 thinking_chunk publish
         if task_id:
             publish(task_id, "scheme_chunk", {"chunk": raw_text, "index": 1, "node": "node2"})
-            publish(task_id, "scheme_chunk_done", {
-                "total_chunks": 1,
-                "thinking_total_chunks": 0,  # 明确 0，前端不会收到 thinking
-                "thinking_text": None,
-                "node": "node2",
-                "scheme_count": len(result.get("schemes", [])),
-            })
+            # ↓ scheme_chunk_done 统一出口在第 190 行，这里不再 publish，避免重复
     else:
         # ---- 流式 ----
         print(f"[node2] 📌 reasoning_effort={effort} → 流式 stream_plan_schemes()", flush=True)
@@ -186,7 +180,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         }
         thinking_text_final = "".join(think_parts) if think_parts else None
 
-    # 推 done
+    # 推 done（统一出口：无论流式/非流式都在这里 publish，避免前面重复 publish）
     if task_id:
         publish(task_id, "scheme_chunk_done", {
             "total_chunks": content_chunk_index,
@@ -194,6 +188,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
             "thinking_text": None,
             "node": "node2",
             "scheme_count": len(result.get("schemes", [])),
+            "schemes": result.get("schemes", []),  # ← 带上完整 schemes，让前端在 chunk_done 事件里就能拿到方案
         })
 
     schemes = result.get("schemes", [])

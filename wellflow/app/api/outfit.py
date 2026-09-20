@@ -88,10 +88,6 @@ OUTFIT_DIMENSION_GROUPS: dict[str, dict[str, Any]] = {
     },
 }
 
-# 抠图降级链(gpt-image-2 优先;mai 保底,人物图不被安全策略拦截)
-EXTRACT_MODELS = ["gpt-image-2", "gpt-image-2.5-flare", "mai-image-2.5"]
-MAX_ITEMS = 6
-EXTRACT_CONCURRENCY = 3
 _TASK_LOCK = threading.RLock()
 
 # 演示模式 6 件示例单品(与 PM demo 一致)
@@ -361,7 +357,7 @@ def delete_outfit(outfit_id: int, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 def _call_vlm_recognize(raw: bytes):
-    """VLM(gemini-3.7-flash)识别照片单品清单,≤ MAX_ITEMS 件。"""
+    """VLM(gemini-3.7-flash)识别照片单品清单,≤ settings.outfit_max_items 件。"""
     import asyncio as _a
 
     async def _go():
@@ -391,7 +387,7 @@ def _call_vlm_recognize(raw: bytes):
     if not isinstance(items, list) or not items:
         raise RuntimeError(f"VLM 未返回有效单品清单: {content[:200]}")
     norm = []
-    for it in items[:MAX_ITEMS]:
+    for it in items[:settings.outfit_max_items]:
         if not isinstance(it, dict) or not it.get("name"):
             continue
         norm.append({
@@ -415,7 +411,7 @@ def _extract_item_image(raw: bytes, name: str):
             "背景纯白,居中构图,无阴影、无文字"
         )
         errors = []
-        for model in EXTRACT_MODELS:
+        for model in settings.outfit_extract_models:
             try:
                 client = get_llm_client("image", model_override=model)
                 r = await client.generate_image(
@@ -483,7 +479,7 @@ def _run_extract(task: dict, raw: bytes, mode: str):
                     task["progress"] = {"done": len(results) + len(errors), "total": len(norm_items)}
                     _save_task(task)
 
-            with ThreadPoolExecutor(max_workers=min(EXTRACT_CONCURRENCY, len(norm_items))) as ex:
+            with ThreadPoolExecutor(max_workers=min(settings.outfit_extract_concurrency, len(norm_items))) as ex:
                 list(ex.map(worker, range(len(norm_items))))
 
             ok_n = len(results)

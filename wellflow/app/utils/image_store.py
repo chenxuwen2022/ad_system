@@ -8,7 +8,7 @@
   - 最多取前 image_max_per_call 张（超出忽略）
   - 所有非 data URI 统一 PIL → JPEG q=90（格式归一化：PNG/WebP/HEIC 等 → JPEG，消除模型 image_url 兼容性问题）
   - 归一化后若仍 > 1.5MB → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
-  - Pillow 不可用时安全降级（原样 base64，风险自负，由 ofox_gateway 重试 + 上层错误处理兜底）
+  - Pillow 不可用时安全降级（原样 base64，风险自负，由 newapi_gateway 重试 + 上层错误处理兜底）
 
 用法：
   from wellflow.app.utils.image_store import save_upload, path_to_data_uri, paths_to_data_uris
@@ -251,7 +251,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
       - 最多取前 image_max_per_call 张（config 里配置）
       - 所有文件路径一律 PIL → JPEG q=90（格式归一化，消除 PNG/WebP 等模型兼容问题）
       - 归一化后若仍 > 1.5MB raw → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
-      - Pillow 不可用时安全降级（原样 base64，风险自负，由 ofox_gateway 重试 + 上层错误处理兜底）
+      - Pillow 不可用时安全降级（原样 base64，风险自负，由 newapi_gateway 重试 + 上层错误处理兜底）
     """
     constants = _image_constants()
     MAX_IMAGES_PER_CALL = constants["MAX_IMAGES_PER_CALL"]

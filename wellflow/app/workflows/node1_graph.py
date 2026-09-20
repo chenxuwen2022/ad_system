@@ -46,11 +46,29 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
 
     关键：VLM 用 stream_chat_with_images，每个 token delta 立即 publish SSE，
     前端 TTFB = LLM 首 token 延迟（通常 < 1s），而不是等完整报告生成完。
+
+    🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被 C1 确认并锁定，
+    当前任务内不得再重新生成 —— 直接跳过，返回原 node1 状态不变。
     """
     from wellflow.app.nodes import product_analyzer
     from wellflow.app.event_bus import publish
 
     task_id = state.get("task_id", "")
+
+    # —— 锁定守卫：已锁定则绝不能重跑 Node1 ——
+    if bool((state.get("node1") or {}).get("report_locked")):
+        print(f"[node1] 🛡️ task={task_id} node1 报告已锁定，拒绝重新生成", flush=True)
+        if task_id:
+            publish(task_id, "message", {
+                "text": (
+                    "产品报告已确认并锁定，本任务内无法再修改或重新生成。"
+                    "如需调整商品信息，请新建任务重新生成报告。"
+                ),
+            })
+        # 返回空更新 + 保持停在 C1（让 graph 走 interrupt 路径到 C1，
+        # 但 C1 自己会识别已锁定并放行到 Node2；这里为了保守只返回 phase）
+        return {"phase": "c1_confirm"}
+
     req = state.get("request", {})
     image_paths: list[str] = req.get("product_images") or []
     user_text: str = req.get("description", "")
@@ -143,15 +161,14 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     full_report = "".join(full_report_parts)
     full_thinking = "".join(think_parts)
 
-    # ---- 双保险：强制在报告末尾追加确认提示语 ----
-    if "请仔细核对以上识别信息" not in full_report:
-        full_report = full_report.rstrip()
+    # ---- 拆分：报告正文 vs 引导语（LLM 按 prompt 用 ---NEXT--- 分隔）----
+    report_body, next_actions = _split_next_actions(full_report)
 
     # 归一化为稳定 key 的四块结构（前端"重点洞察"面板只认这个，不认 prompt 字段名）
     from wellflow.app.prompt.report_sections import build_report_sections
-    report_sections = build_report_sections(full_report)
+    report_sections = build_report_sections(report_body)
     total_ts = time.time()
-    print(f"[node1] ✅ VLM 完成: 报告 {len(full_report)} 字, "
+    print(f"[node1] ✅ VLM 完成: 报告 {len(report_body)} 字, "
           f"thinking {len(full_thinking)} 字, "
           f"content_chunks={content_chunk_index}, think_chunks={think_chunk_index}, "
           f"总耗时={total_ts - t0:.2f}s"
@@ -167,16 +184,40 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
         "node": "node1",
     })
 
+    # —— next_actions（LLM 动态引导语）不再作为独立 SSE message 事件推送，
+    #    而是存入 node1 state，由 parent_graph 在 C1 interrupt 时作为 hint 下发给前端。
+    #    这样避免了独立 message 事件被 append 到报告正文再被 interrupt 的 replace 覆盖的问题。
+
     return {
         "phase": "node1_vlm_done",
         "node1": {
             **state.get("node1", {}),
             "input_analysis": analysis,
-            "product_insight": full_report,
+            "product_insight": report_body,
             "report_sections": report_sections,
+            # 💬 LLM 动态生成的下一步引导语（报告正文 ---NEXT--- 分隔线之下的部分）
+            #    存入 state 后由 parent_graph 在 C1 interrupt 时作为 hint 下发
+            "next_actions": next_actions,
             # 🔁 缓存已压缩的商品图 data URIs，供 Node2 复用（避免重复 PIL 压缩 ~1.2s）
             "compressed_images": images,
             # 💭 持久化 thinking 文本，刷新后前端可恢复展示
             "thinking_text": full_thinking if full_thinking else "",
         },
     }
+
+
+def _split_next_actions(raw: str) -> tuple[str, str]:
+    """按 ---NEXT--- 把 LLM 返回拆成 (报告正文, 引导语)。
+
+    - 找到分隔符：[0] 存 product_insight，[1] 去掉前后空行后作为 next_actions 返回
+    - 找不到：完整 raw 当报告正文，引导语返回空串（调用方走 hardcoded 兜底）
+    """
+    if not raw:
+        return "", ""
+    marker = "---NEXT---"
+    idx = raw.rfind(marker)
+    if idx == -1:
+        return raw.strip(), ""
+    body = raw[:idx].rstrip()
+    actions = raw[idx + len(marker):].strip()
+    return body, actions

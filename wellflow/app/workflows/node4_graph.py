@@ -14,6 +14,11 @@
 
 ⚠️ 新语义：per_prompt_count 已彻底删除。Node4 不再有批量 n>1 概念，
   每张图 = 一次独立 API 调用。redo/confirm 机制在 parent_graph 的 c4_review 实现。
+
+⚠️ 模型策略：
+  Node4 生图动态从 new-api 拉 image 模型列表（qwen-image-3.0 优先），
+  不从前端 interrupt、chat.py 分类器、state.node3.image_model 里取模型。
+  outfit.py 已有相同降级模式验证过可用。
 """
 
 from __future__ import annotations
@@ -22,8 +27,45 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# 辅助函数
+# 常量：Node4 生图模型降级链
+# 实际值从 new-api 动态拉取（capability=image），qwen-image-3.0 优先；
+# 动态拉失败时用此硬编码兜底，保证 API 一定有模型可用。
 # ---------------------------------------------------------------------------
+
+_NODE4_IMAGE_MODELS_FALLBACK: list[str] = [
+    "qwen-image-3.0",  # 主力模型（优先）
+    "gpt-image-2",     # 降级模型
+]
+
+_NODE4_IMAGE_PREFERRED = "qwen-image-3.0"
+
+
+async def _get_node4_image_models() -> list[str]:
+    """动态拉取 image 能力的模型列表，qwen-image-3.0 优先。
+
+    从 new-api 失败时返回硬编码兜底链（保序，preferred 在前）。
+    """
+    from wellflow.app.api.model_options import fetch_model_options
+    try:
+        opts = await fetch_model_options("image")
+        models = [_short_model_name(opt.value) for opt in opts]
+    except Exception as exc:
+        print(f"[node4] ⚠️ 动态拉 image 模型失败，用兜底链: {exc}", flush=True)
+        models = []
+
+    if not models:
+        return list(_NODE4_IMAGE_MODELS_FALLBACK)
+
+    # preferred 提到首位，其余保持原序
+    if _NODE4_IMAGE_PREFERRED in models:
+        idx = models.index(_NODE4_IMAGE_PREFERRED)
+        models = [models[idx], *models[:idx], *models[idx + 1 :]]
+    return models
+
+
+def _short_model_name(model: str) -> str:
+    """把 'provider/xxx' 格式剥掉 provider 前缀，只保留 'xxx'。"""
+    return model.split("/", 1)[1] if "/" in model else model
 
 
 def _ratio_to_size(ratio: str) -> str:
@@ -145,27 +187,32 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
-    """并发调 LLM 生图 —— 每个 work_item 独立一次 API 调用（n 强制 =1）。"""
+    """并发调 LLM 生图 —— 每个 work_item 独立一次 API 调用（n 强制 =1）。
+
+    模型选择：动态从 new-api 拉 image 模型列表（qwen-image-3.0 优先），
+    不从 state.node3.image_model 读取。
+    """
     import asyncio
     import time
 
     from wellflow.app.event_bus import publish as _eb
 
     task_id = state.get("task_id", "")
-    node3 = state.get("node3", {})
     node4 = state.get("node4", {})
     work_items = node4.get("work_items", [])
     ref_paths: list[str] = node4.get("reference_images", [])
     cached_ref_uris: list[str] = node4.get("reference_images_data_uris") or []
-    image_model: str | None = node3.get("image_model")
 
     pending_items = [it for it in work_items if it.get("status") in ("pending", "redo")]
     outputs: list[dict[str, Any]] = []
     from wellflow.app.config import settings
     SEM = settings.node3_gen_concurrency  # 沿用同名配置，不影响语义
 
-    print(f"[node4] _run_gen: {len(pending_items)} work_items "
-          f"(并发上限={SEM}, model={image_model}, 强制 n=1)", flush=True)
+    print(
+        f"[node4] _run_gen: {len(pending_items)} work_items, "
+        f"并发上限={SEM}, 强制 n=1",
+        flush=True,
+    )
 
     sem = asyncio.Semaphore(SEM)
     _gen_start_t = time.time()
@@ -178,9 +225,10 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
             wid = item["work_item_id"]
             print(f"[{wid}] 📤 开始生图 size={size} prompt({len(prompt)}chars)={prompt[:80]}...", flush=True)
             try:
+                # ✅ 关键：不传 image_model 覆盖，让 _execute_single_image 走硬编码降级链
                 result = await _execute_single_image(
                     prompt=prompt, size=size,
-                    ref_paths=ref_paths, image_model=image_model,
+                    ref_paths=ref_paths,
                     cached_ref_uris=cached_ref_uris,
                 )
                 dt = time.time() - t0
@@ -261,9 +309,14 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
 
 async def _execute_single_image(prompt: str, size: str,
                                 ref_paths: list[str],
-                                image_model: str | None = None,
+                                _image_model: str | None = None,
                                 cached_ref_uris: list[str] | None = None):
-    """单次生图 —— 永远 n=1，返回单张 ImageGenResult。"""
+    """单次生图 —— 永远 n=1，动态拉取 image 模型列表逐个尝试（qwen-image-3.0 优先）。
+
+    签名保留 _image_model 但**不再使用**（参数来自旧链路，目前没有调用方传它）。
+
+    全链失败时 raise RuntimeError，错误信息汇总每个模型的失败原因。
+    """
     from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.utils.image_store import paths_to_data_uris
 
@@ -274,16 +327,32 @@ async def _execute_single_image(prompt: str, size: str,
     else:
         image_refs = []
 
-    client = get_llm_client("image", model_override=image_model)
-    # ✅ n 强制 =1 —— 一个 prompt 对应一张最终生图
-    result = await client.generate_image(
-        prompt=prompt,
-        size=size,
-        n=1,
-        response_format="b64_json",
-        extra_params={"image_refs": image_refs},
+    _chain = _get_node4_image_models()
+    errors: list[str] = []
+    for model in _chain:
+        try:
+            client = get_llm_client("image", model_override=model)
+            # ✅ n 强制 =1 —— 一个 prompt 对应一张最终生图
+            result = await client.generate_image(
+                prompt=prompt,
+                size=size,
+                n=1,
+                response_format="b64_json",
+                extra_params={"image_refs": image_refs},
+            )
+            return result  # 成功直接返回，不再尝试后续降级模型
+        except Exception as exc:
+            errors.append(f"{model}: {type(exc).__name__} — {str(exc)[:200]}")
+            print(
+                f"[node4] ⚠️ 模型 {model} 失败 → "
+                f"{'尝试降级' if model != _chain[-1] else '降级链耗尽'}",
+                flush=True,
+            )
+
+    # 全链失败 —— 汇总所有模型的错误让上层感知
+    raise RuntimeError(
+        f"Node4 生图失败（降级链 {_chain} 全败）: " + " | ".join(errors)
     )
-    return result
 
 
 # ---------------------------------------------------------------------------

@@ -32,10 +32,8 @@ from wellflow.app.repositories.conversation_repo import (
 )
 from wellflow.app.llm.intent_classifier import (
     classify,
-    build_redo_options,
-    compute_completed_mask,
-    detect_skip,
-    STEP_NAMES,
+    summarize_graph_state,
+    normalize_instruction,
 )
 
 router = APIRouter(prefix="/chat", tags=["对话"])
@@ -47,6 +45,37 @@ def _short_uuid() -> str:
 
 def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json_mod.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _node1_locked_message() -> str:
+    """产品报告已锁定时的统一固定回复文案。
+
+    按规格：报告已确认后任何入口（聊天 / 节点回退 / 直接 API）
+    都返回这句话，引导用户新建任务，不改变已确认报告。
+    """
+    return (
+        "产品报告已确认并锁定，本任务内无法再修改。"
+        "如需调整商品信息，请新建任务重新生成报告。"
+    )
+
+
+def _is_node1_locked(graph_state: dict | None) -> bool:
+    """共享守卫：从 LangGraph checkpoint state 判断 Node1 报告是否已锁定。"""
+    if not isinstance(graph_state, dict):
+        return False
+    node1 = graph_state.get("node1") or {}
+    return bool(node1.get("report_locked"))
+
+
+def _quick_report_hash(text: str | None) -> str:
+    """chat.py 内部版本绑定 hash（FNV-1a，与 parent_graph._report_hash 保持一致）。"""
+    if not text:
+        return "0" * 16
+    h = 0xCBF29CE484222325
+    for ch in text.encode("utf-8"):
+        h ^= ch
+        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
 
 
 def _get_graph():
@@ -299,9 +328,9 @@ async def chat(
     marketing_goal: str = Form(default="acquisition"),
     # c2 界面 checkbox 选中的方案索引（逗号分隔，如 "0,2"），前端输入框发消息时带上
     selected_scheme_indices: str | None = Form(default=None),
-    # 用户在 redo radio 弹层里选的目标节点（node1/node2/node3/node4），
-    # 有此值时跳过意图分类直接走 _handle_backward
-    selected_redo_target: str | None = Form(default=None),
+    # 前端 dispatch 层回传：用户显式指定要微调哪一步（node1/node2/node3）
+    # 仅作 LLM 意图分类的"强引导"上下文，绝不绕过 LLM
+    selected_finetuning_target: str | None = Form(default=None),
     images: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
@@ -366,7 +395,18 @@ async def chat(
 
         # ---------- 从 state 取产物 ----------
         if graph_state:
-            completed_mask = compute_completed_mask(graph_state, current_node)
+            # completed_mask 仅用作 LLM 分类的上下文 hint（告知已跑过哪些 step），
+            # 不是业务逻辑，这里内联 3 行简单推导避免从旧关键词模块 import。
+            completed_mask = [False] * 6
+            if graph_state.get("node1", {}).get("product_insight"):
+                completed_mask[0] = True
+            if graph_state.get("node2", {}).get("schemes") or current_node in ("c2", "c3", "c4"):
+                completed_mask[2] = True
+            if graph_state.get("node3", {}).get("outputs") or current_node == "c3":
+                completed_mask[4] = True
+            if graph_state.get("node3", {}).get("outputs"):
+                completed_mask[5] = True
+
             existing_report = str(graph_state.get("node1", {}).get("product_insight", "") or "")
             # c2 的可选项是 schemes（方案），不是 prompts —— 历史上误读 node2.generate_prompts
             # （该字段属于 node3），导致 existing_schemes 永远为空，"默认全选"退化成"全不选"
@@ -382,115 +422,49 @@ async def chat(
     )
 
     # ------------------------------------------------------------------
-    # 🎯 selected_redo_target：用户在 redo radio 弹层里选了目标节点 →
-    # 跳过意图分类，直接组装 backward_to_nodeX intent 走 dispatch。
-    # 校验 node 合法性（守卫），不合法直接拦截。
+    # 意图分类（全 LLM，唯一入口）
     # ------------------------------------------------------------------
-    redo_target_from_radio: str | None = None
-    if selected_redo_target and has_task:
-        allowed = build_redo_options(current_node)
-        allowed_values = {opt["value"] for opt in allowed}
-        if selected_redo_target in allowed_values:
-            redo_target_from_radio = selected_redo_target
-            intent = f"backward_to_{selected_redo_target}"
-            intent_result = {"intent": intent, "reasoning": f"redo radio 回传→{intent}",
-                             "selected_indices": None, "blocked_step": None, "parsed_content": None}
-            print(f"[chat] 🎯 selected_redo_target={selected_redo_target} → 跳过分类，intent={intent}", flush=True)
-        else:
-            print(f"[chat] 🛡️ selected_redo_target={selected_redo_target} 不在允许列表 {allowed_values}，拦截", flush=True)
-            async def _bad_target_sse():
-                yield _sse("message", {"text": f"当前阶段不允许回退到 {selected_redo_target}"})
-                yield _sse("done", {"phase": "blocked"})
-            return StreamingResponse(_bad_target_sse(), media_type="text/event-stream")
+    _state_brief = summarize_graph_state(graph_state)
+    # 日志打印：结构摘要（一眼看清各 node 产物状态）+ 完整 brief 仅在 debug 时打
+    # 旧版 print(_state_brief[:300]) 会全是 node1 报告正文，c2/c3/c4 阶段完全看不到当前产物
+    if graph_state:
+        _sn1 = graph_state.get("node1") or {}
+        _sn2 = graph_state.get("node2") or {}
+        _sn3 = graph_state.get("node3") or {}
+        _sn4 = graph_state.get("node4") or {}
+        _n1_tag = f"locked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("report_locked") else f"unlocked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("product_insight") else "none"
+        _schemes = _sn2.get("schemes") or []
+        _sel = _sn2.get("selected_scheme_indices") or []
+        _n2_tag = f"{len(_schemes)}套(已选{_sel})" if _schemes else "none"
+        _prompts = _sn3.get("generate_prompts") or []
+        _details = _sn3.get("prompts_detail") or []
+        _n3_tag = f"{len(_prompts)}条" if _prompts else f"{len(_details)}条(detail)" if _details else "none"
+        _outputs = _sn4.get("outputs") or []
+        _works = _sn4.get("work_items") or []
+        _n4_tag = f"{len(_outputs)}张" if _outputs else f"进行中{sum(1 for w in _works if isinstance(w,dict) and w.get('status')=='done')}/{len(_works)}" if _works else "none"
+        print(f"[chat] 📋 state 结构摘要: node1={_n1_tag}, node2={_n2_tag}, node3={_n3_tag}, node4={_n4_tag} | current_node={current_node}", flush=True)
     else:
-        intent_result = await classify(
-            message,
-            has_task=has_task,
-            current_node=current_node,
-            completed_mask=completed_mask,
-            has_images=len(images) > 0,
-            product_description=message[:500],
-        )
-        intent = intent_result.get("intent", "chat_outside")
-        print(f"[chat] 意图={intent} reason={intent_result.get('reasoning', '')[:60]}", flush=True)
+        print(f"[chat] 📋 state 结构摘要: graph_state=None | current_node={current_node}", flush=True)
+    intent_result = await classify(
+        message,
+        has_task=has_task,
+        current_node=current_node,
+        completed_mask=completed_mask,
+        has_images=len(images) > 0,
+        selected_finetuning_target=selected_finetuning_target,
+        graph_state_brief=_state_brief,
+    )
+    intent = intent_result.get("intent", "chat_outside")
+    print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
+          f"reason={intent_result.get('reasoning', '')[:80]} | user_msg={message[:60]}", flush=True)
 
     # ------------------------------------------------------------------
-    # 🛡️ 意图守卫拦截：返回 blocked=True → 直接 SSE 友好消息，绝对不启动 graph。
-    # 防止不合法的 backward_to_nodeX 穿透到 graph 重跑大模型。
+    # persist 辅助函数 —— 必须在 node1 锁定守卫之前定义，
+    # 因为 node1 锁定守卫的 early-return SSE 生成器会捕获它们
+    # conv_id_for_this_turn 在此处提前声明（后续 start_task 分支会更新），
+    # 确保 persist 函数闭包引用的变量在任何执行路径下都有绑定值
     # ------------------------------------------------------------------
-    if intent_result.get("blocked"):
-        blocked_reason = intent_result.get("blocked_reason", "当前操作不允许")
-        print(f"[chat] 🛡️ 意图守卫拦截: {blocked_reason}", flush=True)
-        async def _blocked_sse():
-            yield _sse("message", {"text": blocked_reason})
-            yield _sse("done", {"phase": "blocked"})
-        return StreamingResponse(_blocked_sse(), media_type="text/event-stream")
-
-    # ------------------------------------------------------------------
-    # 🛡️ start_task 守卫：已有任务时绝不允许开新任务跑 Node1。
-    # LLM 兜底分类可能把 "继续" 这类短确认误判成 start_task（尤其 current_node
-    # 丢失时），若直接 _handle_start_task 会抛弃当前任务从头跑 → 强制降级为
-    # confirm_current 走 resume（current_node 缺失时 _handle_resume 有兜底提示）。
-    # ------------------------------------------------------------------
-    if intent == "start_task" and has_task:
-        print(f"[chat] 🛡️ 已有 task={t_id}，start_task 降级 → confirm_current", flush=True)
-        intent = "confirm_current"
-        intent_result["intent"] = "confirm_current"
-        intent_result["reasoning"] = f"守卫: has_task=True 时拦截 start_task（原 reasoning: {intent_result.get('reasoning', '')}）"
-
-    # ------------------------------------------------------------------
-    # Conversation 关联 + user chat_message 持久化（在 event_generator 之外同步做）
-    # 新建 conversation（首次）或复用已解析的 resolved_conv_id
-    # ------------------------------------------------------------------
-    # 收集用户图片附件元数据（不重复读文件）
-    user_images_meta: list[dict[str, str]] = []
-    for img in images:
-        user_images_meta.append({
-            "name": img.filename or "image",
-            "content_type": img.content_type or "",
-        })
-
-    # start_task → 新建 conversation（优先用前端传的，否则后端生成）；否则用已解析的
     conv_id_for_this_turn: str | None = resolved_conv_id
-    if intent == "start_task":
-        # 优先复用前端传的 conversation_id（前端用 createId() 生成，全局唯一）
-        if not conv_id_for_this_turn:
-            conv_id_for_this_turn = _short_uuid()
-            _title = message.strip()[:30] or "新对话"
-            conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
-            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title={_title}", flush=True)
-        else:
-            # 前端传了但还没建（首次 start_task，前端 generate 的 id 后端还没记录）
-            # 用 resolve() 兼容 short_id / 完整 UUID
-            existing = conv_repo.resolve(conv_id_for_this_turn)
-            if not existing:
-                _title = message.strip()[:30] or "新对话"
-                conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
-                print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
-
-    # 归一化：确保 conv_id_for_this_turn 是完整主键（short_id / UUID 都能解析）
-    # 下游 persist / touch / update_current_task 需要真实 PK
-    if conv_id_for_this_turn:
-        _resolved_obj = conv_repo.resolve(conv_id_for_this_turn)
-        if _resolved_obj and _resolved_obj.conversation_id != conv_id_for_this_turn:
-            print(f"[chat] 🔄 归一化 conversation_id {conv_id_for_this_turn} → {_resolved_obj.conversation_id}", flush=True)
-            conv_id_for_this_turn = _resolved_obj.conversation_id
-
-    # 写 user chat_message（无论什么 intent 都写，保留完整对话历史）
-    if conv_id_for_this_turn:
-        try:
-            msg_repo.create(
-                conversation_id=conv_id_for_this_turn,
-                role="user",
-                text=message,
-                images_json=user_images_meta,
-                intent=intent,
-                task_id=t_id,  # start_task 时 t_id 还没，是 None，后面会关联
-            )
-            conv_repo.touch(conv_id_for_this_turn)
-            print(f"[chat] 💬 user message 已持久化 conv={conv_id_for_this_turn} intent={intent}", flush=True)
-        except Exception as exc:
-            print(f"[chat] ⚠️ user message 持久化失败（不阻断主流程）: {exc}", flush=True)
 
     async def _persist_assistant_msg(text: str, task_id_: str | None = None) -> None:
         """fire-and-forget 写一条 assistant chat_message。
@@ -551,6 +525,105 @@ async def chat(
         if text:
             await _persist_assistant_msg(text, known_task_id)
 
+    # ------------------------------------------------------------------
+    # 🛡️ Node1 报告锁定守卫：唯一允许的 block。
+    # graph_state 显示 node1.report_locked=True 时，任何试图修改/微调 node1 的
+    # 入口都被拦截——产品报告一经 c1 确认即永久锁定，不能在后续步骤重做。
+    #
+    # 两层判定（最安全的写法：只要 node1 已锁定 + 用户消息含 node1 产物锚点词，
+    # 或 LLM 明确判了 refine_target=node1，就拦——完全绕开 LLM 可能的意图误判）：
+    #   1) LLM refine_target 直接判了 node1 —— 最常见路径
+    #   2) 用户消息含 node1 锚点词（"报告"/"洞察报告"/"商品识别报告"…）——
+    #      这是对 LLM 分类错误的**最后一道**防御：
+    #      例：LLM 把 c3 用户的"修改洞察报告"误判为 confirm_current，
+    #      整个 intent == "edit" 分支都绕开 → 守卫兜底：只要消息里含 node1 锚点词就拦
+    #
+    # 例外：start_task（新任务不应被锁拦住）和空消息（纯 confirm 不含锚点词）
+    # ------------------------------------------------------------------
+    _node1_locked_here = _is_node1_locked(graph_state)
+    _refine_tgt = intent_result.get("refine_target")
+
+    # node1 产物锚点词 —— 只保留**无歧义**的产物名，不跨 node 复用的字段
+    # （注意：不要加"品牌调性"/"品牌定位"这类 node2 方案里也可能出现的字段名，
+    #    chat.py 这里没有消歧逻辑，加了会导致 node2 refine 被误杀）
+    _NODE1_PRODUCT_HINTS = (
+        "报告", "商品识别", "商品报告", "识别报告", "洞察报告",
+    )
+    _msg_has_node1_hint = any(h in message for h in _NODE1_PRODUCT_HINTS)
+
+    # 唯一例外：start_task（用户开新任务，node1 锁定与此无关）
+    _is_new_task = intent == "start_task"
+
+    # 命中任一 → 拦（已排除 start_task）
+    _hits_node1_modification = (
+        (not _is_new_task)
+        and (_refine_tgt == "node1" or _msg_has_node1_hint)
+    )
+    if _node1_locked_here and _hits_node1_modification:
+        _why_parts = [f"refine_target={_refine_tgt}", f"intent={intent}"]
+        if _msg_has_node1_hint and _refine_tgt != "node1":
+            _why_parts.append("用户消息含 node1 锚点词，LLM 可能误判意图")
+        print(f"[chat] 🛡️ node1 报告已锁定，拦截 intent={intent} | " + " | ".join(_why_parts), flush=True)
+        async def _node1_locked_sse():
+            chunk = _sse("message", {"text": _node1_locked_message()})
+            await _persist_sse_text(chunk, known_task_id=t_id)
+            yield chunk
+            yield _sse("done", {"phase": "c1_locked"})
+        return StreamingResponse(_node1_locked_sse(), media_type="text/event-stream")
+
+    # ------------------------------------------------------------------
+    # Conversation 关联 + user chat_message 持久化（在 event_generator 之外同步做）
+    # 新建 conversation（首次）或复用已解析的 resolved_conv_id
+    # ------------------------------------------------------------------
+    # 收集用户图片附件元数据（不重复读文件）
+    user_images_meta: list[dict[str, str]] = []
+    for img in images:
+        user_images_meta.append({
+            "name": img.filename or "image",
+            "content_type": img.content_type or "",
+        })
+
+    # start_task → 新建 conversation（优先用前端传的，否则后端生成）；否则用已解析的
+    if intent == "start_task":
+        # 优先复用前端传的 conversation_id（前端用 createId() 生成，全局唯一）
+        if not conv_id_for_this_turn:
+            conv_id_for_this_turn = _short_uuid()
+            _title = message.strip()[:30] or "新对话"
+            conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
+            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title={_title}", flush=True)
+        else:
+            # 前端传了但还没建（首次 start_task，前端 generate 的 id 后端还没记录）
+            # 用 resolve() 兼容 short_id / 完整 UUID
+            existing = conv_repo.resolve(conv_id_for_this_turn)
+            if not existing:
+                _title = message.strip()[:30] or "新对话"
+                conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
+                print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
+
+    # 归一化：确保 conv_id_for_this_turn 是完整主键（short_id / UUID 都能解析）
+    # 下游 persist / touch / update_current_task 需要真实 PK
+    if conv_id_for_this_turn:
+        _resolved_obj = conv_repo.resolve(conv_id_for_this_turn)
+        if _resolved_obj and _resolved_obj.conversation_id != conv_id_for_this_turn:
+            print(f"[chat] 🔄 归一化 conversation_id {conv_id_for_this_turn} → {_resolved_obj.conversation_id}", flush=True)
+            conv_id_for_this_turn = _resolved_obj.conversation_id
+
+    # 写 user chat_message（无论什么 intent 都写，保留完整对话历史）
+    if conv_id_for_this_turn:
+        try:
+            msg_repo.create(
+                conversation_id=conv_id_for_this_turn,
+                role="user",
+                text=message,
+                images_json=user_images_meta,
+                intent=intent,
+                task_id=t_id,  # start_task 时 t_id 还没，是 None，后面会关联
+            )
+            conv_repo.touch(conv_id_for_this_turn)
+            print(f"[chat] 💬 user message 已持久化 conv={conv_id_for_this_turn} intent={intent}", flush=True)
+        except Exception as exc:
+            print(f"[chat] ⚠️ user message 持久化失败（不阻断主流程）: {exc}", flush=True)
+
     async def _stream_with_persist(
         generator: AsyncGenerator[str, None],
         *,
@@ -567,6 +640,19 @@ async def chat(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         # early-return 分支：手动 persist 每个有文本的 yield
+
+        # ── 模型池全挂：给用户准确的信息，不要误导为闲聊 ──
+        if intent == "model_pool_unavailable":
+            _reasoning = intent_result.get("reasoning", "")
+            print(f"[chat] 🛑 模型池不可用，直接返回准确信息给用户: {_reasoning[:80]}", flush=True)
+            chunk = _sse("message", {
+                "text": "当前模型池中的大模型均不可用，请稍后再试。",
+            })
+            await _persist_sse_text(chunk, known_task_id=t_id)
+            yield chunk
+            yield _sse("done", {"phase": "model_unavailable"})
+            return
+
         if intent == "chat_outside":
             chunk = _sse("message", {"text": "暂不支持与生图无关的对话。"})
             await _persist_sse_text(chunk, known_task_id=t_id)
@@ -574,33 +660,47 @@ async def chat(
             yield _sse("done", {"phase": "done"})
             return
 
-        blocked = intent_result.get("blocked_step")
-        if intent == "skip_forward" or blocked:
-            # 优先把 LLM 原始 reasoning 透传给前端，比硬编码更准确
-            reasoning = str(intent_result.get("reasoning") or "").strip()
-            msg = ""
-            if isinstance(blocked, dict):
-                idx = blocked.get("index")
-                name = blocked.get("name")
-                if isinstance(idx, int) and name:
-                    msg = f"不支持跳过第 {idx} 步（{name}），请先完成它。"
-                else:
-                    msg = str(blocked.get("message", "不支持跳过工作流步骤。"))
-            if not msg and reasoning:
-                msg = reasoning
-            elif not msg:
-                msg = "不支持跳过工作流中的步骤。"
-            chunk = _sse("message", {"text": msg})
+        # redo_blocked / skip_forward：被工作流规则 block 的意图
+        # redo_blocked + refine_target in (node1, None) → 拦截（node1 已锁定）
+        # redo_blocked + refine_target in (node2, node3, node4) → LLM 分类失误，
+        #   用户想回到未锁定的步骤 → 转成 edit + refine_target=X 走 refine 路径
+        # skip_forward → 试图跳过工作流步骤，一律拦截
+        # 用 _dispatch_intent 表示 dispatch 层实际路由的意图；
+        # 不改闭包外的 intent（Python 闭包禁止先读后 nonlocal）。
+        _dispatch_intent = intent
+        if intent == "redo_blocked":
+            if _refine_tgt in ("node2", "node3", "node4"):
+                # 用户想回到未锁定的步骤 → 降级为 edit 走 refine 路径
+                _dispatch_intent = "edit"
+                intent_result["refine_target"] = _refine_tgt
+                intent_result["refine_instruction"] = intent_result.get("refine_instruction") or message
+                print(f"[chat] 🔄 redo_blocked+refine_target={_refine_tgt} → 降级为 edit，走 refine 路径", flush=True)
+                # fall through 到运行状态守卫检查后继续 dispatch
+            else:
+                # node1 锁定守卫应该已拦截；这里兜底
+                _msg = _node1_locked_message() if _node1_locked_here else \
+                    "当前步骤已完成，如需重新开始请新建任务。"
+                print(f"[chat] 🛡️ redo_blocked → {_msg}", flush=True)
+                chunk = _sse("message", {"text": _msg})
+                await _persist_sse_text(chunk, known_task_id=t_id)
+                yield chunk
+                yield _sse("done", {"phase": "redo_blocked"})
+                return
+        if intent == "skip_forward":
+            chunk = _sse("message", {
+                "text": "当前工作流暂不支持跳过步骤，请按顺序完成后再继续。",
+            })
             await _persist_sse_text(chunk, known_task_id=t_id)
             yield chunk
-            yield _sse("done", {"phase": "done"})
+            yield _sse("done", {"phase": "skip_blocked"})
             return
 
         # ------------------------------------------------------------------
         # 运行状态守卫：同一个 task 并发请求 → 直接返回，防止 graph 冲突
+        # （这是唯一保留的安全守卫——不是业务 block，是防止 graph 崩溃）
         # ------------------------------------------------------------------
-        if has_task and t_id and intent != "start_task" and is_running(t_id):
-            print(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={intent}", flush=True)
+        if has_task and t_id and _dispatch_intent != "start_task" and is_running(t_id):
+            print(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={_dispatch_intent}", flush=True)
             chunk = _sse("message", {"text": "任务正在执行中，请等待当前操作完成后再试。"})
             await _persist_sse_text(chunk, known_task_id=t_id)
             yield chunk
@@ -642,23 +742,21 @@ async def chat(
 
             # ------------------------------------------------------------------
             # 🛡️ graph runtime 守卫（独立前置检查，不在 if-elif-else 链里）：
-            #   paused  → 放行到下面的 dispatch
+            #   paused  → 放行
             #   running → 拦截（graph 真在执行）
             #   stale   → 尝试 astream(None) 续跑；恢复失败则拦截
-            #   done    → 放行（让 redo/backward_to_nodeX 走 _handle_backward 路径 B）
+            #   done    → 放行（edit 意图会被 dispatch 到 _handle_backward 走路径 B）
             # ------------------------------------------------------------------
             _NEEDS_RUNTIME_CHECK = (
-                "confirm_current", "confirm_generation", "redo",
-                "backward_to_node1", "backward_to_node2",
-                "backward_to_node3", "backward_to_node4",
+                "confirm_current", "confirm_generation", "edit",
             )
-            if has_task and intent in _NEEDS_RUNTIME_CHECK:
+            if has_task and _dispatch_intent in _NEEDS_RUNTIME_CHECK:
                 from wellflow.app.graph_context import check_graph_runtime_state
                 _rt_state, _rt_age = check_graph_runtime_state(snapshot)
                 if _rt_state == "done":
-                    print(f"[chat] ✅ graph已END(done)，放行 intent={intent}", flush=True)
+                    print(f"[chat] ✅ graph已END(done)，放行 intent={_dispatch_intent}", flush=True)
                 elif _rt_state == "running":
-                    print(f"[chat] 🛡️ graph 正在执行（checkpoint 年龄 {_rt_age:.0f}s），拦截 intent={intent}",
+                    print(f"[chat] 🛡️ graph 正在执行（checkpoint 年龄 {_rt_age:.0f}s），拦截 intent={_dispatch_intent}",
                           flush=True)
                     yield _sse("message", {
                         "text": "任务正在执行中，暂不支持当前操作，请稍候再试。",
@@ -667,7 +765,7 @@ async def chat(
                     return
                 elif _rt_state == "stale":
                     print(f"[chat] ⚠️ graph checkpoint 过旧（{_rt_age:.0f}s），"
-                          f"可能已挂，尝试 astream(None) 恢复 intent={intent}",
+                          f"可能已挂，尝试 astream(None) 恢复 intent={_dispatch_intent}",
                           flush=True)
                     try:
                         graph = _get_graph()
@@ -698,77 +796,68 @@ async def chat(
             # ------------------------------------------------------------------
             # dispatch：互斥分支
             # ------------------------------------------------------------------
-            if intent == "start_task":
+            if _dispatch_intent == "start_task":
                 async for ev in _pipe(_handle_start_task(
                     message, product_images, platform, image_type, marketing_goal, graph,
                     conversation_id=conv_id_for_this_turn,
                 )):
                     yield ev
 
-            elif intent == "redo_blocked":
+            elif _dispatch_intent == "edit":
                 # ------------------------------------------------------------------
-                # v4：完全重做已禁用。所有 redo 类关键词 / LLM 误判 redo / 方向词+第X步 backward
-                #     统一拦在这里，返回友好提示引导用户用微调
+                # LLM 意图分类器返回 intent="edit" + refine_target=nodeX →
+                # 转成 backward_to_<target> 调用 _handle_backward 走 refine 分支。
+                # node1/2/3 是增量 refine；node4 是 redo（生图 API 无法增量编辑）。
                 # ------------------------------------------------------------------
-                # 如果整个流程已经走完（phase=done），不支持任何重做/微调，直接引导开新任务
-                _is_done = (
-                    has_task and task is not None and task.phase == "done"
-                ) or (
-                    isinstance(graph_state, dict) and graph_state.get("phase") == "done"
-                )
-                if _is_done:
-                    chunk = _sse("message", {
-                        "text": "整个流程已经走完，不支持重做。如需新的内容，请开启新任务。",
-                    })
-                    await _persist_sse_text(chunk, known_task_id=t_id)
-                    yield chunk
-                    yield _sse("done", {"phase": "done_blocked"})
-                    return
+                _target = intent_result.get("refine_target")
+                if not _target and current_node:
+                    # LLM 没给 refine_target → 用当前 cX 对应 node 兜底
+                    _FALLBACK_NODE = {"c1": "node1", "c2": "node2",
+                                      "c3": "node3", "c4": "node4"}
+                    _target = _FALLBACK_NODE.get(current_node, "node2")
+                    print(f"[chat] ⚠️ LLM 未给 refine_target，兜底 → {_target}", flush=True)
+                if not _target:
+                    _target = "node2"
+                _bd_intent = f"backward_to_{_target}"
+                _instruction = intent_result.get("refine_instruction") or message
 
-                _c = current_node or "cX"
-                _tips = {
-                    "c1": "你可以直接说要改的内容，比如「把品牌定位改成轻奢」「帽子应该是可拆卸的」「核心卖点加一条」，我会帮你微调报告。",
-                    "c2": "你可以直接说想要的方案调整，比如「第x个方案增加一套极简风方案」「第x个方案核心卖点改成极简自然」，我会帮你微调商拍方案。",
-                    "c3": "你可以直接说想要的提示词调整，比如「第x条提示词背景换成城市夜景」「第x条提示词模特姿势改成回头望」，我会帮你微调提示词。",
-                    "c4": "你可以直接说想要的调整，比如「这批图整体颜色再暗一点」「第一张换个背景」，我会帮你微调；如果对整体不满意，建议开启新任务。",
-                }
-                _tip = _tips.get(_c, "你可以直接说想要的调整内容，我会帮你微调。")
-                chunk = _sse("message", {
-                    "text": f"当前不支持完全重做哦～{_tip}",
-                })
-                await _persist_sse_text(chunk, known_task_id=t_id)
-                yield chunk
-                yield _sse("done", {"phase": "cX_blocked"})
+                # 🛑 拦截：本轮 refine 指令 == graph_state._refine_history[-1]（上一轮完全重复）
+                if _instruction and _instruction.strip() and isinstance(graph_state, dict):
+                    _history = graph_state.get("_refine_history") or []
+                    print(f"[chat] 🔍 重复检测: instruction={_instruction[:60]} | _refine_history={_history}", flush=True)
+                    if _history and normalize_instruction(_instruction) == normalize_instruction(_history[-1]):
+                        print(f"[chat] 🛑 refine 指令与上一轮完全重复 → 拦截, instruction={_instruction}", flush=True)
+                        _target_cn = {"node1": "报告", "node2": "方案", "node3": "提示词", "node4": "生图"}.get(_target, "产物")
+                        _phase_cn = {"node1": "c1_confirm", "node2": "c2_select",
+                                     "node3": "c3_confirm", "node4": "c4_review"}.get(_target, "done")
+                        _lock_text = (
+                            f"这条微调指令和上一轮完全一样哦，上一轮已经对{_target_cn}做过相同的修改了。"
+                            "如果想继续调整，可以换一条不一样的指令～"
+                        )
+                        _chunk = _sse("message", {"text": _lock_text})
+                        await _persist_sse_text(_chunk, known_task_id=t_id)
+                        yield _chunk
+                        yield _sse("done", {"phase": _phase_cn})
+                        return
+                    elif not _history:
+                        print(f"[chat] → 未命中拦截：_refine_history 为空（上一轮 refine 未写入 history 或已被消费清空）", flush=True)
+                    else:
+                        print(f"[chat] → 未命中拦截：normalize 不相等 "
+                              f"('{normalize_instruction(_instruction)}' vs '{normalize_instruction(_history[-1])}')", flush=True)
 
-            elif intent.startswith("backward_to_node") or intent == "redo":
-                # ------------------------------------------------------------------
-                # 兜底拦截：LLM 老版本 / 老 checkpoint 里的 redo/backward 意图
-                # ------------------------------------------------------------------
-                # 同样处理 done 状态
-                _is_done = (
-                    has_task and task is not None and task.phase == "done"
-                ) or (
-                    isinstance(graph_state, dict) and graph_state.get("phase") == "done"
-                )
-                if _is_done:
-                    print(f"[chat] 🛡️ done 状态下拦截 legacy intent={intent}", flush=True)
-                    chunk = _sse("message", {
-                        "text": "整个流程已经走完，不支持重做。如需新的内容，请开启新任务。",
-                    })
-                    await _persist_sse_text(chunk, known_task_id=t_id)
-                    yield chunk
-                    yield _sse("done", {"phase": "done_blocked"})
-                    return
-                print(f"[chat] 🛡️ 兜底拦截 legacy intent={intent} → 返回 redo_blocked 友好提示", flush=True)
-                chunk = _sse("message", {
-                    "text": "当前不支持完全重做哦～你可以直接说想要的调整内容，我会帮你微调。",
-                })
-                await _persist_sse_text(chunk, known_task_id=t_id)
-                yield chunk
-                yield _sse("done", {"phase": "cX_blocked"})
+                print(f"[chat] edit → backward_to_{_target}, instruction={_instruction}",
+                      flush=True)
+
+                async for ev in _pipe(_handle_backward(
+                    _bd_intent, t_id or '', graph,
+                    product_images=product_images,
+                    refine_instruction=_instruction,
+                )):
+                    yield ev
+
             else:
                 async for ev in _pipe(_handle_resume(
-                    intent, t_id or '', current_node, intent_result,
+                    _dispatch_intent, t_id or '', current_node, intent_result,
                     message, model_images, product_images,
                     existing_report, existing_schemes,
                     existing_model_images, graph,
@@ -778,7 +867,7 @@ async def chat(
                     yield ev
         except Exception as exc:
             import traceback as _tb2
-            print(f"[chat] ❌ dispatch error intent={intent}: {exc}", flush=True)
+            print(f"[chat] ❌ dispatch error intent={_dispatch_intent}: {exc}", flush=True)
             _tb2.print_exc()
             yield _sse("error", {"phase": "failed", "message": str(exc)})
             yield _sse("done", {"phase": "failed"})
@@ -884,10 +973,12 @@ async def _handle_backward(
 
     # ------------------------------------------------------------------
     # 意图 → 回退目标映射
-    #   backward_to_node1 → resume c1, refine node1（纯 text LLM 增量编辑报告）
-    #   backward_to_node2 → resume c2, refine node2（纯 text LLM 增量编辑商拍方案）
-    #   backward_to_node3 → resume c3, refine node3（纯 text LLM 增量编辑提示词）
-    #   backward_to_node4 → resume c4, redo node4（生图 API 无法增量编辑，保留完全重做）
+    # 这是 LLM 意图分类器 edit 意图的最终落点：dispatch 层把 edit + refine_target=nodeX
+    # 转成 backward_to_nodeX 后交给 _handle_backward 执行。
+    #   backward_to_node1 → refine node1（纯 text LLM 增量编辑报告）
+    #   backward_to_node2 → refine node2（纯 text LLM 增量编辑商拍方案）
+    #   backward_to_node3 → refine node3（纯 text LLM 增量编辑提示词）
+    #   backward_to_node4 → redo node4（生图 API 无法增量编辑，保留完全重做）
     # ------------------------------------------------------------------
     _INTENT_MAP = {
         "backward_to_node1": ("c1", "node1", 1),
@@ -904,13 +995,10 @@ async def _handle_backward(
     _IS_REFINE = redo_target in ("node1", "node2", "node3")
 
     # ------------------------------------------------------------------
-    # 流程守卫：
-    #   1. phase == done → 允许 redo（Command(goto='c4_review_result') 从 finalize 回跳）
-    #      原来是硬拦"任务已确认入库，不能再回退重做"——这是历史遗留策略，
-    #      用户明确说"重做"时我们应该让 graph 从 END 续跑，而不是拒绝。
-    #      LangGraph 的 Command(goto=X) 在 END checkpoint 上会把 goto 当作
-    #      "从 X 继续跑"——state 会保留 checkpoint 上已有的 node1/2/3/4 产物。
-    #   2. backward_to_node1 仅允许 interrupt_node == c1（node1 永久锁定）
+    # Command 组装前置注释：
+    #   phase == done → edit 意图（node4 redo 或 node1-3 refine）统一允许从 END 续跑
+    #   LangGraph 的 Command(goto=X) 在 END checkpoint 上会从目标节点继续跑，
+    #   state 保留 checkpoint 里已有的 node1/2/3/4 产物。
     # ------------------------------------------------------------------
     def _get_state() -> tuple[str | None, str | None]:
         try:
@@ -931,17 +1019,8 @@ async def _handle_backward(
         print(f"[backward] ⚠️ refine 目标 {redo_target} 无指令，降级为通用 '重新生成' 指令", flush=True)
         _instruction = "请基于现有内容重新生成一份，保持整体风格不变。"
 
-    # ------------------------------------------------------------------
-    # 流程守卫：
-    #   node1 已确认过 → 不允许完全重做（原来的 backward_to_node1 守卫）
-    #   但 refine 目标可以跨阶段——用户说"重写 node1 报告"永远可以用 refine 做增量编辑
-    # ------------------------------------------------------------------
-    if intent == "backward_to_node1" and interrupt_node != "c1" and not _IS_REFINE:
-        print(f"[backward] 🛡️ task={task_id} interrupt={interrupt_node}，"
-              f"node1 已锁定（只能在 c1 回退），拒绝 backward_to_node1", flush=True)
-        yield _sse("message", {"text": "商品报告已确认进入方案阶段，不能再完全重做商品识别。"})
-        yield _sse("done", {"phase": "done"})
-        return
+    # 注意：node1 锁定守卫已在 chat.py 顶部统一处理（API 层），
+    # _handle_backward 里不再重复拦截——如果 intent 已走到这里，说明 API 层已放行。
 
     # 如果用户上传了新商品图 → 落盘 + 更新 request.product_images
     cmd_update: dict[str, Any] = {}
@@ -1004,11 +1083,12 @@ async def _handle_backward(
             refine_update = {
                 "_refine_target": redo_target,
                 "_refine_instruction": _instruction,
+                "_refine_history": list(latest_state.get("_refine_history") or []) + [_instruction],
                 "_redo_target": None,
             }
             update_dict = {**refine_update, **cmd_update} if cmd_update else refine_update
             cmd = Command(goto=exec_node, update=update_dict)
-            print(f"[backward] 🎯 graph已END → refine→{redo_target} goto={exec_node}, instruction={_instruction[:60]}", flush=True)
+            print(f"[backward] 🎯 graph已END → refine→{redo_target} goto={exec_node}, instruction={_instruction}", flush=True)
         else:
             # redo node4：完全重置 work_items + 清 outputs（保持原有逻辑）
             redo_target_cleanup: dict[str, dict[str, Any]] = {}
@@ -1088,27 +1168,8 @@ async def _handle_resume(
         yield _sse("done", {"phase": "done"})
         return
 
-    # ------------------------------------------------------------------
-    # 🛡️ 硬性规则校验：绝不允许跳过损坏 / 数据缺失的节点
-    #   场景：current_node=c2，但 node2.schemes=[] → 阻断向下流转，
-    #   只允许 retry 当前 node2。
-    # ------------------------------------------------------------------
-    from wellflow.app.graph_context import validate_current_node_products
-    ok, missing = validate_current_node_products(current_node, graph_state)
-    if not ok:
-        print(
-            f"[resume] 🛡️ 硬性守卫拦截 current_node={current_node}，"
-            f"缺失产物: {missing} → 拒绝 resume，请 retry 当前 node",
-            flush=True,
-        )
-        yield _sse("message", {
-            "text": (
-                f"当前节点({current_node})产物缺失或损坏({missing})，"
-                "请重试当前节点，不允许跳过向下流转。"
-            ),
-        })
-        yield _sse("done", {"phase": "blocked"})
-        return
+    # 注意：validate_current_node_products 硬性守卫已按要求移除
+    # （用户要求除 node1 锁定 redo block 外，其他 block 全部移除）
 
     q = await drain_and_subscribe(task_id)
 
@@ -1136,15 +1197,18 @@ async def _handle_resume(
     # ------------------------------------------------------------------
     if node == "c1":
         # C1 阶段无需传图，用户直接确认/编辑报告即可继续
+        _current_report_hash = _quick_report_hash(existing_report)
 
         # ── edit_and_confirm_c1：自然语言补充/修改报告 → 走 refine 路径（与 c2/c3 一致）──
         if intent == "edit_and_confirm_c1":
             resume_values["decision"] = "refine"
             resume_values["refine_target"] = "node1"
             resume_values["refine_instruction"] = message
-            print(f"[chat] c1 edit_and_confirm_c1 → refine 路径, instruction={message[:60]}", flush=True)
+            print(f"[chat] c1 edit_and_confirm_c1 → refine 路径, instruction={message}", flush=True)
         else:
             resume_values["confirmed_report"] = existing_report
+            # 🔴 版本绑定：把当前报告的 hash 原样带回，_c1_confirm_report 会校验
+            resume_values["report_hash"] = _current_report_hash
         if model_image_paths:
             resume_values["model_images"] = model_image_paths
         resume_values.setdefault("ratio", "9:16竖版")
@@ -1156,7 +1220,7 @@ async def _handle_resume(
             resume_values["decision"] = "refine"
             resume_values["refine_target"] = "node2"
             resume_values["refine_instruction"] = message
-            print(f"[chat] c2 edit_and_confirm_c2 → refine 路径, instruction={message[:60]}", flush=True)
+            print(f"[chat] c2 edit_and_confirm_c2 → refine 路径, instruction={message}", flush=True)
         else:
             # 选中项优先级：前端 checkbox 显式传的 > 意图从消息文本解析的 > 默认全选。
             # 字段名必须是 selected_scheme_indices（_c2_select_scheme 读这个名字），
@@ -1191,7 +1255,7 @@ async def _handle_resume(
             resume_values["decision"] = "refine"
             resume_values["refine_target"] = "node3"  # c3 下默认改 node3 提示词，也可改 node2 方案
             resume_values["refine_instruction"] = message
-            print(f"[chat] c3 edit_and_confirm_c3 → refine 路径, instruction={message[:60]}", flush=True)
+            print(f"[chat] c3 edit_and_confirm_c3 → refine 路径, instruction={message}", flush=True)
         else:
             # C3 只有 confirm_current：用户确认 prompt 进入 Node4 生图。
             # C3 下的重做意图（比如"换背景"）已在意图分类阶段归为 backward_to_node3，

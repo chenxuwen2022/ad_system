@@ -146,8 +146,9 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 async def _start_graph(task_id: str, graph, config, initial_state=None, resume_values=None):
     """后台启动 LangGraph，异常转成 SSE error 事件。"""
-    from wellflow.app.event_bus import publish as _eb, cleanup as _eb_cleanup
+    from wellflow.app.event_bus import publish as _eb, cleanup as _eb_cleanup, mark_running, mark_done
     import traceback as _tb
+    mark_running(task_id)
     try:
         if resume_values is not None:
             stream_iter = graph.astream(
@@ -172,6 +173,7 @@ async def _start_graph(task_id: str, graph, config, initial_state=None, resume_v
         except Exception:
             pass
     finally:
+        mark_done(task_id)
         _eb_cleanup(task_id)
 
 
@@ -553,7 +555,7 @@ async def resume_task(
             if refine_target:
                 resume_values["refine_target"] = refine_target
             print(f"[resume] node={node} refine target={refine_target or 'default'} "
-                  f"instruction={refine_instruction.strip()[:60]}...", flush=True)
+                  f"instruction={refine_instruction.strip()}", flush=True)
 
         # redo 通用注入（仅 C4 redo→node4 保留）
         if _is_redo:
@@ -679,6 +681,160 @@ async def resume_task(
 
 
 # ===========================================================================
+# restart_task —— 恢复"执行中"但 checkpoint 已经 stale 的 graph（SSE 直推）
+# ===========================================================================
+
+
+async def _check_product_images_ready(task) -> tuple[bool, str | None]:
+    """检查 task 能否访问到商品图文件。
+
+    request.product_images 存的是相对路径如 "uploads/{task_id}/p0.png"，
+    需要拼上 settings.upload_dir（绝对路径前缀）才能找到真实文件。
+
+    Returns:
+        (ok, error_msg): ok=True → 商品图全部落盘可访问；ok=False → 有图路径但至少一个文件不存在，
+            error_msg 带原因（文件缺失路径）。request.product_images 为空也返回 (True, None)
+            （这种情况理论上不会发生在 graph 启动之后，但防御性处理）。
+    """
+    import asyncio
+    from pathlib import Path
+    from wellflow.app.config import settings
+
+    req = task.request_json or {}
+    paths: list[str] = req.get("product_images") or []
+    if not paths:
+        return True, None
+
+    upload_root = Path(settings.upload_dir)
+
+    def _resolve_and_check(rel: str) -> tuple[str, bool]:
+        # rel 形如 "uploads/taskX/p0.png" → 去掉 "uploads/" 前缀后拼 upload_root
+        stripped = rel
+        if stripped.startswith("uploads/"):
+            stripped = stripped[len("uploads/"):]
+        real_path = upload_root / stripped
+        return rel, real_path.exists()
+
+    missing: list[str] = []
+    results = await asyncio.gather(*(asyncio.to_thread(_resolve_and_check, p) for p in paths))
+    for rel, ok in results:
+        if not ok:
+            missing.append(rel)
+
+    if missing:
+        return False, f"商品图文件缺失: {missing[:3]}{'...' if len(missing) > 3 else ''}"
+    return True, None
+
+
+@router.post("/{task_id}/restart", summary="重启执行中但已挂住的任务（SSE 直推）")
+async def restart_task(
+    task_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """让卡住的任务重新跑起来。
+
+    与 resume 的区别：resume 要求当前停在 interrupt 并携带 resume_values；
+    restart 是让执行中途（node1/node2/node3/node4 某个计算节点）因为
+    后端进程重启 / 崩溃而中断的 graph 从 checkpoint 续跑。
+    内部就是 graph.astream(None) 从 snapshot 继续往下走到下一个 interrupt。
+    """
+    from wellflow.app.event_bus import is_running as _is_running
+    from wellflow.app.graph_context import check_graph_runtime_state
+
+    repo = TaskRepo(db)
+    task = repo.get(task_id)
+    if not task:
+        raise HTTPException(404, f"task {task_id} 不存在")
+
+    # 商品图前置检查：graph 跑 node1 必须读这些文件，文件缺失直接让前端重发
+    images_ok, images_err = await _check_product_images_ready(task)
+    if not images_ok:
+        print(f"[restart] 🚫 task={task_id} 商品图不可用 → 拒绝重启: {images_err}", flush=True)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PRODUCT_IMAGES_MISSING",
+                "message": "商品图片不可用，请重新上传商品图片后发起任务（原文件已丢失）",
+                "missing": images_err,
+            },
+        )
+
+    # 终态不能重启
+    if task.phase in (TaskPhase.DONE.value, TaskPhase.FAILED.value):
+        raise HTTPException(409, f"任务已 {task.phase}，无法重启")
+
+    # graph 真在跑就拦（防并发）
+    if _is_running(task_id):
+        raise HTTPException(409, "任务正在执行中，不需要重启")
+
+    # 读 checkpoint 看 graph 当前状态
+    graph_state, snapshot = await _aget_graph_state(task_id)
+    rt_state, rt_age = check_graph_runtime_state(snapshot)
+
+    print(f"[restart] task={task_id} phase={task.phase} rt_state={rt_state} age={rt_age}",
+          flush=True)
+
+    if rt_state == "done":
+        # graph 实际上已经跑完了，只是 DB phase 没同步？让前端重新 get 一次就行
+        raise HTTPException(409, "任务已完成，无需重启")
+
+    if rt_state == "paused":
+        # graph 正停在 HITL，应该走 resume 而不是 restart
+        raise HTTPException(409, "任务等待人工确认，请使用 resume 接口")
+
+    # running / stale / none → 放行，让 graph.astream(None) 续跑
+    # running 且年龄很小时说明 graph 真在跑，但 event_bus 里没标记 running
+    # （比如后端刚重启），这种情况也放行——astream(None) 会从 checkpoint 继续
+
+    # 注册 event_bus queue + 启动 graph
+    from wellflow.app.event_bus import drain_and_subscribe
+    q = await drain_and_subscribe(task_id)
+
+    try:
+        graph = _get_graph()
+        config = _langgraph_config(task_id)
+        # 关键：initial_state=None → 走 astream(None, config)
+        # LangGraph 会直接从 checkpoint snapshot 续跑下一个节点
+        asyncio.create_task(_start_graph(task_id, graph, config, initial_state=None))
+    except Exception as exc:
+        raise HTTPException(503, f"graph 不可用: {exc}")
+
+    async def event_generator():
+        yield _sse("restart_ack", {
+            "task_id": task_id,
+            "phase": task.phase,
+            "rt_state": rt_state,
+            "message": "已发起 graph 重启，从 checkpoint 续跑",
+        })
+
+        _HEARTBEAT_INTERVAL = 25
+        while True:
+            if await request.is_disconnected():
+                print(f"[sse-restart] task={task_id} 前端断开", flush=True)
+                break
+
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=_HEARTBEAT_INTERVAL)
+                event_type = event.get("type")
+                event_data = event.get("data", {})
+
+                yield _handle_sse_event(event_type, event_data)
+
+                if event_type == "done" or event_type == "error":
+                    break
+                if event_type == "phase" and event_data.get("phase") == "failed":
+                    break
+                if event_type == "interrupt":
+                    # graph 正常停下来等用户确认了，关闭 SSE
+                    print(f"[sse-restart] task={task_id} interrupt(node={event_data.get('node')})，关闭 SSE", flush=True)
+                    break
+            except asyncio.TimeoutError:
+                yield _sse("ping", {"ts": int(time.time())})
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
 # 列表 + 单任务查询（保持不变，兼容性）
 # ===========================================================================
 

@@ -170,14 +170,30 @@ def build_graph(checkpointer=None):
 # ---------------------------------------------------------------------------
 
 
+def _report_hash(text: str | None) -> str:
+    """对报告文本做稳定哈希（FNV-1a 轻量实现）。"""
+    if not text:
+        return "0" * 16
+    h = 0xCBF29CE484222325
+    for ch in text.encode("utf-8"):
+        h ^= ch
+        h = (h * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return f"{h:016x}"
+
+
 def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     """C1：用户确认商品识别报告。
 
     interrupt 让前端展示 Node1 的 product_insight（Markdown 报告），
-    用户可以修改报告内容、上传模特图、选画面比例。
+    用户可以多轮修改（decision="refine"）或最终确认（decision="confirm"）。
 
     决策模式：
-      decision="confirm"  → 正常写入 product_insight，流转到 Node2
+      decision="confirm"  → 写入 report_locked=True / report_hash / confirmed_at，
+                            confirmations.c1=True，然后流转到 Node2。
+                            版本绑定：interrupt_value 若带 report_hash，必须与 state
+                            当前 product_insight 哈希一致，否则视为旧版本 → 拒绝并留在 C1。
+                            重复确认（report_locked 已是 True）→ 直接返回空更新，
+                            让 graph 走 confirm 分支到 Node2（不重复写入锁字段）。
       decision="refine"   → 纯 text LLM 增量编辑报告（不走 VLM 重跑）
                             需配合 refine_instruction（用户的修改指令）
     """
@@ -185,20 +201,47 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     from wellflow.app.event_bus import publish
 
     task_id = state.get("task_id", "")
+    node1_state = state.get("node1", {}) or {}
+    current_report = str(node1_state.get("product_insight", "") or "")
+    current_hash = _report_hash(current_report)
+
+    # 优先使用 LLM 动态生成的 next_actions（报告 ---NEXT--- 分隔线下的引导语）；
+    # 没有则用 hardcoded 兜底
+    next_actions = str(node1_state.get("next_actions", "") or "").strip()
+    fallback_hint = (
+        "请确认商品识别报告，可继续修改或确认进入下一步。"
+        "确认后本任务内报告将锁定，无法再修改。"
+    )
+    c1_hint = next_actions if next_actions else fallback_hint
 
     if task_id:
         publish(task_id, "phase", {"phase": "c1_confirm"})
 
+    # —— 首次/每次 refine 后进入 C1，都要下发最新版本的 hash，
+    #    让前端在 confirm 时原样带回，防止用户确认旧版本报告 ——
     interrupt_value = interrupt({
         "node": "c1",
         "phase": "c1_confirm",
-        "hint": "请确认商品识别报告，可修改后继续",
-        "report": state.get("node1", {}).get("product_insight", ""),
-        "report_sections": state.get("node1", {}).get("report_sections"),
+        "hint": c1_hint,
+        "report": current_report,
+        "report_sections": node1_state.get("report_sections"),
+        "report_hash": current_hash,
+        "report_locked": bool(node1_state.get("report_locked")),
     })
 
     if not interrupt_value:
         return {"phase": "c1_confirm"}
+
+    # —— 若已锁定（重复 confirm / stale 请求）→ 走 confirm 分支直接下一个节点，
+    #    但保持不改动 node1 的任何字段 ——
+    if bool(node1_state.get("report_locked")):
+        print(f"[c1_confirm_report] ⚠️ node1 已锁定，忽略重复 confirm 值，直接放行到 Node2", flush=True)
+        return {
+            "phase": "c1_confirm",
+            # confirmations.c1 仍要 True（保证 downstream 不回推）
+            "confirmations": {"c1": True},
+            "_redo_target": None,
+        }
 
     decision = interrupt_value.get("decision", "confirm")
 
@@ -208,24 +251,53 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c1_confirm_report] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c1_confirm"}
-        print(f"[c1_confirm_report] 🔧 refine → node1 报告, instruction={refine_instruction[:60]}...", flush=True)
+        print(f"[c1_confirm_report] 🔧 refine → node1 报告, instruction={refine_instruction}", flush=True)
+        # 追加到多轮 refine 历史 —— refine 节点会用它做指令整合
+        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
         return {
             "phase": "c1_confirm",
             "_refine_target": "node1",
             "_refine_instruction": refine_instruction,
+            "_refine_history": list(prev_history) + [refine_instruction],
             "_redo_target": None,
         }
 
-    # ---- confirm：正常处理 ----
-    node1 = state.get("node1", {})
-    new_node1 = dict(node1)
+    # ---- confirm：版本绑定 + 锁定 ----
+    new_node1 = dict(node1_state)
     new_node3 = dict(state.get("node3", {}))
 
-    confirmed_report = interrupt_value.get("confirmed_report")
-    if confirmed_report:
-        new_node1["product_insight"] = confirmed_report
+    # 允许前端传入用户编辑后的 confirmed_report —— 若与 state 不同，需重新计算 hash
+    incoming_report = interrupt_value.get("confirmed_report")
+    incoming_hash = interrupt_value.get("report_hash")
+
+    # 优先使用 state 里最新的报告做版本绑定（不是用户传来的 confirmed_report）。
+    # 若 hash 不一致 → 说明 refine 已改了报告，但用户还拿着旧版本在点确认 → 拒绝。
+    if incoming_hash is not None and incoming_hash != current_hash:
+        print(
+            f"[c1_confirm_report] 🛡️ report_hash 版本不匹配："
+            f"user_sent={incoming_hash[:8]} vs state_current={current_hash[:8]} → 拒绝确认，留在 C1",
+            flush=True,
+        )
+        # 直接留在 C1，让用户看到最新报告版本
+        return {"phase": "c1_confirm"}
+
+    if incoming_report is not None and incoming_report != current_report:
+        # 用户在前端手工编辑了报告正文 → 用用户的版本，并重新算 hash 作为锁定依据
+        new_node1["product_insight"] = incoming_report
         from wellflow.app.prompt.report_sections import build_report_sections
-        new_node1["report_sections"] = build_report_sections(confirmed_report)
+        new_node1["report_sections"] = build_report_sections(incoming_report)
+        current_hash = _report_hash(incoming_report)
+
+    import time as _time
+    new_node1["report_locked"] = True
+    new_node1["report_hash"] = current_hash
+    new_node1["confirmed_at"] = _time.time()
+
+    print(
+        f"[c1_confirm_report] ✅ node1 报告已锁定: hash={current_hash[:8]} "
+        f"len={len(new_node1.get('product_insight', ''))}",
+        flush=True,
+    )
 
     model_images = interrupt_value.get("model_images")
     if model_images:
@@ -281,11 +353,13 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c2_select] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c2_select"}
-        print(f"[c2_select] 🔧 refine → node2 商拍方案, instruction={refine_instruction[:60]}...", flush=True)
+        print(f"[c2_select] 🔧 refine → node2 商拍方案, instruction={refine_instruction}", flush=True)
+        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
         return {
             "phase": "c2_select",
             "_refine_target": "node2",
             "_refine_instruction": refine_instruction,
+            "_refine_history": list(prev_history) + [refine_instruction],
             "_redo_target": None,
         }
 
@@ -368,11 +442,13 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c3_confirm] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c3_confirm"}
-        print(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction[:60]}...", flush=True)
+        print(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction}", flush=True)
+        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
         return {
             "phase": "c3_confirm",
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
+            "_refine_history": list(prev_history) + [refine_instruction],
             "_redo_target": None,
         }
 
@@ -478,11 +554,13 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c4_review] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c4_review"}
-        print(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction[:60]}...", flush=True)
+        print(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction}", flush=True)
+        prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
         return {
             "phase": "c4_review",
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
+            "_refine_history": list(prev_history) + [refine_instruction],
             "_redo_target": None,
         }
 

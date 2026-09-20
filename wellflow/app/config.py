@@ -9,19 +9,14 @@ _REPO_ROOT = _PROJECT_ROOT.parent
 
 
 class Settings(BaseSettings):
-    # new-api 中转网关 — 所有 LLM/VLM/生图请求统一走这里
+    # ------------------------------------------------------------------
+    # 网关 —— 统一走 new-api 中转网关（局域网 192.168.110.254）
+    # 业务层所有 VLM / 文本 LLM / 生图请求都经由 new-api，渠道分发由 new-api 后台配置。
+    # ------------------------------------------------------------------
     newapi_base_url: str = "http://192.168.110.254/v1"
     newapi_api_key: str | None = None              # ← .env 提供
 
-    # 通用 VLM 模型轮询池 —— Node1/2/3 + 意图识别 + 模特打标 全部走这里
-    model_pool_domestic_models: list[str] = [
-        "volcengine/doubao-seed-1-6-flash",
-        "deepseek/deepseek-v4.1-flash",
-        "qwen/qwen3.8-flash",
-        "z-ai/glm-5.3-flash",
-        "deepseek/deepseek-v4-flash-0731",
-    ]
-    model_pool_overseas_fallback: str = "google/gemini-3.7-flash"
+    # 模型池熔断参数（模型列表本身由 new-api /api/model-options?capability=text 动态获取）
     model_pool_fail_threshold: int = 2              # 连续 2 次失败熔断
     model_pool_fail_window: float = 10.0            # 失败统计窗口（秒）
     model_pool_cooldown: float = 30.0               # 熔断后冷却自动恢复（秒）
@@ -32,7 +27,7 @@ class Settings(BaseSettings):
     http_proxy_url: str | None = "http://127.0.0.1:7890"  # Node1 调研 tools（web_search / competitor / trend）走代理
 
     # ====== Node2 ======
-    node2_reasoning_effort: str = "close"   # Node2 生成方案，强制关 Deep Thinking 但走流式
+    node2_reasoning_effort: str = "low"   # Node2 生成方案：走非流式，一次拿到完整 JSON，避免流式拼接截断导致 JSON 解析失败只能正则降级
     node2_prompt_count_default: int = 3       # Node2 生成提示词数量（默认 3，前端 C1 可覆盖）
 
     # ====== Node3 ======
@@ -41,8 +36,7 @@ class Settings(BaseSettings):
     node3_gen_concurrency: int = 10           # Node3 并行生图并发上限（Semaphore），越大越快但易触发 429
 
     # ====== Node4 ======
-    llm_model_image: str = "openai/gpt-image-2"    # Node4 图像生成
-    llm_model_responses: str = "openai/gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
+    llm_model_responses: str = "gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
     image_ratio_to_pixel_size_gpt: dict[str, str] = {
         "9:16": "1024x1536",   # 降级：用 3:4 近似 9:16
         "3:4": "1024x1536",
@@ -65,7 +59,7 @@ class Settings(BaseSettings):
     llm_timeout: float = 60.0                     # VLM / 文本 LLM 超时（秒）
     image_timeout: float = 180.0                   # 生图超时（秒）
 
-    llm_model_text: str = "qwen/qwen-turbo"        # research_agent 纯文本调研（LangGraph tool-calling）
+    llm_model_text: str = "qwen-turbo"        # research_agent 纯文本调研（LangGraph tool-calling）
 
     image_max_per_call: int = 3                    # 单次 VLM / 生图调用最多携带图片张数
     image_single_compress_threshold_mb: float = 1.5  # 单张图片超过此值触发渐进压缩（raw bytes）
@@ -74,6 +68,15 @@ class Settings(BaseSettings):
         "jpeg": "jpg", "png": "png", "webp": "webp", "gif": "gif",
     }
     upload_dir: str = str(_PROJECT_ROOT / "uploads")   # 上传图片落盘目录（绝对路径）
+
+    # ====== 穿搭库（outfit）======
+    outfit_extract_models: list[str] = [  # 抠图降级链
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "mai-image-2.5",
+    ]
+    outfit_max_items: int = 6              # VLM 单次识别最多提取几件单品
+    outfit_extract_concurrency: int = 3    # 抠图并发上限（ThreadPoolExecutor）
 
 
     # ------------------------------------------------------------------

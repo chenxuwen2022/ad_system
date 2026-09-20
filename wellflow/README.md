@@ -11,7 +11,7 @@
 | 数据库 | PostgreSQL 16 + SQLAlchemy 2.x + Alembic |
 | 异步驱动 | psycopg 3 (sync) + asyncpg (async) |
 | Schema | Pydantic v2 |
-| LLM 网关 | LaoZhang Gateway / Ofox Gateway（可扩展） |
+| LLM 网关 | New-API 中转网关（唯一入口，渠道分发由 new-api 后台配置） |
 
 ## 目录结构
 
@@ -65,9 +65,8 @@ wellflow-saas-backend/
 │   │
 │   ├── llm/                 # LLM 网关抽象
 │   │   ├── base.py              # BaseLLMClient 协议
-│   │   ├── factory.py           # 工厂（根据 settings 选网关）
-│   │   ├── laozhang_gateway.py  # 老张网关
-│   │   └── ofox_gateway.py      # Ofox 网关
+│   │   ├── factory.py           # 工厂（统一走 new-api）
+│   │   └── newapi_gateway.py    # NewApiGateway 实现
 │   │
 │   ├── contracts/           # 跨节点数据契约（TypedDict）
 │   │   ├── generation.py
