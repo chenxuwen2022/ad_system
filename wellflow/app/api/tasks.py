@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
 from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
+from wellflow.app.config import settings
 from wellflow.app.graph_persist import persist_phase, persist_interrupt, persist_error, persist_outputs
 from wellflow.app.models.task_models import TaskPhase
 from wellflow.app.repositories.task_repo import TaskRepo
@@ -279,7 +280,6 @@ async def create_task(
         yield _sse("phase", {"phase": "input"})
 
         # 主循环：从 queue 读事件推给前端
-        _HEARTBEAT_INTERVAL = 25  # 秒
         last_event_ts = time.time()
         while True:
             if await request.is_disconnected():
@@ -288,7 +288,7 @@ async def create_task(
 
             # 带超时的 get，用于 heartbeat
             try:
-                event = await asyncio.wait_for(q.get(), timeout=_HEARTBEAT_INTERVAL)
+                event = await asyncio.wait_for(q.get(), timeout=settings.sse_heartbeat_interval_seconds)
                 last_event_ts = time.time()
                 event_type = event.get("type")
                 event_data = event.get("data", {})
@@ -313,7 +313,7 @@ async def create_task(
             except asyncio.TimeoutError:
                 # heartbeat
                 elapsed = time.time() - last_event_ts
-                if elapsed >= _HEARTBEAT_INTERVAL:
+                if elapsed >= settings.sse_heartbeat_interval_seconds:
                     yield ": heartbeat\n\n"
                     last_event_ts = time.time()
 
@@ -396,7 +396,7 @@ async def resume_task(
     node: str = Form(...),
     confirmed_report: str = Form(default=""),
     ratio: str = Form(default="9:16"),
-    scheme_count: int = Form(default=3),
+    scheme_count: int = Form(default=1),
     # action: "confirm" | "refine" | "redo"(仅 C4 redo→node4 保留)
     action: str = Form(default="confirm"),
     image_model: str | None = Form(default=None),
@@ -647,7 +647,6 @@ async def resume_task(
         # 首 event：resume 已接收
         yield _sse("resume_ack", {"task_id": task_id, "node": node, "message": "resume 已接收，后台继续执行"})
 
-        _HEARTBEAT_INTERVAL = 25
         last_event_ts = time.time()
         while True:
             if await request.is_disconnected():
@@ -655,7 +654,7 @@ async def resume_task(
                 break
 
             try:
-                event = await asyncio.wait_for(q.get(), timeout=_HEARTBEAT_INTERVAL)
+                event = await asyncio.wait_for(q.get(), timeout=settings.sse_heartbeat_interval_seconds)
                 last_event_ts = time.time()
                 event_type = event.get("type")
                 event_data = event.get("data", {})
@@ -673,7 +672,7 @@ async def resume_task(
 
             except asyncio.TimeoutError:
                 elapsed = time.time() - last_event_ts
-                if elapsed >= _HEARTBEAT_INTERVAL:
+                if elapsed >= settings.sse_heartbeat_interval_seconds:
                     yield ": heartbeat\n\n"
                     last_event_ts = time.time()
 
@@ -808,14 +807,13 @@ async def restart_task(
             "message": "已发起 graph 重启，从 checkpoint 续跑",
         })
 
-        _HEARTBEAT_INTERVAL = 25
         while True:
             if await request.is_disconnected():
                 print(f"[sse-restart] task={task_id} 前端断开", flush=True)
                 break
 
             try:
-                event = await asyncio.wait_for(q.get(), timeout=_HEARTBEAT_INTERVAL)
+                event = await asyncio.wait_for(q.get(), timeout=settings.sse_heartbeat_interval_seconds)
                 event_type = event.get("type")
                 event_data = event.get("data", {})
 

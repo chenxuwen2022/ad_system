@@ -228,6 +228,9 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
         "report_hash": current_hash,
         "report_locked": bool(node1_state.get("report_locked")),
     })
+    print(f"[c1_confirm_report] 🎯 interrupt_value preview: report={current_report[:200]!r}, "
+          f"sections_keys={list((node1_state.get('report_sections') or {}).keys()) if isinstance(node1_state.get('report_sections'), dict) else 'N/A'}, "
+          f"locked={bool(node1_state.get('report_locked'))}", flush=True)
 
     if not interrupt_value:
         return {"phase": "c1_confirm"}
@@ -316,19 +319,23 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
-    """C2：用户从 3 套方案中选 1-3 套。
+    """C2：用户确认这唯一一份商拍方案（可微调）。
 
-    interrupt 让前端展示 Node2 的 schemes（3 套 12 维 JSON）。
+    新链路：Node2 固定只产出 1 套最终方案，C2 的角色变成"确认/微调方案"，
+    确认后自动选中这一套方案并让 Node3 围绕它生成 5 份差异化 prompt。
 
     决策模式：
-      decision="confirm"  → 正常选方案，流转到 Node3
+      decision="confirm"  → 写入 selected_scheme_indices=[0], per_scheme_count=[5]
+                            然后流转到 Node3 生成 5 份 prompt
       decision="refine"   → 纯 text LLM 增量修改商拍方案（不走 VLM 重跑）
     """
     from langgraph.types import interrupt
+    from wellflow.app.config import settings as _settings
     from wellflow.app.event_bus import publish
 
     task_id = state.get("task_id", "")
     node3 = state.get("node3", {})
+    n_variants = int(_settings.node3_variants_per_scheme_default)
 
     if task_id:
         publish(task_id, "phase", {"phase": "c2_select"})
@@ -336,7 +343,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c2",
         "phase": "c2_select",
-        "hint": "从 3 套商拍方案中选择 1-3 套继续生成生图提示词",
+        "hint": "请查看并微调这套最终商拍方案。确认后会基于它生成 5 份差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
         "model_images": node3.get("model_images", []),
@@ -353,25 +360,34 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c2_select] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c2_select"}
-        print(f"[c2_select] 🔧 refine → node2 商拍方案, instruction={refine_instruction}", flush=True)
+        # 来自 LLM 意图分类器：决定 refine LLM 能看到哪几套方案
+        # 格式兼容：LLM 可能输出 ["0","1"] 或 "all"，后面 refine_node2_schemes 会统一解析
+        _refine_sel_idx = interrupt_value.get("refine_selected_indices")
+        print(f"[c2_select] 🔧 refine → node2 商拍方案, instruction={refine_instruction}, "
+              f"refine_selected_indices={_refine_sel_idx}", flush=True)
         prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
         return {
             "phase": "c2_select",
             "_refine_target": "node2",
             "_refine_instruction": refine_instruction,
+            "_refine_selected_indices": _refine_sel_idx,
             "_refine_history": list(prev_history) + [refine_instruction],
             "_redo_target": None,
         }
 
-    # ---- confirm：正常处理 selected_scheme_indices ----
+    # ---- confirm：自动选中唯一方案 + 固定 per_scheme_count=[5] ----
     node2 = state.get("node2", {})
     selected = interrupt_value.get("selected_scheme_indices")
     new_node2 = dict(node2)
-    if selected is not None:
-        new_node2["selected_scheme_indices"] = list(selected)
-    else:
-        new_node2["selected_scheme_indices"] = list(range(len(node2.get("schemes", []))))
+    all_schemes = node2.get("schemes", [])
 
+    # 默认选中 [0]；前端 intent_classifier 选了别的也尊重
+    if selected is not None:
+        new_node2["selected_scheme_indices"] = list(selected) if selected else [0]
+    else:
+        new_node2["selected_scheme_indices"] = [0] if all_schemes else []
+
+    # per_scheme_count 固定默认 [n_variants]，允许前端覆盖
     counts = interrupt_value.get("per_scheme_count")
     n_selected = len(new_node2["selected_scheme_indices"])
     if counts and isinstance(counts, list):
@@ -379,9 +395,11 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         if len(counts) >= n_selected:
             new_node2["per_scheme_count"] = counts[:n_selected]
         elif counts:
-            new_node2["per_scheme_count"] = counts + [1] * (n_selected - len(counts))
+            new_node2["per_scheme_count"] = counts + [n_variants] * (n_selected - len(counts))
+        else:
+            new_node2["per_scheme_count"] = [n_variants] * n_selected
     else:
-        new_node2["per_scheme_count"] = [1] * n_selected
+        new_node2["per_scheme_count"] = [n_variants] * n_selected
     print(f"[c2_select] ✅ selected={new_node2['selected_scheme_indices']} "
           f"per_scheme_count={new_node2['per_scheme_count']}", flush=True)
 
@@ -442,12 +460,16 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c3_confirm] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c3_confirm"}
-        print(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction}", flush=True)
+        # 仅当 refine_target=node2 时取意图分类器给的方案过滤索引
+        _refine_sel_idx = interrupt_value.get("refine_selected_indices") if refine_target == "node2" else None
+        print(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
+              f"refine_selected_indices={_refine_sel_idx}", flush=True)
         prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
         return {
             "phase": "c3_confirm",
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
+            "_refine_selected_indices": _refine_sel_idx,
             "_refine_history": list(prev_history) + [refine_instruction],
             "_redo_target": None,
         }
@@ -554,12 +576,16 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c4_review] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c4_review"}
-        print(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction}", flush=True)
+        # 仅当 refine_target=node2 时取意图分类器给的方案过滤索引
+        _refine_sel_idx = interrupt_value.get("refine_selected_indices") if refine_target == "node2" else None
+        print(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
+              f"refine_selected_indices={_refine_sel_idx}", flush=True)
         prev_history = (state.get("_refine_history") or []) if isinstance(state, dict) else []
         return {
             "phase": "c4_review",
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
+            "_refine_selected_indices": _refine_sel_idx,
             "_refine_history": list(prev_history) + [refine_instruction],
             "_redo_target": None,
         }

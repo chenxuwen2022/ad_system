@@ -102,6 +102,7 @@ class NewApiGateway(BaseLLMClient):
         image_uris: list[str],
         reasoning_effort: str,
         extra_params: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ):
         """yield {"type": "thinking"|"content", "text": "..."}。"""
         user_content: list[dict[str, Any]] = [{"type": "text", "text": user}]
@@ -111,6 +112,7 @@ class NewApiGateway(BaseLLMClient):
         async for delta in self._openai_chat_stream(
             system=system, user=user, reasoning_effort=reasoning_effort,
             extra_params=extra_params, user_content=user_content,
+            response_format=response_format,
         ):
             yield delta
 
@@ -238,6 +240,7 @@ class NewApiGateway(BaseLLMClient):
         reasoning_effort: str,
         extra_params: dict[str, Any] | None,
         user_content: Any,
+        response_format: dict[str, Any] | None = None,
     ):
         """SSE 流式，micro-batching 20ms 合并窗口。"""
         _FLUSH_INTERVAL = 0.02
@@ -249,6 +252,8 @@ class NewApiGateway(BaseLLMClient):
             "stream": True,
         }
         _apply_reasoning_control(payload, self.model, reasoning_effort)
+        if response_format and response_format.get("type") == "json_object":
+            payload["response_format"] = {"type": "json_object"}
         if extra_params:
             payload.update(extra_params)
 

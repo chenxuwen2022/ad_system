@@ -93,12 +93,9 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     # --- Step 3: 推 phase = 调用 VLM ---
     publish(task_id, "phase", {"phase": "node1_vlm_analyzing"})
 
-    # --- Step 4: 根据 reasoning_effort 预先选择流式/非流式 ---
-    #   low → 非流式（避免 gateway 不兼容流式 + 低推理的情况）
-    #   none / medium / high → 流式（前端逐字输出体验更好）
-    from wellflow.app.config import settings
-    effort = settings.llm_reasoning_effort
-    use_non_stream = (effort == "low")
+    # --- Step 4: 统一流式 + reasoning_effort=low（Node1/Node2/Node3 一致） ---
+    # low：开启 thinking 但推理成本可控，逐 token 推 SSE
+    effort = "low"
 
     t0 = time.time()
     full_report_parts: list[str] = []
@@ -108,55 +105,42 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     first_content_ts = None
     first_think_ts = None
 
-    if use_non_stream:
-        # ---- 非流式路径（reasoning_effort=low）----
-        print(f"[node1] 📌 reasoning_effort={effort} → 使用非流式 VLM", flush=True)
-        full_report = await product_analyzer.analyze_product(
-            images=images,
-            user_text=user_text,
-            reasoning_effort=effort,
-        )
-        full_report_parts.append(full_report)
-        content_chunk_index = 1
-        publish(task_id, "report_chunk", {"chunk": full_report, "index": 1, "node": "node1"})
-    else:
-        # ---- 流式路径（reasoning_effort=close/medium/high）----
-        print(f"[node1] 📌 reasoning_effort={effort} → 使用流式 VLM", flush=True)
-        async for item in product_analyzer.stream_analyze_product(
-            images=images,
-            user_text=user_text,
-            reasoning_effort=effort,
-        ):
-            if not item:
-                continue
-            # 新版: item = {"type": "thinking"|"content", "text": "..."}
-            # 兼容旧版: item 直接是 str
-            if isinstance(item, dict):
-                item_type = item.get("type", "content")
-                text = item.get("text", "")
-            else:
-                item_type = "content"
-                text = item
+    print(f"[node1] 📌 reasoning_effort={effort} → 流式 stream_analyze_product", flush=True)
+    async for item in product_analyzer.stream_analyze_product(
+        images=images,
+        user_text=user_text,
+        reasoning_effort=effort,
+    ):
+        if not item:
+            continue
+        # 新版: item = {"type": "thinking"|"content", "text": "..."}
+        # 兼容旧版: item 直接是 str
+        if isinstance(item, dict):
+            item_type = item.get("type", "content")
+            text = item.get("text", "")
+        else:
+            item_type = "content"
+            text = item
 
-            if not text:
-                continue
+        if not text:
+            continue
 
-            if item_type == "thinking":
-                if first_think_ts is None:
-                    first_think_ts = time.time()
-                    print(f"[node1] 💭 首 thinking token 到达 TTFB={first_think_ts - t0:.2f}s", flush=True)
-                think_parts.append(text)
-                think_chunk_index += 1
-                publish(task_id, "thinking_chunk", {"chunk": text, "index": think_chunk_index, "node": "node1"})
-            else:
-                if first_content_ts is None:
-                    first_content_ts = time.time()
-                    print(f"[node1] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
-                          + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else "")
-                          , flush=True)
-                full_report_parts.append(text)
-                content_chunk_index += 1
-                publish(task_id, "report_chunk", {"chunk": text, "index": content_chunk_index, "node": "node1"})
+        if item_type == "thinking":
+            if first_think_ts is None:
+                first_think_ts = time.time()
+                print(f"[node1] 💭 首 thinking token 到达 TTFB={first_think_ts - t0:.2f}s", flush=True)
+            think_parts.append(text)
+            think_chunk_index += 1
+            publish(task_id, "thinking_chunk", {"chunk": text, "index": think_chunk_index, "node": "node1"})
+        else:
+            if first_content_ts is None:
+                first_content_ts = time.time()
+                print(f"[node1] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
+                      + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else "")
+                      , flush=True)
+            full_report_parts.append(text)
+            content_chunk_index += 1
+            publish(task_id, "report_chunk", {"chunk": text, "index": content_chunk_index, "node": "node1"})
 
     full_report = "".join(full_report_parts)
     full_thinking = "".join(think_parts)

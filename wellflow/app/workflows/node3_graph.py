@@ -102,8 +102,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
           f"product_images={len(product_images)}, "
           f"model_images={len(model_images)}(paths={len(model_image_paths)})", flush=True)
 
-    from wellflow.app.config import settings
-    effort = settings.node3_reasoning_effort
+    effort = "low"   # Node1/Node2/Node3 统一 low：开启 thinking 但推理成本可控
 
     t_total = time.time()
     all_prompts: list[str] = []
@@ -121,7 +120,6 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
 
         for vi in range(n_variants):
             global_variant_counter += 1
-            use_non_stream = (effort == "low")
             chunk_index = 0
 
             if task_id:
@@ -137,142 +135,95 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
 
             t0 = time.time()
 
-            if use_non_stream:
-                # 非流式：一次拿到完整结果
-                result = await _pg.generate_prompt_for_scheme(
-                    scheme=scheme,
-                    product_insight=product_insight,
-                    product_images=product_images,
-                    model_images=model_images or None,
-                    user_requirement=user_requirement,
-                    reasoning_effort=effort,
-                    variant_index=vi,
-                    variant_total=n_variants,
-                )
-                raw_text = result.get("raw_text", "")
-                if task_id:
-                    publish(task_id, "prompt_chunk", {
-                        "scheme_index": scheme_index,
-                        "scheme_name": scheme_name,
-                        "variant_index": vi,
-                        "variant_total": n_variants,
-                        "chunk": raw_text,
-                        "index": 1,
-                        "node": "node3",
-                    })
-                    publish(task_id, "prompt_chunk_done", {
-                        "scheme_index": scheme_index,
-                        "scheme_name": scheme_name,
-                        "variant_index": vi,
-                        "variant_total": n_variants,
-                        "total_chunks": 1,
-                        "node": "node3",
-                    })
-                prompt_text = result.get("prompt", "")
-                all_prompts.append(prompt_text)
-                all_details.append({
+            # 流式：逐 token 推送 SSE
+            content_parts: list[str] = []
+            think_parts: list[str] = []
+
+            async for item in _pg.stream_generate_prompt(
+                scheme=scheme,
+                product_insight=product_insight,
+                product_images=product_images,
+                model_images=model_images or None,
+                user_requirement=user_requirement,
+                reasoning_effort=effort,
+                variant_index=vi,
+                variant_total=n_variants,
+            ):
+                if not item:
+                    continue
+                if isinstance(item, dict):
+                    item_type = item.get("type", "content")
+                    text = item.get("text", "")
+                else:
+                    item_type = "content"
+                    text = item
+
+                if not text:
+                    continue
+
+                if item_type == "thinking":
+                    think_parts.append(text)
+                    if task_id:
+                        publish(task_id, "thinking_chunk", {
+                            "chunk": text,
+                            "index": len(think_parts),
+                            "scheme_index": scheme_index,
+                            "variant_index": vi,
+                            "node": "node3",
+                        })
+                else:
+                    content_parts.append(text)
+                    chunk_index += 1
+                    if task_id:
+                        publish(task_id, "prompt_chunk", {
+                            "chunk": text,
+                            "index": chunk_index,
+                            "scheme_index": scheme_index,
+                            "scheme_name": scheme_name,
+                            "variant_index": vi,
+                            "node": "node3",
+                        })
+
+            # 流式结束，解析 JSON → 转自然语言 prompt
+            raw_content = "".join(content_parts)
+            detail = _pg._extract_json(raw_content)
+            prompt_text, negative_prompt = _pg._json_to_natural_prompt(detail)
+
+            if task_id:
+                publish(task_id, "prompt_chunk_done", {
                     "scheme_index": scheme_index,
                     "scheme_name": scheme_name,
                     "variant_index": vi,
                     "variant_total": n_variants,
-                    "prompt": prompt_text,
-                    "negative_prompt": result.get("negative_prompt"),
-                    "prompt_detail": result.get("prompt_detail"),
-                    "elapsed": round(time.time() - t0, 1),
-                })
-                # 💭 收集 thinking 文本（非流式路径）
-                _nt = result.get("thinking_text")
-                if _nt:
-                    _tag = (
-                        f"【方案 #{scheme_index} {scheme_name} · 变体 {vi+1}/{n_variants}】\n{_nt}"
-                        if n_variants > 1
-                        else f"【方案 #{scheme_index} {scheme_name}】\n{_nt}"
-                    )
-                    all_think_parts.append(_tag)
-            else:
-                # 流式：逐 token 推送 SSE
-                content_parts: list[str] = []
-                think_parts: list[str] = []
-
-                async for item in _pg.stream_generate_prompt(
-                    scheme=scheme,
-                    product_insight=product_insight,
-                    product_images=product_images,
-                    model_images=model_images or None,
-                    user_requirement=user_requirement,
-                    reasoning_effort=effort,
-                    variant_index=vi,
-                    variant_total=n_variants,
-                ):
-                    if not item:
-                        continue
-                    if isinstance(item, dict):
-                        item_type = item.get("type", "content")
-                        text = item.get("text", "")
-                    else:
-                        item_type = "content"
-                        text = item
-
-                    if not text:
-                        continue
-
-                    if item_type == "thinking":
-                        think_parts.append(text)
-                        if task_id:
-                            publish(task_id, "thinking_chunk", {
-                                "chunk": text,
-                                "index": len(think_parts),
-                                "scheme_index": scheme_index,
-                                "variant_index": vi,
-                                "node": "node3",
-                            })
-                    else:
-                        content_parts.append(text)
-                        chunk_index += 1
-                        if task_id:
-                            publish(task_id, "prompt_chunk", {
-                                "chunk": text,
-                                "index": chunk_index,
-                                "scheme_index": scheme_index,
-                                "scheme_name": scheme_name,
-                                "variant_index": vi,
-                                "node": "node3",
-                            })
-
-                # 流式结束，解析 JSON → 转自然语言 prompt
-                raw_content = "".join(content_parts)
-                detail = _pg._extract_json(raw_content)
-                prompt_text, negative_prompt = _pg._json_to_natural_prompt(detail)
-
-                if task_id:
-                    publish(task_id, "prompt_chunk_done", {
-                        "scheme_index": scheme_index,
-                        "scheme_name": scheme_name,
-                        "variant_index": vi,
-                        "variant_total": n_variants,
-                        "total_chunks": chunk_index,
-                        "node": "node3",
-                    })
-
-                all_prompts.append(prompt_text)
-                all_details.append({
-                    "scheme_index": scheme_index,
-                    "scheme_name": scheme_name,
-                    "variant_index": vi,
-                    "variant_total": n_variants,
+                    "total_chunks": chunk_index,
+                    "node": "node3",
+                    # 直接把完整的自然语言 prompt + negative_prompt 推给前端，
+                    # 让前端一收到 done 就能立刻展示这条已完成的提示词（无需等 interrupt c3）
                     "prompt": prompt_text,
                     "negative_prompt": negative_prompt,
                     "prompt_detail": detail,
                     "elapsed": round(time.time() - t0, 1),
                 })
-                # 💭 收集 thinking 文本（流式路径）
-                if think_parts:
-                    _tag = (
-                        f"【方案 #{scheme_index} {scheme_name} · 变体 {vi+1}/{n_variants}】\n{''.join(think_parts)}"
-                        if n_variants > 1
-                        else f"【方案 #{scheme_index} {scheme_name}】\n{''.join(think_parts)}"
-                    )
-                    all_think_parts.append(_tag)
+
+            all_prompts.append(prompt_text)
+            all_details.append({
+                "scheme_index": scheme_index,
+                "scheme_name": scheme_name,
+                "variant_index": vi,
+                "variant_total": n_variants,
+                "prompt": prompt_text,
+                "negative_prompt": negative_prompt,
+                "prompt_detail": detail,
+                "elapsed": round(time.time() - t0, 1),
+            })
+            # 💭 收集 thinking 文本（流式路径）
+            if think_parts:
+                _tag = (
+                    f"【方案 #{scheme_index} {scheme_name} · 变体 {vi+1}/{n_variants}】\n{''.join(think_parts)}"
+                    if n_variants > 1
+                    else f"【方案 #{scheme_index} {scheme_name}】\n{''.join(think_parts)}"
+                )
+                all_think_parts.append(_tag)
 
             print(f"[node3] ✅ 方案 #{scheme_index}({scheme_name}) variant {vi+1}/{n_variants} "
                   f"prompt 生成完成 — 耗时={time.time() - t0:.1f}s", flush=True)

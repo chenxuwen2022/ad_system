@@ -1,12 +1,14 @@
-"""Node 2：PlanningScheme — VLM 多模态一次产出 N 套结构化商拍方案。
+"""Node 2：PlanningScheme — VLM 多模态产出 1 套结构化商拍方案。
 
 输入：Node 1 的 product_insight（Markdown 报告）+ 产品图（data URI 列表）
-      + 模特/参考图（data URI 列表，可选）+ 用户原始需求
-      + scheme_count（要生成几套，默认 3）
-输出：{"schemes": [scheme1, scheme2, scheme3]} — 每套是完整的 12 维 JSON 对象。
+      + 用户原始需求
+输出：{"schemes": [scheme1]} — 1 套完整的 12 维 JSON 对象。
 
-三套方案必须在方案定位、视觉主题、场景设定、模特气质、光影风格上有显著差异。
-用 PLANNING_AGENT_SYSTEM_PROMPT（已改为输出 {"schemes": [...]} 数组格式）。
+⚠️ Node2 **不使用模特图**：模特图只在 Node3 prompt 生成阶段才喂给 VLM，
+   让 Node3 在最终生图提示词里严格对齐模特的人脸/体型/气质。
+   Node2 只负责基于商品和用户需求产出最终商拍方案。
+
+用 PLANNING_AGENT_SYSTEM_PROMPT（输出 {"schemes": [...]} 数组格式）。
 """
 
 from __future__ import annotations
@@ -163,7 +165,7 @@ def _close_braces(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 流式
+# 流式（plan） — 复用 plan_schemes 的 user message 构造
 # ---------------------------------------------------------------------------
 
 
@@ -174,19 +176,29 @@ async def stream_plan_schemes(
     user_requirement: str = "",
     scheme_count: int = 3,
     reasoning_effort: str | None = None,
-    model_images: list[str] | None = None,
 ):
-    """流式生成 N 套风格迥异的商拍方案（仅基于商品识别报告文本，不传图片给 VLM）。"""
+    """流式生成 3 套方案，yield {"type": "thinking"|"content", "text": "..."}。
+
+    ⚠️ Node2 **不使用模特图**：模特图只在 Node3 prompt 生成阶段才喂给 VLM。
+    """
     from wellflow.app.config import settings
 
     pool = get_model_pool()
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
     system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
 
-    # user message：基于商品识别报告文本 + 用户需求
+    product_images = product_images or []
+    n_prod = len(product_images)
+
     user_text_parts = [f"【商品识别报告】\n{product_insight}"]
     if user_requirement:
         user_text_parts.append(f"【用户创作需求】\n{user_requirement}")
+
+    if n_prod:
+        user_text_parts.append(
+            "【参考图编号说明】\n"
+            f"共 {n_prod} 张参考图（商品图：服装外观、颜色、细节、材质），编号为 1 ~ {n_prod}。"
+        )
 
     user_text_parts.append(
         f"请结合以上商品识别报告和用户创作需求，输出 **{scheme_count} 套风格迥异、场景互补** 的商拍方案。\n"
@@ -197,18 +209,17 @@ async def stream_plan_schemes(
         f"schemes 数组长度 = {scheme_count}。"
     )
 
-    print(f"[planning_scheme] 🎬 流式调用: scheme_count={scheme_count}, "
-          f"reasoning_effort={effort} (不传图片)",
+    print(f"[planning_scheme.stream] 调用: scheme_count={scheme_count}, "
+          f"reasoning_effort={effort}, "
+          f"product_images={n_prod}",
           flush=True)
 
     async for delta in pool.stream_chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
-        image_uris=[],
+        image_uris=product_images,
+        response_format={"type": "json_object"},
         reasoning_effort=effort,
-        # 流式也强制 JSON 输出格式（兼容 OpenAI 协议的网关会处理；
-        # 如果网关不支持会忽略，最终 _extract_json 容错修复兜底）
-        extra_params={"response_format": {"type": "json_object"}},
     ):
         if delta:
             yield delta
@@ -226,9 +237,10 @@ async def plan_schemes(
     user_requirement: str = "",
     scheme_count: int = 3,
     reasoning_effort: str | None = None,
-    model_images: list[str] | None = None,
 ) -> dict[str, Any]:
-    """非流式生成 N 套商拍方案（仅基于商品识别报告文本，不传图片给 VLM）。
+    """非流式生成 N 套风格迥异的商拍方案。
+
+    ⚠️ Node2 **不使用模特图**：模特图只在 Node3 prompt 生成阶段才喂给 VLM。
 
     Returns:
         {"schemes": [scheme1_dict, scheme2_dict, ...], "raw_text": str, "thinking_text": str}
@@ -239,9 +251,18 @@ async def plan_schemes(
     effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
     system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
 
+    product_images = product_images or []
+    n_prod = len(product_images)
+
     user_text_parts = [f"【商品识别报告】\n{product_insight}"]
     if user_requirement:
         user_text_parts.append(f"【用户创作需求】\n{user_requirement}")
+
+    if n_prod:
+        user_text_parts.append(
+            "【参考图编号说明】\n"
+            f"共 {n_prod} 张参考图（商品图：服装外观、颜色、细节、材质），编号为 1 ~ {n_prod}。"
+        )
 
     user_text_parts.append(
         f"请结合以上商品识别报告和用户创作需求，输出 **{scheme_count} 套风格迥异、场景互补** 的商拍方案。\n"
@@ -253,13 +274,14 @@ async def plan_schemes(
     )
 
     print(f"[planning_scheme] 调用: scheme_count={scheme_count}, "
-          f"reasoning_effort={effort} (不传图片)",
+          f"reasoning_effort={effort}, "
+          f"product_images={n_prod}",
           flush=True)
 
-    resp, used_model = await pool.chat_with_images(
+    resp, _used_model = await pool.chat_with_images(
         system=system_prompt,
         user="\n\n".join(user_text_parts),
-        image_uris=[],
+        image_uris=product_images,
         response_format={"type": "json_object"},
         reasoning_effort=effort,
     )

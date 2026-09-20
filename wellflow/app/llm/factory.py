@@ -17,7 +17,7 @@ ModelRole = Literal["vlm", "image", "text"]
 
 def _resolve_model(role: ModelRole) -> str:
     """根据 role 拿到模型名。vlm / text 走 ModelPool 动态获取，image / responses 等按配置。"""
-    return getattr(settings, f"llm_model_{role}", "qwen-turbo")
+    return getattr(settings, f"llm_model_{role}", "qwen3.8-flash")
 
 
 def _strip_provider(model: str) -> str:

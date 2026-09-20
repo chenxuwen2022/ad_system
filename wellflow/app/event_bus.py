@@ -18,12 +18,11 @@ import asyncio
 import time
 from typing import Any
 
+from wellflow.app.config import settings
+
 # task_id -> asyncio.Queue
 _queues: dict[str, asyncio.Queue] = {}
-# 每个队列最大容量，防止慢消费者拖垮内存
-_QUEUE_MAX_SIZE = 64
-# 队列闲置多久后自动清理（秒），避免孤儿队列
-_QUEUE_IDLE_TIMEOUT = 600
+# 队列容量 / 闲置清理超时统一在 config.py（event_bus_queue_max_size / event_bus_queue_idle_timeout_seconds）
 
 # ---------------------------------------------------------------------------
 # graph 运行状态追踪 —— 防止同一个 task_id 并发启动多个 graph 执行
@@ -52,7 +51,7 @@ def _get_or_create_queue(task_id: str) -> asyncio.Queue:
     """获取或创建队列；满了就淘汰最旧事件（FIFO）。"""
     q = _queues.get(task_id)
     if q is None:
-        q = asyncio.Queue(maxsize=_QUEUE_MAX_SIZE)
+        q = asyncio.Queue(maxsize=settings.event_bus_queue_max_size)
         _queues[task_id] = q
     elif q.full():
         # 丢一个最旧的，让新事件能塞进去
@@ -124,7 +123,7 @@ def cleanup(task_id: str) -> None:
 async def _gc_idle_queues() -> None:
     """后台定时清理闲置队列。"""
     while True:
-        await asyncio.sleep(_QUEUE_IDLE_TIMEOUT)
+        await asyncio.sleep(settings.event_bus_queue_idle_timeout_seconds)
         # 遍历清理（注意不能在迭代 dict 时删，所以先 collect）
         stale = [tid for tid in _queues]
         for tid in stale:

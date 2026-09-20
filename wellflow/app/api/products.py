@@ -44,12 +44,7 @@ def _storage_uri_url(uri: str | None) -> str:
     return "/" + uri.lstrip("/")
 
 
-# SKU 图片入库规则（multipart 创建入口）
-_SKU_IMG_ALLOWED_MIME_PREFIXES = ("image/",)
-_SKU_IMG_ALLOWED_EXTS = {"jpg", "jpeg", "png", "webp", "gif"}
-_SKU_IMG_MAX_SIZE = 20 * 1024 * 1024   # 单张 20MB（前后端一致）
-_SKU_IMG_MIN_COUNT = 1
-_SKU_IMG_MAX_COUNT = 9
+# SKU 图片入库规则统一在 config.py（upload_allowed_mime_prefixes / upload_max_file_size_mb / sku_image_*）
 
 
 def _cleanup_sku_upload(sku_no: str) -> None:
@@ -290,21 +285,22 @@ async def create_sku(
 ):
     # 0. 文件前置校验 —— 先把所有文件读进内存，失败直接 400，不会留下脏目录
     if not files:
-        raise HTTPException(400, f"请上传 {_SKU_IMG_MIN_COUNT}-{_SKU_IMG_MAX_COUNT} 张商品素材图")
-    if len(files) < _SKU_IMG_MIN_COUNT or len(files) > _SKU_IMG_MAX_COUNT:
-        raise HTTPException(400, f"素材图数量需在 {_SKU_IMG_MIN_COUNT}-{_SKU_IMG_MAX_COUNT} 张，当前 {len(files)} 张")
+        raise HTTPException(400, f"请上传 {wf_settings.sku_image_min_count}-{wf_settings.sku_image_max_count} 张商品素材图")
+    if len(files) < wf_settings.sku_image_min_count or len(files) > wf_settings.sku_image_max_count:
+        raise HTTPException(400, f"素材图数量需在 {wf_settings.sku_image_min_count}-{wf_settings.sku_image_max_count} 张，当前 {len(files)} 张")
 
     raw_pairs: list[tuple[str, bytes, str | None]] = []
+    max_bytes = wf_settings.upload_max_file_size_mb * 1024 * 1024
     for f in files:
         content_type = f.content_type or ""
-        if not content_type.startswith(_SKU_IMG_ALLOWED_MIME_PREFIXES):
+        if not content_type.startswith(wf_settings.upload_allowed_mime_prefixes):
             raise HTTPException(400, f"文件 {f.filename} 不是图片（mime={content_type or '未知'}）")
         raw = await f.read()
-        if len(raw) > _SKU_IMG_MAX_SIZE:
-            raise HTTPException(400, f"文件 {f.filename} 超过 {_SKU_IMG_MAX_SIZE // 1024 // 1024}MB 上限")
+        if len(raw) > max_bytes:
+            raise HTTPException(400, f"文件 {f.filename} 超过 {wf_settings.upload_max_file_size_mb}MB 上限")
         # 扩展名白名单兜底（对文件类型严格把关）
         ext = Path(f.filename or "").suffix.lower().lstrip(".")
-        if ext and ext not in _SKU_IMG_ALLOWED_EXTS:
+        if ext and ext not in wf_settings.sku_image_allowed_exts:
             raise HTTPException(400, f"文件 {f.filename} 扩展名 {ext} 不支持")
         raw_pairs.append((f.filename or "image", raw, content_type))
 

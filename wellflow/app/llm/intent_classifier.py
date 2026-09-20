@@ -6,8 +6,7 @@
 唯一实现：_classify_via_llm()
 唯一兜底：LLM 异常 / JSON 异常 / 非白名单 → chat_outside
 
-模型来源：wellflow.app.llm.model_pool.get_model_pool() —— 已接入国内 6 模型
-轮询池 + 海外 gemini 兜底，不再写死 qwen-turbo。
+模型来源：wellflow.app.llm.model_pool.get_model_pool()
 """
 
 from __future__ import annotations
@@ -240,6 +239,23 @@ async def classify(
         # 前端显式选了微调目标 → 用它覆盖（LLM 不一定能从短消息猜出）
         if selected_finetuning_target and result.get("intent") == "edit":
             result["refine_target"] = selected_finetuning_target
+
+        # 🔴 c3 阶段「当前节点优先」兜底（代码层安全网）
+        # LLM 仍可能按旧规则把 c3 的裸字段修改（"模特改为女性"）判成 node2
+        # 当 current_node=c3 + refine_target=node2 + 用户消息不含任何 node2 产物名 → 覆盖为 node3
+        # 只有用户明确说了"方案"/"商拍方案"/"第X套方案"，才保留 node2
+        # 🔴 尊重前端显式选择：selected_finetuning_target 非空时不覆盖，用户主动选了 node2 就保持 node2
+        _has_node2_product_name = any(k in message for k in ("方案", "商拍方案"))
+        if (
+            not selected_finetuning_target
+            and current_node == "c3"
+            and result.get("intent") == "edit"
+            and result.get("refine_target") == "node2"
+            and not _has_node2_product_name
+        ):
+            print(f"[intent] 🛡️ c3 当前节点优先兜底：LLM 判了 node2 但消息无'方案'字样 → 覆盖为 node3, msg={message[:50]}", flush=True)
+            result["refine_target"] = "node3"
+
         return result
     except RuntimeError as exc:
         # RuntimeError 里明确区分"模型池全挂" vs 其他运行时错误：

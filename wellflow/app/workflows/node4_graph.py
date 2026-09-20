@@ -27,39 +27,30 @@ from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# 常量：Node4 生图模型降级链
-# 实际值从 new-api 动态拉取（capability=image），qwen-image-3.0 优先；
-# 动态拉失败时用此硬编码兜底，保证 API 一定有模型可用。
+# Node4 生图模型获取：从 new-api 指定渠道拉取（接口只返回一个模型，无需 preferred 排序）
+# 兜底链 / 渠道 ID 统一在 config.py（node4_image_channel_id / node4_image_models_fallback）
 # ---------------------------------------------------------------------------
-
-_NODE4_IMAGE_MODELS_FALLBACK: list[str] = [
-    "qwen-image-3.0",  # 主力模型（优先）
-    "gpt-image-2",     # 降级模型
-]
-
-_NODE4_IMAGE_PREFERRED = "qwen-image-3.0"
 
 
 async def _get_node4_image_models() -> list[str]:
-    """动态拉取 image 能力的模型列表，qwen-image-3.0 优先。
+    """从 new-api 渠道 node4_image_channel_id 拉取 image 能力的模型列表。
 
-    从 new-api 失败时返回硬编码兜底链（保序，preferred 在前）。
+    拉取失败或返回空时，回退到 settings.node4_image_models_fallback 硬编码链。
     """
     from wellflow.app.api.model_options import fetch_model_options
+    from wellflow.app.config import settings
+
+    channel_id = settings.node4_image_channel_id
     try:
-        opts = await fetch_model_options("image")
+        opts = await fetch_model_options("image", channel_id=channel_id)
         models = [_short_model_name(opt.value) for opt in opts]
     except Exception as exc:
-        print(f"[node4] ⚠️ 动态拉 image 模型失败，用兜底链: {exc}", flush=True)
+        print(f"[node4] ⚠️ 从 channel_id={channel_id} 拉 image 模型失败，用兜底链: {exc}", flush=True)
         models = []
 
     if not models:
-        return list(_NODE4_IMAGE_MODELS_FALLBACK)
+        return list(settings.node4_image_models_fallback)
 
-    # preferred 提到首位，其余保持原序
-    if _NODE4_IMAGE_PREFERRED in models:
-        idx = models.index(_NODE4_IMAGE_PREFERRED)
-        models = [models[idx], *models[:idx], *models[idx + 1 :]]
     return models
 
 
@@ -327,7 +318,7 @@ async def _execute_single_image(prompt: str, size: str,
     else:
         image_refs = []
 
-    _chain = _get_node4_image_models()
+    _chain = await _get_node4_image_models()
     errors: list[str] = []
     for model in _chain:
         try:

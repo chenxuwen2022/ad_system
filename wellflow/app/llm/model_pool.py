@@ -81,7 +81,7 @@ class ModelPool:
     Args:
         capability: 从 new-api 拉哪些能力的模型（text / vlm / None=不过滤）
         channel_id: 只拉指定渠道的模型（None=全部渠道）
-        preferred_model: 偏好模型名（短名如 qwen3.5-flash）—— 放在轮询首位，失败自动降级
+        preferred_model: 偏好模型名（短名如 qwen3.8-flash）—— 放在轮询首位，失败自动降级
     """
 
     def __init__(
@@ -137,7 +137,7 @@ class ModelPool:
             return 0
         if self._preferred_model:
             for i, state in enumerate(self._states):
-                # 支持短名匹配（"qwen3.5-flash" 命中 "provider/qwen3.5-flash"）
+                # 支持短名匹配（"qwen3.8-flash" 命中 "provider/qwen3.8-flash"）
                 if state.model_key.endswith(f"/{self._preferred_model}") or \
                    state.model_key == self._preferred_model:
                     return i
@@ -259,6 +259,7 @@ class ModelPool:
     async def stream_chat_with_images(
         self, *, system: str, user: str, image_uris: list[str],
         reasoning_effort: str, extra_params: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ):
         """流式多模态。failover 仅限连接建立期，流开始后不再切换。"""
         await self._ensure_models()
@@ -283,6 +284,7 @@ class ModelPool:
                     async for delta in client.stream_chat_with_images(
                         system=system, user=user, image_uris=image_uris,
                         reasoning_effort=reasoning_effort, extra_params=extra_params,
+                        response_format=response_format,
                     ):
                         if not _stream_started:
                             _stream_started = True
@@ -328,19 +330,22 @@ _pool_instance: ModelPool | None = None
 def get_model_pool(
     *,
     capability: str | None = "text",
-    channel_id: int | None = None,
-    preferred_model: str | None = "qwen3.5-flash",
+    channel_id: int | None = None,          # None → 从 config.settings.llm_channel_id 读
+    preferred_model: str | None = "qwen3.8-flash",
 ) -> ModelPool:
     """拿到共享 ModelPool 实例（首次调用按参数创建，后续调用参数变化会重建）。
 
     默认配置：
-      - capability='text'  → 拉文本/VLM 模型
-      - channel_id=None    → 不按渠道过滤
-      - preferred_model='qwen3.5-flash' → 优先用 qwen3.5-flash，失败降级
+      - capability='text'  → 拉 text/VLM 模型
+      - channel_id=None    → 走 settings.llm_channel_id（默认 4，LLM/VLM 统一渠道）
+      - preferred_model='qwen3.8-flash' → 优先用 qwen3.8-flash，失败降级
 
-    node4 等需要独立配置的调用者传不同参数即可。
+    node4 生图走 node4_image_channel_id=4（语义不同，不要复用）。
     """
     global _pool_instance
+
+    channel_id = channel_id or settings.llm_channel_id  # None → config 统一渠道
+
     need_rebuild = (
         _pool_instance is None
         or _pool_instance._capability != capability

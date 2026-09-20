@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from wellflow.app.config import settings
+
 
 # ---------------------------------------------------------------------------
 # LangGraph 节点名常量（与 parent_graph.py 严格对齐）
@@ -71,9 +73,7 @@ _GRAPH_STATE_RUNNING_FRESH = "running"     # 执行节点 + checkpoint 很新 �
 _GRAPH_STATE_RUNNING_STALE = "stale"       # 执行节点 + checkpoint 很旧 → 可能挂了
 _GRAPH_STATE_NEVER_STARTED = "none"        # checkpoint 不存在
 
-# checkpoint 年龄阈值：超过这个秒数还没进入下一个 interrupt，认为 graph 可能挂了
-# Node2 VLM 生成 3 套方案 → 典型耗时 30-60 秒，给 90 秒 buffer 足够
-_STALE_THRESHOLD_SECONDS = 90
+# checkpoint 年龄阈值统一在 config.py（graph_stale_threshold_seconds）
 
 
 def _parse_iso_time(value: str | None):
@@ -128,7 +128,7 @@ def check_graph_runtime_state(snapshot: Any) -> tuple[str, float | None]:
             parsed = parsed.replace(tzinfo=timezone.utc)
         age_seconds = (now - parsed).total_seconds()
 
-    if age_seconds is None or age_seconds < _STALE_THRESHOLD_SECONDS:
+    if age_seconds is None or age_seconds < settings.graph_stale_threshold_seconds:
         return _GRAPH_STATE_RUNNING_FRESH, age_seconds
     return _GRAPH_STATE_RUNNING_STALE, age_seconds
 
@@ -234,18 +234,35 @@ def resolve_current_node(
     # --------- 3. confirmations 兜底（比 state.phase 更可信）---------
     # state.phase 可能残留上一个 interrupt 的值（执行中节点还没写入新 phase）。
     # confirmations 是 LangGraph state reducer 合并出来的，只会被 True 覆盖，不会被残留。
+    #
+    # 关键约束：推 c{N+1} 前必须验证 state 里真有 node{N+1} 的产物信号。
+    # 否则就是下游 node 崩了 / 还没跑 / checkpoint 脏写——硬推 c{N+1} 会让前端以为
+    # graph 停在 c4 要确认生图，实际 node4.outputs 是空的（今早 coroutine bug 就是这个场景）。
     if ctx.current_node is None:
         last_confirmed = None
         for key in CONFIRMATION_KEYS:
             if ctx.source_confirmations.get(key):
                 last_confirmed = key
         if last_confirmed is not None:
-            # 最后确认的是 cX → graph 已经过了 cX，正在跑 NodeX+1 或停在 cX+1 interrupt
+            # 先看下游 node{N+1} 是否真的有产物
             x = int(last_confirmed[1])  # "c2" → 2
             next_x = x + 1
+            downstream_has_product = False
             if next_x <= 4:
+                node_key = f"node{next_x}"
+                product_keys = _NODE_PRODUCT_KEYS.get(node_key, ())
+                if state and isinstance(state.get(node_key), dict):
+                    downstream_has_product = any(
+                        state[node_key].get(k) not in (None, [], {})
+                        for k in product_keys
+                    )
+            if downstream_has_product:
                 ctx.current_node = f"c{next_x}"
                 ctx.confidence = "state_confirmations"
+            else:
+                # 下游 node 没跑 / 跑崩了 → 回到最后确认的 cX（让用户可以重新 confirm / redo 当前节点）
+                ctx.current_node = last_confirmed
+                ctx.confidence = "state_confirmations_no_downstream"
 
     # --------- 4. state["phase"] (LangGraph 写入的) ---------
     if ctx.current_node is None and ctx.source_state_phase:

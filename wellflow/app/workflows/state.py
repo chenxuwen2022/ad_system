@@ -103,16 +103,20 @@ class Node1State(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------
-# Node2：PlanningScheme — VLM 生成 N 套结构化商拍方案（12 维 JSON）
+# Node2：PlanningScheme — VLM 生成 3 套候选商拍方案（12 维 JSON，C2 让用户选定 1 套）
 # ---------------------------------------------------------------------------
 
 
 class SchemeState(TypedDict, total=False):
-    schemes: list[dict[str, Any]]          # 3 套完整 12 维 JSON（每套 = PLANNING_AGENT_SYSTEM_PROMPT 输出）
+    schemes: list[dict[str, Any]]          # N 套完整 12 维 JSON（由 PLANNING_AGENT_SYSTEM_PROMPT 输出）
     scheme_raw: str                         # VLM 原始 JSON 文本（前端展示/调试）
-    selected_scheme_indices: list[int]      # C2 选的方案索引，如 [0, 2] 或 [0, 1, 2]
-    per_scheme_count: list[int]             # C2 每套选中方案要生成几份 prompt，如 [3, 1]（len = len(selected_scheme_indices)）
+    selected_scheme_indices: list[int]      # C2 用户选定的方案索引（新链路通常只有 1 套被锁）
+    per_scheme_count: list[int]             # C2 每套选中方案要生成几份 prompt，默认 [5]
     thinking_text: str                      # VLM 深度思考过程文本
+    # —— 诊断锚点：Node2 正向产出时写入，表示"本次任务原始应该有几套方案"——
+    # 防止 LangGraph checkpoint 异常合并或中间步骤脏写导致 schemes 数量被污染
+    # （例如 Node3 的 prompt_detail 被错误混入，出现 3×4=12 条脏方案）
+    base_scheme_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +187,9 @@ class TaskState(TypedDict, total=False):
     # refine 路径：interrupt resume(decision="refine") 写入，refine 节点消费后清 None
     _refine_target: Annotated[str | None, REDUCER]       # "node1" | "node2" | "node3" | None
     _refine_instruction: Annotated[str | None, REDUCER]  # 用户修改指令文本
+    # node2 refine 专用：LLM 意图分类器返回的 selected_indices
+    # 决定 refine_node2_schemes 能看到哪几套原方案（用户明确点名了哪些 → 只传那些；"all"或None → 全部传）
+    _refine_selected_indices: Annotated[list[int] | str | None, REDUCER]
     # 多轮 refine 历史：每轮 refine 前把本轮指令 append 进去
     # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）
     _refine_history: Annotated[list[str], REDUCER]       # 历史 refine 指令列表（按时间顺序，包含本轮）
