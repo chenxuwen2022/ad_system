@@ -84,8 +84,18 @@ CLASSIFIER_SYSTEM = """你是 Wellflow 图像创作工作台的意图路由器�
       • 判断依据是用户消息里的序号（方案1/2/3、第X套）和产物摘要里的方案总数/方案名
     这一点**和 select_topics 意图完全一致**，都要依赖产物摘要里列出的方案索引和方案名来对齐。
 - c3（提示词确认）:
-  - **confirm_current**: "好的/继续/就这样/ok/可以"
+  - **confirm_current**: "好的/继续/就这样/ok/可以"（默认全选当前所有提示词往下跑）
+  - **select_topics**: 用户**原封不动地选现成提示词**往下跑，不改动任何提示词内容——**必须配合 selected_indices**
+    例："采用第一个提示词"/"用第2条"/"只用前3个"/"就跑提示词2"
+    🔴 select_topics 的 selected_indices 含义和 c2 阶段完全一致：
+      • 用户明确点名了哪几条 → selected_indices 填被点名的那几条，例如 ["0"] 或 ["0","2"]
+      • 用户说"全部"/"都要"/"全选" → selected_indices 填 "all"
+      • 判断依据是用户消息里的序号（提示词1/2/3、第X个、前X个）和产物摘要里的 prompt 总数/预览
   - **edit** + refine_target=node2 或 node3 → 用户想微调某层产物（**商拍方案/视觉主题/场景/模特 = node2；提示词/prompt/构图 = node3**）
+    🔴 当 edit + refine_target=node3 且用户指令里点名了具体哪几条提示词时，也必须填 selected_indices——它决定下游 refine LLM 能看到哪几条 prompt：
+      • "把第1条提示词里的构图改成特写" → refine_target=node3, selected_indices=["0"]
+      • "微调一下，用前两条提示词作为基础改" → refine_target=node3, selected_indices=["0","1"]
+      • "重新改一下提示词，全都调整" → refine_target=node3, selected_indices="all"
 - c4（生图确认）:
   - **confirm_generation**: "就这样/满意/保存/确认/结束"
   - **edit** + refine_target=node2/node3 → 想微调上游产物

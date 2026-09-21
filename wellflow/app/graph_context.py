@@ -212,6 +212,19 @@ def resolve_current_node(
             ctx.confidence = "snapshot_next"
             break
 
+    # --------- 1b. snapshot.next 里的执行节点 → 映射到它后面的 cX ---------
+    # graph 正在跑某个执行节点（比如 node4_generate_image），
+    # 跑完会停在它对应的 interrupt（c4）。此时 snapshot.next 里只有执行节点，
+    # 直接用 EXEC_NODE_NEXT_INTERRUPT 映射到下一个 cX，比 step 3 的 confirmations 兜底靠谱。
+    if ctx.current_node is None:
+        for n in next_nodes:
+            if n in EXEC_NODE_NEXT_INTERRUPT:
+                mapped_c = EXEC_NODE_NEXT_INTERRUPT[n]
+                if mapped_c:  # finalize 映射到 ""，跳过
+                    ctx.current_node = mapped_c
+                    ctx.confidence = "snapshot_next_exec"
+                    break
+
     # --------- 2. snapshot.tasks[].interrupts (等价于 next，备用) ---------
     if ctx.current_node is None and snapshot is not None and hasattr(snapshot, "tasks"):
         try:
@@ -238,7 +251,19 @@ def resolve_current_node(
     # 关键约束：推 c{N+1} 前必须验证 state 里真有 node{N+1} 的产物信号。
     # 否则就是下游 node 崩了 / 还没跑 / checkpoint 脏写——硬推 c{N+1} 会让前端以为
     # graph 停在 c4 要确认生图，实际 node4.outputs 是空的（今早 coroutine bug 就是这个场景）。
-    if ctx.current_node is None:
+    #
+    # Defense-in-depth：如果 snapshot.next 里还有未识别的执行节点（既不在 INTERRUPT_NODE_TO_C
+    # 也不在 EXEC_NODE_NEXT_INTERRUPT），说明 graph 仍在跑且 step 1b 没命中——
+    # 此时跳过 confirmations 兜底，因为 graph 运行中 confirmations 是不可靠信号
+    # （比如旧任务 c2/c3 没写 confirmations，就会被兜底误推回 c2）。
+    _has_unrecognized_exec = False
+    if ctx.current_node is None and ctx.source_next:
+        for n in ctx.source_next:
+            if n not in INTERRUPT_NODE_TO_C and n not in EXEC_NODE_NEXT_INTERRUPT:
+                _has_unrecognized_exec = True
+                break
+
+    if ctx.current_node is None and not _has_unrecognized_exec:
         last_confirmed = None
         for key in CONFIRMATION_KEYS:
             if ctx.source_confirmations.get(key):

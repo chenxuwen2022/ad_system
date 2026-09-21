@@ -340,6 +340,10 @@ def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
         return _sse("prompt_chunk", event_data)
     if event_type == "prompt_chunk_done":
         return _sse("prompt_chunk_done", event_data)
+    if event_type == "node4_image_done":
+        return _sse("node4_image_done", event_data)
+    if event_type == "node4_image_failed":
+        return _sse("node4_image_failed", event_data)
     if event_type == "node3_image_done":
         return _sse("node3_image_done", event_data)
     if event_type == "done":
@@ -1526,11 +1530,53 @@ async def _handle_resume(
             resume_values["refine_instruction"] = message
             print(f"[chat] c3 edit_and_confirm_c3 → refine 路径, instruction={message}", flush=True)
         else:
-            # C3 只有 confirm_current：用户确认 prompt 进入 Node4 生图。
-            # C3 下的重做意图（比如"换背景"）已在意图分类阶段归为 backward_to_node3，
-            # 由 _handle_backward 单独处理，不会走到这里。
+            # C3 下的 confirm_current / select_topics 等非编辑意图：
+            # 解析 intent_result.selected_indices → 映射成 selected_prompt_indices 传给 LangGraph。
+            # 优先级和 c2 阶段一致：
+            #   1) intent_result.selected_indices（意图分类器从自然语言里解析的）
+            #      例："采用第一个提示词" → ["0"]；"全部" → "all"
+            #   2) 都没有 → 不设置（_c3_confirm_prompt 不做过滤，默认全部往下跑）
+            _c3_prompts = (graph_state or {}).get("node3", {}).get("generate_prompts") or []
+            _c3_prompt_total = len(_c3_prompts)
+            selected = intent_result.get("selected_indices") if intent_result else None
+            if _c3_prompt_total and selected is not None:
+                if selected == "all":
+                    resume_values["selected_prompt_indices"] = list(range(_c3_prompt_total))
+                    print(f"[chat] c3 selected_indices='all' → 全部 {_c3_prompt_total} 条", flush=True)
+                elif isinstance(selected, list):
+                    indices: list[int] = []
+                    for x in selected:
+                        try:
+                            idx = int(x)
+                            if 0 <= idx < _c3_prompt_total:
+                                indices.append(idx)
+                        except (ValueError, TypeError):
+                            pass
+                    if indices:
+                        resume_values["selected_prompt_indices"] = sorted(set(indices))
+                        print(f"[chat] c3 selected_indices={selected} → selected_prompt_indices={indices}", flush=True)
+
+            # 若意图分类器把 c3 纯选择判成了 select_topics（新增意图），
+            # selected_prompt_indices 已在上面填好；confirm_current 则默认全选。
             if model_image_paths:
                 resume_values["model_images"] = model_image_paths
+
+            # 给用户一条可读的选择确认 —— 前端会直接展示这条 message 事件
+            _spi = resume_values.get("selected_prompt_indices")
+            if _spi:
+                if len(_spi) == _c3_prompt_total:
+                    _pick_msg = f"好的，采用全部 {_c3_prompt_total} 条提示词开始生图…"
+                elif len(_spi) == 1:
+                    _pick_msg = f"好的，采用第 {_spi[0] + 1} 条提示词开始生图…"
+                else:
+                    _pick_msg = (
+                        f"好的，采用第 "
+                        + "、".join(str(i + 1) for i in _spi)
+                        + f" 条提示词（共 {len(_spi)} 条）开始生图…"
+                    )
+                _chunk = _sse("message", {"text": _pick_msg})
+                await _persist_sse_text(_chunk, known_task_id=t_id)
+                yield _chunk
 
     elif node == "c4":
         # C4 独占 confirm_generation / redo_generation 两个意图。

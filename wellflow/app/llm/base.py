@@ -391,46 +391,39 @@ class BaseLLMClient(ABC):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        _prompt_preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
-        _payload_size = len(json.dumps(payload).encode())
-        print(f"[llm-generations] 📤 POST {base_url}/images/generations "
-              f"model={model_name} refs={len(refs) if refs else 0} "
-              f"size={size} payload≈{_payload_size/1024:.0f}KB", flush=True)
-        print(f"[llm-generations]   prompt: {_prompt_preview}", flush=True)
-
         MAX_RETRIES = 2
+        RATE_LIMIT_RETRIES = 3
+        RATE_LIMIT_BACKOFF = (15.0, 30.0, 60.0)
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError,
                      httpx.ConnectTimeout, httpx.ReadTimeout)
 
         async with httpx.AsyncClient(timeout=settings.image_timeout, proxy=proxy) as client:
-            last_exc: Exception | None = None
             data = None
-            for attempt in range(1, MAX_RETRIES + 2):
+            for attempt in range(1, max(MAX_RETRIES, RATE_LIMIT_RETRIES) + 2):
                 try:
-                    _t0 = _asyncio.get_event_loop().time()
                     resp = await client.post(
                         f"{base_url}/images/generations",
                         headers=headers,
                         json=payload,
                     )
-                    _t1 = _asyncio.get_event_loop().time()
-                    print(f"[llm-generations] ⏱️ HTTP {resp.status_code} round-trip {_t1 - _t0:.1f}s "
-                          f"(attempt={attempt})", flush=True)
 
                     if resp.status_code >= 400:
                         err_body = resp.text[:500]
-                        print(f"[llm-generations] ❌ HTTP {resp.status_code}: {err_body}", flush=True)
-                        if resp.status_code in (400, 401, 403, 404):
-                            raise RuntimeError(_extract_error_message(resp.status_code, resp.text))
-                        if resp.status_code in (429, 500, 502, 503, 504) and attempt <= MAX_RETRIES:
+                        if resp.status_code == 429 and attempt <= RATE_LIMIT_RETRIES:
+                            wait = RATE_LIMIT_BACKOFF[min(attempt - 1, len(RATE_LIMIT_BACKOFF) - 1)]
+                            print(f"[llm-generations] ⚠️ 429 限流 (attempt {attempt}/{RATE_LIMIT_RETRIES + 1}): "
+                                  f"{wait:.0f}s 后重试...", flush=True)
+                            await _asyncio.sleep(wait)
+                            continue
+                        if resp.status_code in (500, 502, 503, 504) and attempt <= MAX_RETRIES:
                             await _asyncio.sleep(1.0 * attempt)
                             continue
+                        print(f"[llm-generations] ❌ HTTP {resp.status_code}: {err_body}", flush=True)
                         raise RuntimeError(_extract_error_message(resp.status_code, resp.text))
 
                     data = resp.json()
                     break
                 except retryable as exc:
-                    last_exc = exc
                     if attempt <= MAX_RETRIES:
                         wait = 0.8 * attempt
                         print(f"[llm-generations] ⚠️ 网络错误 (attempt {attempt}/{MAX_RETRIES+1}): "
@@ -451,11 +444,6 @@ class BaseLLMClient(ABC):
             b64 = it.get("b64_json")
             url = it.get("url")
             variants.append(ImageGenResult(url=url, b64_json=b64, model=model_label))
-
-        # 日志
-        total_b64 = sum(len(v.b64_json or "") for v in variants)
-        print(f"[llm-generations] ✅ 生图成功 n={len(variants)} "
-              f"b64_total={total_b64} chars", flush=True)
 
         # 主 result 取第一张 + variants 放全部（向后兼容）
         first = variants[0]

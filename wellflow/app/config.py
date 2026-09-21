@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     node3_gen_concurrency: int = 10           # Node3 并行生图并发上限（Semaphore），越大越快但易触发 429
 
     # ====== Node4 ======
+    node4_gen_concurrency: int = 3                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
     node4_image_channel_id: int = 4                # new-api 生图渠道 ID
     node4_image_models_fallback: list[str] = [     # 动态拉失败时的硬编码兜底链
         "qwen-image-3.0",

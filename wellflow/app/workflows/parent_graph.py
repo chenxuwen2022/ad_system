@@ -416,7 +416,8 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     if model_images:
         new_node3["model_images"] = model_images
 
-    return {"phase": "c2_select", "node2": new_node2, "node3": new_node3, "_redo_target": None}
+    return {"phase": "c2_select", "node2": new_node2, "node3": new_node3,
+            "confirmations": {"c2": True}, "_redo_target": None}
 
 
 def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
@@ -525,7 +526,8 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     if model_images:
         new_node3["model_images"] = model_images
 
-    return {"phase": "c3_confirm", "node3": new_node3, "_redo_target": None}
+    return {"phase": "c3_confirm", "node3": new_node3,
+            "confirmations": {"c3": True}, "_redo_target": None}
 
 
 def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
@@ -568,7 +570,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
 
     # ---- confirm → finalize ----
     if decision == "confirm":
-        return {"phase": "c4_review", "_redo_target": None}
+        return {"phase": "c4_review", "confirmations": {"c4": True}, "_redo_target": None}
 
     # ---- refine → 增量编辑 node2 或 node3 ----
     if decision == "refine":

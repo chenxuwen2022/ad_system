@@ -16,6 +16,10 @@ import re
 from typing import Any, Literal
 from wellflow.app.prompt.constant import CLASSIFIER_SYSTEM
 
+# 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
+# （Node1/2/3 的 refine 纯文本微调也复用同一模型，见 workflows/refine_nodes.py）
+CLASSIFIER_MODEL = "deepseek-v4-flash"
+
 
 # ---------------------------------------------------------------------------
 # 工具：把 refine 指令归一化（用于"本轮 == 上一轮完全重复"检测）
@@ -334,8 +338,6 @@ async def _classify_via_llm(
         "请返回意图分类 JSON。"
     )
 
-    # 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
-    CLASSIFIER_MODEL = "deepseek-v4-flash"
     client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
     resp = await client.chat(
         system=CLASSIFIER_SYSTEM,

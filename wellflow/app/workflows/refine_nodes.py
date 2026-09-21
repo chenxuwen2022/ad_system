@@ -1,7 +1,7 @@
 """增量编辑（refine）节点 —— 替代 Node1/Node2/Node3 的完全重做。
 
 核心思路：用户说"要改 Node1/2/3 的产出"时，不走 VLM 全量重跑（昂贵、慢、不稳定），
-而是把【旧产物】+【用户修改指令】喂给纯 text LLM（走 model_pool.chat 轮询池），
+而是把【旧产物】+【用户修改指令】喂给纯 text LLM（固定 deepseek-v4-flash，与意图识别同模型），
 LLM 做最小必要增量修改，直接产出更新后的完整产物。
 
 调用链：
@@ -9,7 +9,7 @@ LLM 做最小必要增量修改，直接产出更新后的完整产物。
     → _cX_confirm_interrupt 识别 decision="refine"
     → 写 _refine_target + _refine_instruction 到 state
     → 路由到对应 refine 节点
-    → refine 节点调用 pool.chat()
+    → refine 节点用 get_llm_client 直连固定模型（纯文本生文本，不传图、不走轮询池）
     → 路由回同一个 cX interrupt（用户再次确认）
 
 ⚠️ Node4 不做 refine —— Node4 是生图 API（openai/gpt-image-2），没有可"增量修改"的文本产物，
@@ -36,7 +36,8 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被用户确认并锁定，
     当前任务内不得再修改 —— 直接拒绝，返回 phase=c1_confirm 且不改动 node1 任何字段。
     """
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
     from wellflow.app.prompt.constant import REFINE_NODE1_REPORT_SYSTEM_PROMPT
     from wellflow.app.event_bus import publish
 
@@ -72,7 +73,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node1_refining"})
 
-    pool = get_model_pool()
+    client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
 
     # 多轮 refine 历史（**只取 node1 自己的**——避免 node2/node3 的 refine 指令混进来）
     from wellflow.app.workflows.state import get_node_refine_history
@@ -99,12 +100,13 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     print(f"[refine_node1] 📤 chat → refine report (instruction_len={len(refine_instruction)})", flush=True)
     t0 = time.time()
 
-    resp, used_model = await pool.chat(
+    resp = await client.chat(
         system=REFINE_NODE1_REPORT_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="close",
         temperature=0.3,
+        reasoning_effort="close",
     )
+    used_model = CLASSIFIER_MODEL
     raw_report: str = resp.content or ""
 
     # 去除可能存在的 ```markdown / ``` 包裹
@@ -150,7 +152,8 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     输入：state.node2.schemes（旧方案 list[dict]） + state._refine_instruction
     输出：更新后的 node2.schemes + node2.scheme_raw
     """
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
     from wellflow.app.prompt.constant import REFINE_NODE2_SCHEMES_SYSTEM_PROMPT
     from wellflow.app.event_bus import publish
     import re  # 用于路径2降级时正则提取 _meta 片段
@@ -260,7 +263,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node2_refining"})
 
-    pool = get_model_pool()
+    client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
     # —— 喂 LLM 前先剥掉内部标记字段，只保留完整商拍方案（12 维）——
     # 完整方案字段绝对不能压缩/裁剪，否则 LLM refine 时会丢失方案定位、视觉主题、
     # 场景设定、模特气质、光影风格等关键维度的上下文
@@ -292,12 +295,13 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     print(f"[refine_node2] 📤 chat → refine schemes (instruction_len={len(refine_instruction)})", flush=True)
     t0 = time.time()
 
-    resp, used_model = await pool.chat(
+    resp = await client.chat(
         system=REFINE_NODE2_SCHEMES_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="close",
         temperature=0.3,
+        reasoning_effort="close",
     )
+    used_model = CLASSIFIER_MODEL
     raw_text: str = resp.content or ""
     raw_text = _strip_code_fence(raw_text)
 
@@ -503,7 +507,8 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     输入：state.node3.generate_prompts（旧 prompt 列表） + state._refine_instruction
     输出：更新后的 node3.generate_prompts（新 prompt 列表）
     """
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
     from wellflow.app.prompt.constant import REFINE_NODE3_PROMPTS_SYSTEM_PROMPT
     from wellflow.app.event_bus import publish
 
@@ -522,7 +527,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node3_refining"})
 
-    pool = get_model_pool()
+    client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
     # 给每条旧 prompt 加 [i] 序号前缀，让 LLM 清楚知道边界和总数
     _numbered_old = [f"[{i + 1}] {p}" for i, p in enumerate(old_prompts)]
     old_prompts_text = "\n---PROMPT_SEP---\n".join(_numbered_old)
@@ -556,12 +561,13 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     print(f"[refine_node3] 📤 chat → refine prompts (instruction_len={len(refine_instruction)})", flush=True)
     t0 = time.time()
 
-    resp, used_model = await pool.chat(
+    resp = await client.chat(
         system=REFINE_NODE3_PROMPTS_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="close",
         temperature=0.3,
+        reasoning_effort="close",
     )
+    used_model = CLASSIFIER_MODEL
     raw_text: str = resp.content or ""
     raw_text = _strip_code_fence(raw_text)
 
