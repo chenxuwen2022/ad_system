@@ -29,6 +29,7 @@ from wellflow.app.config import settings
 from wellflow.app.graph_persist import persist_phase, persist_interrupt, persist_error, persist_outputs
 from wellflow.app.models.task_models import TaskPhase
 from wellflow.app.repositories.task_repo import TaskRepo
+from wellflow.app.repositories.conversation_repo import _compose_title_from_hint
 from wellflow.app.schemas.task_schemas import (
     TaskListResponse,
     TaskListItem,
@@ -204,7 +205,9 @@ async def create_task(
 
     t0 = time.time()
     task_id = _short_uuid()
-    print(f"[create_task] 🚀 开始, task_id={task_id}", flush=True)
+    # 为这次按钮直跑创建独立的 conversation —— 让它也有自己的侧边栏条目
+    conversation_id = _short_uuid()
+    print(f"[create_task] 🚀 开始, task_id={task_id} conversation_id={conversation_id}", flush=True)
 
     # --- Step 1: 读上传文件 → 落盘（同步 I/O，放 to_thread 里更快？不，FastAPI UploadFile.read 是 async 的） ---
     raw_files = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
@@ -260,7 +263,19 @@ async def create_task(
         }
 
         # fire-and-forget 写 DB + 启动 graph
-        asyncio.create_task(_create_task_in_background(task_id, request_json, brand_cfg, graph, config, initial_state))
+        # title_hint 让 conversation 在建的时候就有真实 title（不是"新对话"占位）
+        _title_hint = {
+            "kind": "button_create_task",
+            "description": description,
+            "product_link": product_link,
+            "image_filenames": [f.filename or "" for f in product_images],
+            "platform": platform,
+        }
+        _computed_conv_title = _compose_title_from_hint(_title_hint)
+        asyncio.create_task(_create_task_in_background(
+            task_id, conversation_id, _title_hint,
+            request_json, brand_cfg, graph, config, initial_state,
+        ))
     except Exception as exc:
         print(f"[create_task] ❌ graph 不可用: {exc}", flush=True)
 
@@ -275,6 +290,13 @@ async def create_task(
             "estimated_cost_range": [2.0, 10.0],
             "description": _desc,
         })
+
+        # conversation title —— 提前算好直接发，前端侧边栏无需刷新就能显示
+        yield _sse("conversation_title", {
+            "conversation_id": conversation_id,
+            "title": _computed_conv_title,
+        })
+        print(f"[create_task] 📢 conversation_title={_computed_conv_title}", flush=True)
 
         # 先推一个 phase=input（对齐旧版 SSE 契约）
         yield _sse("phase", {"phase": "input"})
@@ -323,6 +345,8 @@ async def create_task(
 
 async def _create_task_in_background(
     task_id: str,
+    conversation_id: str,
+    title_hint: dict[str, Any],
     request_json: dict[str, Any],
     brand_cfg: dict[str, Any],
     graph,
@@ -333,11 +357,27 @@ async def _create_task_in_background(
 
     DB create 必须在 graph 启动前完成——否则 graph 很快跑到 interrupt 点，
     前端立即调 resume，此时 Task 行还没写入就会 404。
+    conversation 必须先于 task 创建（FK 约束）。
     """
     def _sync_write():
         with session_scope() as db:
+            from wellflow.app.repositories.conversation_repo import ConversationRepo
+            conv_repo = ConversationRepo(db)
+            # conversation —— 带 title_hint，repo 会自动生成真实 title
+            conv_repo.create(
+                conversation_id=conversation_id,
+                title="新对话",
+                current_task_id=task_id,
+                title_hint=title_hint,
+            )
             repo = TaskRepo(db)
-            repo.create(task_id=task_id, request_json=request_json, phase=TaskPhase.INPUT.value, brand_config_json=brand_cfg)
+            repo.create(
+                task_id=task_id,
+                request_json=request_json,
+                phase=TaskPhase.INPUT.value,
+                brand_config_json=brand_cfg,
+                conversation_id=conversation_id,
+            )
             repo.add_event(task_id, "task_created", phase=TaskPhase.INPUT.value, payload_json=request_json)
 
     try:
@@ -979,18 +1019,21 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
                 "schemes": (node2 or {}).get("schemes"),
                 "selected_scheme_indices": (node2 or {}).get("selected_scheme_indices"),
                 "scheme_raw": (node2 or {}).get("scheme_raw"),
+                "thinking_text": (node2 or {}).get("thinking_text"),
             },
             "c3": {
                 "node": "c3",
                 "hint": "请确认生图提示词",
                 "generate_prompts": (node3 or {}).get("generate_prompts"),
                 "prompts_detail": (node3 or {}).get("prompts_detail"),
+                "thinking_text": (node3 or {}).get("thinking_text"),
             },
             "c4": {
                 "node": "c4",
                 "hint": "查看生图结果",
                 "outputs": (node4 or {}).get("outputs"),
                 "failed_items": (node4 or {}).get("failed_items"),
+                "thinking_text": (node4 or {}).get("thinking_text"),
             },
         }
         interrupt_json = node_payload_map.get(graph_current_node)
@@ -1021,6 +1064,20 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             item["prompt_index"] = img.prompt_index
             item["variant_index"] = img.variant_index
             output_images.append(item)
+
+    # 🔍 thinking_text 诊断日志：三处来源的长度全打出来，定位"刷新后 thinking 丢失"根因
+    _db_interrupt_think = (task.interrupt_json or {}).get("thinking_text") if isinstance(task.interrupt_json, dict) else None
+    _final_interrupt_think = interrupt_json.get("thinking_text") if isinstance(interrupt_json, dict) else None
+    print(
+        f"[get_task] 🩺 thinking_text lengths | "
+        f"ckpt_node1={len((node1 or {}).get('thinking_text') or '')}, "
+        f"ckpt_node2={len((node2 or {}).get('thinking_text') or '')}, "
+        f"ckpt_node3={len((node3 or {}).get('thinking_text') or '')}, "
+        f"ckpt_node4={len((node4 or {}).get('thinking_text') or '')}, "
+        f"db_interrupt={len(_db_interrupt_think or '')}, "
+        f"final_interrupt={len(_final_interrupt_think or '')}",
+        flush=True,
+    )
 
     return ok(TaskInfoResponse(
         task_id=task.task_id,

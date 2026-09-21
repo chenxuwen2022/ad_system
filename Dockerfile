@@ -21,4 +21,5 @@ COPY .env .
 EXPOSE 8000
 
 # 启动前先跑 Alembic 迁移，再起 uvicorn（统一入口 main.py 会同时挂载广告投放 + WellFlow）
-CMD ["sh", "-c", "cd wellflow && PYTHONPATH=/app alembic upgrade head && cd /app && PYTHONPATH=/app uvicorn main:app --host 0.0.0.0 --port 8000"]
+# --workers 4 多进程并发；--loop uvloop 用 C 实现的 event loop 提速
+CMD ["sh", "-c", "cd wellflow && PYTHONPATH=/app alembic upgrade head && cd /app && PYTHONPATH=/app uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop"]

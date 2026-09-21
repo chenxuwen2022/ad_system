@@ -18,45 +18,20 @@
 ⚠️ 模型策略：
   Node4 生图动态从 new-api 拉 image 模型列表（qwen-image-3.0 优先），
   不从前端 interrupt、chat.py 分类器、state.node3.image_model 里取模型。
-  outfit.py 已有相同降级模式验证过可用。
+  底层「模型拉取 + 单次生图 + 降级链」已抽至 wellflow.app.llm.image_gen_service，
+  API 端点（mannequin /generate）也共用同一份逻辑，确保行为一致。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from wellflow.app.llm.image_gen_service import get_image_models, generate_single_image
+
 
 # ---------------------------------------------------------------------------
-# Node4 生图模型获取：从 new-api 指定渠道拉取（接口只返回一个模型，无需 preferred 排序）
-# 兜底链 / 渠道 ID 统一在 config.py（node4_image_channel_id / node4_image_models_fallback）
+# ratio → pixel size helper（Node4 特有语义，留在本文件）
 # ---------------------------------------------------------------------------
-
-
-async def _get_node4_image_models() -> list[str]:
-    """从 new-api 渠道 node4_image_channel_id 拉取 image 能力的模型列表。
-
-    拉取失败或返回空时，回退到 settings.node4_image_models_fallback 硬编码链。
-    """
-    from wellflow.app.api.model_options import fetch_model_options
-    from wellflow.app.config import settings
-
-    channel_id = settings.node4_image_channel_id
-    try:
-        opts = await fetch_model_options("image", channel_id=channel_id)
-        models = [_short_model_name(opt.value) for opt in opts]
-    except Exception as exc:
-        print(f"[node4] ⚠️ 从 channel_id={channel_id} 拉 image 模型失败，用兜底链: {exc}", flush=True)
-        models = []
-
-    if not models:
-        return list(settings.node4_image_models_fallback)
-
-    return models
-
-
-def _short_model_name(model: str) -> str:
-    """把 'provider/xxx' 格式剥掉 provider 前缀，只保留 'xxx'。"""
-    return model.split("/", 1)[1] if "/" in model else model
 
 
 def _ratio_to_size(ratio: str) -> str:
@@ -111,7 +86,7 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
         _eb(task_id, "phase", {"phase": "node4_prepare"})
 
     node3 = state.get("node3", {})
-    node4 = state.get("node4", {})
+    node4_in = state.get("node4", {}) or {}
     req = state.get("request", {})
 
     # ---- 收集参考图路径 ----
@@ -136,12 +111,11 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
 
     product_uris, model_uris = await asyncio.gather(*tasks)
     _t1 = _time.time()
-    print(f"[node4] � prepare 开始 task={task_id[:8]}: "
+    print(f"[node4]  prepare 开始 task={task_id[:8]}: "
           f"商品图 {len(product_paths)} 张, 模特图 {len(model_paths)} 张, "
           f"参考图 data URI 转换耗时 {_t1 - _t0:.2f}s", flush=True)
 
     all_ref_uris = [*product_uris, *model_uris]
-    node4["reference_images_data_uris"] = all_ref_uris
 
     # ---- 读 Node 3 的 generate_prompts ----
     prompts: list[str] = node3.get("generate_prompts") or []
@@ -149,6 +123,10 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
     # Node4 永远一个 prompt → 一个 work_item → n=1，不再调用 LLM 的 n>1 批量参数
 
     per_prompt_size: list[str] = node3.get("per_prompt_size") or []
+
+    # ✅ 始终构造新 dict 返回，不原地 mutate state 里的 node4
+    node4: dict[str, Any] = dict(node4_in)
+    node4["reference_images_data_uris"] = all_ref_uris
 
     if not prompts:
         print("[node4] ⚠️ generate_prompts 为空，无法生成 work_items", flush=True)
@@ -196,32 +174,41 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
     import time
 
     from wellflow.app.event_bus import publish as _eb
+    from wellflow.app.utils.image_store import paths_to_data_uris
 
     task_id = state.get("task_id", "")
     if task_id:
         _eb(task_id, "phase", {"phase": "node4_generation"})
 
-    node4 = state.get("node4", {})
-    work_items = node4.get("work_items", [])
-    ref_paths: list[str] = node4.get("reference_images", [])
-    cached_ref_uris: list[str] = node4.get("reference_images_data_uris") or []
+    node4_in = state.get("node4", {}) or {}
+    work_items = list(node4_in.get("work_items", []) or [])  # 拷贝 list，in-place 状态更新就不会碰 state
+    ref_paths: list[str] = node4_in.get("reference_images", [])
+    cached_ref_uris: list[str] = node4_in.get("reference_images_data_uris") or []
+
+    # refs 统一在这儿转好 data URIs（_prepare 通常已缓存 cached_ref_uris，
+    # fallback 才用 ref_paths 现场转，避免 per-item 重复读文件）
+    if cached_ref_uris:
+        ref_uris: list[str] = list(cached_ref_uris)
+    elif ref_paths:
+        ref_uris = paths_to_data_uris(ref_paths)
+    else:
+        ref_uris = []
 
     pending_items = [it for it in work_items if it.get("status") in ("pending", "redo")]
     outputs: list[dict[str, Any]] = []
     from wellflow.app.config import settings
     WORKERS = settings.node4_gen_concurrency
 
-    # 模型链一次拉取，_execute_single_image 内部也会自己拉（对齐），
-    # 这里先拿到供日志用的"计划模型"名，避免请求前还不知道是什么模型
+    # 模型链一次拉取（供日志用），generate_single_image 内部也会自己拉一份
     try:
-        _plan_models = await _get_node4_image_models()
+        _plan_models = await get_image_models()
         _plan_first = _plan_models[0] if _plan_models else "(未指定)"
     except Exception:
         _plan_first = "(未指定)"
 
     print(f"[node4] 🏃 run_gen 启动 task={task_id[:8]}: "
-          f"入队 {len(pending_items)} 张, worker={WORKERS}, 每 worker 错开 2s, "
-          f"计划模型={_plan_first}, 参考图 refs={len(cached_ref_uris)}", flush=True)
+          f"入队 {len(pending_items)} 张, worker={WORKERS}, "
+          f"计划模型={_plan_first}, 参考图 refs={len(ref_uris)}", flush=True)
 
     queue: asyncio.Queue[dict] = asyncio.Queue()
     for it in pending_items:
@@ -234,14 +221,11 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
         size = item.get("size", _ratio_to_size(item.get("ratio", "3:4")))
         t0 = time.time()
         wid = item.get("work_item_id", "?")
-        print(f"[{wid}] 📤 请求发出 size={size} model={_plan_first} refs={len(cached_ref_uris)} "
+        print(f"[{wid}] 📤 请求发出 size={size} model={_plan_first} refs={len(ref_uris)} "
               f"prompt({len(prompt)}chars)={prompt[:60]}...", flush=True)
         try:
-            # ✅ 关键：不传 image_model 覆盖，让 _execute_single_image 走硬编码降级链
-            result = await _execute_single_image(
-                prompt=prompt, size=size,
-                ref_paths=ref_paths,
-                cached_ref_uris=cached_ref_uris,
+            result = await generate_single_image(
+                prompt=prompt, size=size, ref_data_uris=ref_uris,
             )
             dt = time.time() - t0
             url = result.data_uri or result.url
@@ -261,8 +245,6 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
 
     async def _worker(idx: int) -> None:
         wid = f"worker-{idx}"
-        if idx:
-            await asyncio.sleep(idx * 2.0)
         active = 0
         while True:
             try:
@@ -345,52 +327,10 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
           f"成功 {n_done}/{n_total}, 失败 {n_failed} 张, "
           f"总耗时 {t_all:.1f}s, 吞吐 {throughput:.2f} 张/s", flush=True)
 
-    node4["outputs"] = outputs
-    node4["failed_items"] = failed_items
-    return {"phase": "node4_generation", "node4": node4}
-
-
-async def _execute_single_image(prompt: str, size: str,
-                                ref_paths: list[str],
-                                _image_model: str | None = None,
-                                cached_ref_uris: list[str] | None = None):
-    """单次生图 —— 永远 n=1，动态拉取 image 模型列表逐个尝试（qwen-image-3.0 优先）。
-
-    签名保留 _image_model 但**不再使用**（参数来自旧链路，目前没有调用方传它）。
-
-    全链失败时 raise RuntimeError，错误信息汇总每个模型的失败原因。
-    """
-    from wellflow.app.llm.factory import get_llm_client
-    from wellflow.app.utils.image_store import paths_to_data_uris
-
-    if cached_ref_uris:
-        image_refs = cached_ref_uris
-    elif ref_paths:
-        image_refs = paths_to_data_uris(ref_paths)
-    else:
-        image_refs = []
-
-    _chain = await _get_node4_image_models()
-    errors: list[str] = []
-    for model in _chain:
-        try:
-            client = get_llm_client("image", model_override=model)
-            # ✅ n 强制 =1 —— 一个 prompt 对应一张最终生图
-            result = await client.generate_image(
-                prompt=prompt,
-                size=size,
-                n=1,
-                response_format="b64_json",
-                extra_params={"image_refs": image_refs},
-            )
-            return result  # 成功直接返回，不再尝试后续降级模型
-        except Exception as exc:
-            errors.append(f"{model}: {type(exc).__name__} — {str(exc)[:200]}")
-
-    # 全链失败 —— 汇总所有模型的错误让上层感知
-    raise RuntimeError(
-        f"Node4 生图失败（降级链 {_chain} 全败）: " + " | ".join(errors)
-    )
+    node4_out: dict[str, Any] = dict(node4_in)
+    node4_out["outputs"] = outputs
+    node4_out["failed_items"] = failed_items
+    return {"phase": "node4_generation", "node4": node4_out}
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +345,8 @@ def _archive(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         _eb(task_id, "phase", {"phase": "node4_archive"})
 
-    node4 = state.get("node4", {})
+    node4_in = state.get("node4", {}) or {}
+    node4: dict[str, Any] = dict(node4_in)  # 始终构造新 dict 返回，不原地 mutate
     outputs = node4.get("outputs", [])
     print(f"[node4] _archive: {len(outputs)} 个 outputs 已归档", flush=True)
     return {"phase": "node4_archive", "node4": node4}

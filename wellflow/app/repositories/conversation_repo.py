@@ -53,12 +53,17 @@ class ConversationRepo:
         conversation_id: str | None = None,
         title: str = "新对话",
         current_task_id: str | None = None,
+        title_hint: dict[str, Any] | None = None,
     ) -> Conversation:
         cid = conversation_id or uuid.uuid4().hex[:12]
+        # 起名钩子：只有当 title 是占位值 且 提供了 hint 时才生成真实 title
+        _effective_title = title[:128] if title else "新对话"
+        if _effective_title in ("新对话", "") and title_hint:
+            _effective_title = _compose_title_from_hint(title_hint)[:128] or "新对话"
         obj = Conversation(
             conversation_id=cid,
             conversation_id_short=self._short_of(cid),
-            title=title[:128] if title else "新对话",
+            title=_effective_title,
             current_task_id=current_task_id,
         )
         self.db.add(obj)
@@ -166,3 +171,100 @@ class ChatMessageRepo:
             .where(ChatMessage.conversation_id == conversation_id)
         )
         return self.db.execute(stmt).scalar() or 0
+
+
+# ------------------------------------------------------------------
+# conversation title 生成 —— 两条路径共用的纯函数
+# ------------------------------------------------------------------
+
+_CHAT_REFINE_TARGET_LABEL: dict[str, str] = {
+    "node1": "洞察报告",
+    "node2": "商拍方案",
+    "node3": "生图提示词",
+    "node4": "图片",
+}
+
+
+def _truncate(text: str, n: int) -> str:
+    """按字符截前 n 个，空串兜底。"""
+    s = (text or "").strip()
+    return (s[:n] or "").strip()
+
+
+def _compose_title_from_hint(hint: dict[str, Any]) -> str:
+    """根据 hint['kind'] 分派到不同的起名规则。
+
+    所有子函数都返回最多 ~30 字的可读 title，不要超过 repo 的 128 字符上限。
+    """
+    kind = hint.get("kind", "")
+    if kind == "chat_start_task":
+        return _compose_title_chat(hint)
+    if kind == "chat_edit":
+        return _compose_title_chat_edit(hint)
+    if kind == "button_create_task":
+        return _compose_title_button(hint)
+    # 兜底：message 有就截一下，没有就占位
+    msg = hint.get("message") or ""
+    return _truncate(str(msg), 20) or "新对话"
+
+
+def _compose_title_chat(hint: dict[str, Any]) -> str:
+    """路径 A：对话入口 start_task 意图。"""
+    msg = str(hint.get("message") or "")
+    # 优先用用户输入的前 20 字（这是用户明确表达的创作意图）
+    head = _truncate(msg, 20)
+    if not head:
+        return "商品分析任务"
+    # 已经很短的话就直接用，不加后缀
+    return head if len(head) <= 15 else f"{head} 商品分析"
+
+
+def _compose_title_chat_edit(hint: dict[str, Any]) -> str:
+    """路径 A：对话入口 edit / refine 意图。"""
+    msg = str(hint.get("message") or "")
+    refine = str(hint.get("refine_target") or "")
+    label = _CHAT_REFINE_TARGET_LABEL.get(refine, "")
+    head = _truncate(msg, 12)
+    if label and head:
+        return f"修改{label} · {head}"
+    if label:
+        return f"修改{label}"
+    return _truncate(msg, 20) or "新对话"
+
+
+def _compose_title_button(hint: dict[str, Any]) -> str:
+    """路径 B：按钮直跑 create_task 入口。"""
+    description = str(hint.get("description") or "")
+    product_link = str(hint.get("product_link") or "")
+    filenames = hint.get("image_filenames") or []
+    platform = str(hint.get("platform") or "")
+
+    # 1) 用户填了 description → 首选
+    if description.strip():
+        d = _truncate(description, 20)
+        return d if len(d) <= 15 else f"{d} 商品分析"
+
+    # 2) 从商品链接抽 SKU/品牌（简单规则：取最后一段 path 里的非 hash 串）
+    if product_link:
+        tail = product_link.rstrip("/").rsplit("/", 1)[-1]
+        if tail and not tail.startswith("?"):
+            # 去掉常见扩展名和 hash 串
+            sku = tail.split("?")[0].split("#")[0]
+            sku = sku.replace(".html", "").replace(".htm", "")
+            sku = _truncate(sku, 16)
+            if sku and len(sku) >= 3:
+                return f"{sku} 商品分析"
+
+    # 3) 从图片 filename 抽主名
+    if filenames:
+        # 取第一张的主文件名，去扩展名
+        name = str(filenames[0]).rsplit(".", 1)[0] if filenames else ""
+        name = _truncate(name, 16)
+        if name:
+            return f"{name} 商品分析"
+
+    # 4) 兜底：平台 + 商拍任务
+    p_label = {"taobao": "淘宝", "jd": "京东", "douyin": "抖音"}.get(platform, platform)
+    if p_label:
+        return f"{p_label}商拍任务"
+    return "商拍任务"

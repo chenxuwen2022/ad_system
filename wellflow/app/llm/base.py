@@ -62,7 +62,19 @@ class ImageGenResult:
         return [self]
 
 
-def _extract_error_message(status_code: int, text: str) -> str:
+class InsufficientCreditsError(RuntimeError):
+    """上游支付额度不足（HTTP 402 / insufficient_credits）。
+
+    所有调用链最终会被 API 层捕获，返回给前端 HTTP 402 + 上游原始 message，
+    而不是笼统的 502 / 全部生图失败。
+    """
+
+    def __init__(self, upstream_message: str = "上游账户额度不足，请联系管理员充值"):
+        super().__init__(upstream_message)
+        self.upstream_message = upstream_message
+
+
+def extract_error_message(status_code: int, text: str) -> str:
     """从网关错误响应里提取干净的 message，供前端原封不动展示。
 
     常见结构：{"error":{"message":"...","type":"..."}} 或 {"detail":"..."}。
@@ -138,7 +150,23 @@ class BaseLLMClient(ABC):
         """多模态 VLM 流式调用。
 
         Returns:
-            异步迭代器，每次 yield 一个 str（delta 文本片段）。
+            异步迭代器，每次 yield {"type": "thinking"|"content", "text": "..."}。
+        """
+        ...
+
+    @abstractmethod
+    async def stream_chat(
+        self,
+        system: str,
+        user: str,
+        reasoning_effort: str = "close",
+        response_format: dict[str, Any] | None = None,
+        extra_params: dict[str, Any] | None = None,
+    ) -> Any:
+        """纯文本流式调用（不含图片）。
+
+        Returns:
+            异步迭代器，每次 yield {"type": "thinking"|"content", "text": "..."}。
         """
         ...
 
@@ -301,12 +329,14 @@ class BaseLLMClient(ABC):
                     if resp.status_code >= 400:
                         err_body = resp.text[:500]
                         print(f"[llm] /v1/responses HTTP {resp.status_code}: {err_body}", flush=True)
+                        if resp.status_code == 402:
+                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text))
                         if resp.status_code in (400, 401, 403, 404):
-                            raise RuntimeError(_extract_error_message(resp.status_code, resp.text))
+                            raise RuntimeError(extract_error_message(resp.status_code, resp.text))
                         if resp.status_code in (429, 500, 502, 503, 504) and attempt <= MAX_RETRIES:
                             await _asyncio.sleep(1.0 * attempt)
                             continue
-                        raise RuntimeError(_extract_error_message(resp.status_code, resp.text))
+                        raise RuntimeError(extract_error_message(resp.status_code, resp.text))
 
                     data = resp.json()
                     break
@@ -409,6 +439,9 @@ class BaseLLMClient(ABC):
 
                     if resp.status_code >= 400:
                         err_body = resp.text[:500]
+                        if resp.status_code == 402:
+                            print(f"[llm-generations] ❌ HTTP 402 (credits): {err_body}", flush=True)
+                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text))
                         if resp.status_code == 429 and attempt <= RATE_LIMIT_RETRIES:
                             wait = RATE_LIMIT_BACKOFF[min(attempt - 1, len(RATE_LIMIT_BACKOFF) - 1)]
                             print(f"[llm-generations] ⚠️ 429 限流 (attempt {attempt}/{RATE_LIMIT_RETRIES + 1}): "
@@ -419,7 +452,7 @@ class BaseLLMClient(ABC):
                             await _asyncio.sleep(1.0 * attempt)
                             continue
                         print(f"[llm-generations] ❌ HTTP {resp.status_code}: {err_body}", flush=True)
-                        raise RuntimeError(_extract_error_message(resp.status_code, resp.text))
+                        raise RuntimeError(extract_error_message(resp.status_code, resp.text))
 
                     data = resp.json()
                     break
@@ -533,6 +566,8 @@ class BaseLLMClient(ABC):
                     if resp.status_code >= 400:
                         err_body = resp.text[:500]
                         print(f"[llm-edits] ❌ HTTP {resp.status_code}: {err_body}", flush=True)
+                        if resp.status_code == 402:
+                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text))
                         if resp.status_code in RETRYABLE_STATUS and attempt <= MAX_RETRIES:
                             await _asyncio.sleep(1.0 * attempt)
                             continue

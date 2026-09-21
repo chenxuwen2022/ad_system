@@ -1,15 +1,20 @@
 from contextlib import contextmanager
+from typing import AsyncIterator
 
 from sqlalchemy import create_engine, event
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from wellflow.app.config import settings
 
+# ---------------------------------------------------------------------------
+# 同步 engine —— ad 系统 + wellflow 其他 CRUD 用（sync Session）
+# ---------------------------------------------------------------------------
 engine = create_engine(
     settings.database_url,
     pool_pre_ping=True,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=5,
+    max_overflow=10,
 )
 
 
@@ -33,18 +38,44 @@ def _set_pg_timezone(dbapi_connection, connection_record):
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+# ---------------------------------------------------------------------------
+# 异步 engine —— 给 conversations / chat / SSE 这些并发敏感的端点用
+# （独立于 sync engine，ad 系统不受影响）
+# ---------------------------------------------------------------------------
+async_engine: AsyncEngine = create_async_engine(
+    settings.database_url_async,
+    pool_pre_ping=True,
+    pool_size=5,
+    max_overflow=10,
+    connect_args={"server_settings": {"timezone": "UTC"}},  # asyncpg 侧设置会话时区
+)
+
+AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
+    async_engine,
+    autocommit=False,
+    autoflush=False,
+    expire_on_commit=False,
+)
+
+
 class Base(DeclarativeBase):
     """SQLAlchemy 2.x 声明式基类"""
     pass
 
 
 def get_db():
-    """FastAPI 依赖注入：获取数据库会话"""
+    """FastAPI 依赖注入：获取同步数据库会话（给 sync def 接口用）"""
     db = SessionLocal()
     try:
         yield db
     finally:
         db.close()
+
+
+async def get_async_db() -> AsyncIterator[AsyncSession]:
+    """FastAPI 依赖注入：获取异步数据库会话（给 async def 接口用）"""
+    async with AsyncSessionLocal() as db:
+        yield db
 
 
 @contextmanager

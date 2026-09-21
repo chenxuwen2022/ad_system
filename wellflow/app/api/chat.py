@@ -537,41 +537,66 @@ async def chat(
     )
 
     # ------------------------------------------------------------------
-    # 意图分类（全 LLM，唯一入口）
+    # 🛑 LLM 意图分类短路：无任务 + 无文字消息 → 必定是 start_task
+    #
+    # 场景：用户新建任务时只传了图片（产品图），前端没发任何文字。
+    # 这时根本不需要调 LLM 意图分类器——没有文字可供分析，
+    # 唯一合理的意图就是 start_task。省掉一次 LLM 调用 + 几百 ms 延迟。
+    #
+    # 判定条件（必须同时满足）：
+    #   - has_task=False （真的没任务，不是"任务未启动"）
+    #   - message 为空 / 全空白（strip 后长度 == 0）
+    #   - len(images) > 0（有图片，图片已在 classify_images 里分流完）
     # ------------------------------------------------------------------
-    _state_brief = summarize_graph_state(graph_state)
-    # 日志打印：结构摘要（一眼看清各 node 产物状态）+ 完整 brief 仅在 debug 时打
-    # 旧版 print(_state_brief[:300]) 会全是 node1 报告正文，c2/c3/c4 阶段完全看不到当前产物
-    if graph_state:
-        _sn1 = graph_state.get("node1") or {}
-        _sn2 = graph_state.get("node2") or {}
-        _sn3 = graph_state.get("node3") or {}
-        _sn4 = graph_state.get("node4") or {}
-        _n1_tag = f"locked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("report_locked") else f"unlocked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("product_insight") else "none"
-        _schemes = _sn2.get("schemes") or []
-        _sel = _sn2.get("selected_scheme_indices") or []
-        _n2_tag = f"{len(_schemes)}套(已选{_sel})" if _schemes else "none"
-        _prompts = _sn3.get("generate_prompts") or []
-        _details = _sn3.get("prompts_detail") or []
-        _n3_tag = f"{len(_prompts)}条" if _prompts else f"{len(_details)}条(detail)" if _details else "none"
-        _outputs = _sn4.get("outputs") or []
-        _works = _sn4.get("work_items") or []
-        _n4_tag = f"{len(_outputs)}张" if _outputs else f"进行中{sum(1 for w in _works if isinstance(w,dict) and w.get('status')=='done')}/{len(_works)}" if _works else "none"
-        print(f"[chat] 📋 state 结构摘要: node1={_n1_tag}, node2={_n2_tag}, node3={_n3_tag}, node4={_n4_tag} | current_node={current_node}", flush=True)
+    if (not has_task) and (not message) and images:
+        print(f"[chat] 🛑 意图分类短路：无任务 + 无文字 + 图片={len(images)}张 → 直接 start_task（跳过 LLM）", flush=True)
+        intent_result: dict[str, Any] = {
+            "intent": "start_task",
+            "reasoning": "无任务 + 无文字消息 + 有图片 → 必然新建任务，短路跳过 LLM",
+            "refine_target": None,
+            "refine_instruction": None,
+            "selected_indices": None,
+            "blocked_step": None,
+            "_short_circuited": True,  # 调试标记：下游 dispatch 可忽略
+        }
+        intent = "start_task"
     else:
-        print(f"[chat] 📋 state 结构摘要: graph_state=None | current_node={current_node}", flush=True)
-    intent_result = await classify(
-        message,
-        has_task=has_task,
-        current_node=current_node,
-        completed_mask=completed_mask,
-        has_images=len(images) > 0,
-        selected_finetuning_target=selected_finetuning_target,
-        graph_state_brief=_state_brief,
-    )
-    intent = intent_result.get("intent", "chat_outside")
-    print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
-          f"reason={intent_result.get('reasoning', '')[:80]} | user_msg={message[:60]}", flush=True)
+        # ------------------------------------------------------------------
+        # 意图分类（全 LLM，唯一入口）
+        # ------------------------------------------------------------------
+        _state_brief = summarize_graph_state(graph_state)
+        # 日志打印：结构摘要（一眼看清各 node 产物状态）+ 完整 brief 仅在 debug 时打
+        # 旧版 print(_state_brief[:300]) 会全是 node1 报告正文，c2/c3/c4 阶段完全看不到当前产物
+        if graph_state:
+            _sn1 = graph_state.get("node1") or {}
+            _sn2 = graph_state.get("node2") or {}
+            _sn3 = graph_state.get("node3") or {}
+            _sn4 = graph_state.get("node4") or {}
+            _n1_tag = f"locked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("report_locked") else f"unlocked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("product_insight") else "none"
+            _schemes = _sn2.get("schemes") or []
+            _sel = _sn2.get("selected_scheme_indices") or []
+            _n2_tag = f"{len(_schemes)}套(已选{_sel})" if _schemes else "none"
+            _prompts = _sn3.get("generate_prompts") or []
+            _details = _sn3.get("prompts_detail") or []
+            _n3_tag = f"{len(_prompts)}条" if _prompts else f"{len(_details)}条(detail)" if _details else "none"
+            _outputs = _sn4.get("outputs") or []
+            _works = _sn4.get("work_items") or []
+            _n4_tag = f"{len(_outputs)}张" if _outputs else f"进行中{sum(1 for w in _works if isinstance(w,dict) and w.get('status')=='done')}/{len(_works)}" if _works else "none"
+            print(f"[chat] 📋 state 结构摘要: node1={_n1_tag}, node2={_n2_tag}, node3={_n3_tag}, node4={_n4_tag} | current_node={current_node}", flush=True)
+        else:
+            print(f"[chat] 📋 state 结构摘要: graph_state=None | current_node={current_node}", flush=True)
+        intent_result = await classify(
+            message,
+            has_task=has_task,
+            current_node=current_node,
+            completed_mask=completed_mask,
+            has_images=len(images) > 0,
+            selected_finetuning_target=selected_finetuning_target,
+            graph_state_brief=_state_brief,
+        )
+        intent = intent_result.get("intent", "chat_outside")
+        print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
+              f"reason={intent_result.get('reasoning', '')[:80]} | user_msg={message[:60]}", flush=True)
 
     # ------------------------------------------------------------------
     # persist 辅助函数 —— 必须在 node1 锁定守卫之前定义，
@@ -612,8 +637,10 @@ async def chat(
 
         识别的事件类型：
           - event: message       → data.text
-          - event: resume_ack    → data.message
           - event: error         → data.message / data.error
+
+        注意：resume_ack 是纯进度 ack（"好的，正在继续执行…"这类），
+        只用于 SSE 即时反馈，**不持久化**到对话历史——否则会在继续后留下误导性消息。
         """
         try:
             lines = raw_sse.splitlines()
@@ -633,8 +660,6 @@ async def chat(
         text = ""
         if ev_type == "message":
             text = str(data.get("text") or "").strip()
-        elif ev_type == "resume_ack":
-            text = str(data.get("message") or "").strip()
         elif ev_type == "error":
             text = str(data.get("message") or data.get("error") or "").strip()
         if text:
@@ -711,19 +736,31 @@ async def chat(
 
     # start_task → 新建 conversation（优先用前端传的，否则后端生成）；否则用已解析的
     if intent == "start_task":
+        # 构造 title_hint —— 让 repo 在 create 时根据意图生成真实 title
+        _title_hint = {
+            "kind": "chat_start_task",
+            "message": message,
+            "intent": intent,
+        }
         # 优先复用前端传的 conversation_id（前端用 createId() 生成，全局唯一）
         if not conv_id_for_this_turn:
             conv_id_for_this_turn = _short_uuid()
-            _title = message.strip()[:30] or "新对话"
-            conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
-            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title={_title}", flush=True)
+            conv_repo.create(
+                conversation_id=conv_id_for_this_turn,
+                title="新对话",  # 占位，repo 会用 hint 覆盖
+                title_hint=_title_hint,
+            )
+            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title_hint=start_task", flush=True)
         else:
             # 前端传了但还没建（首次 start_task，前端 generate 的 id 后端还没记录）
             # 用 resolve() 兼容 short_id / 完整 UUID
             existing = conv_repo.resolve(conv_id_for_this_turn)
             if not existing:
-                _title = message.strip()[:30] or "新对话"
-                conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
+                conv_repo.create(
+                    conversation_id=conv_id_for_this_turn,
+                    title="新对话",
+                    title_hint=_title_hint,
+                )
                 print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
 
     # 归一化：确保 conv_id_for_this_turn 是完整主键（short_id / UUID 都能解析）
@@ -772,6 +809,21 @@ async def chat(
         # 当成 event_generator 的局部变量，遮蔽外层闭包 intent，导致
         # 前面 `if intent == "model_pool_unavailable"` 触发 UnboundLocalError。
         nonlocal intent
+
+        # ── conversation title 推送 ──
+        # 新建 conversation 后 repo 已经生成真实 title，推给前端让侧边栏实时更新
+        # 只推一次（不影响后续任何 early-return 分支）
+        if conv_id_for_this_turn:
+            try:
+                _cur = conv_repo.resolve(conv_id_for_this_turn)
+                if _cur and _cur.title and _cur.title not in ("新对话", ""):
+                    yield _sse("conversation_title", {
+                        "conversation_id": _cur.conversation_id,
+                        "title": _cur.title,
+                    })
+                    print(f"[chat] 📢 conversation_title={_cur.title}", flush=True)
+            except Exception as exc:
+                print(f"[chat] ⚠️ conversation_title 推送失败（不阻断）: {exc}", flush=True)
 
         # ── 模型池全挂：给用户准确的信息，不要误导为闲聊 ──
         if intent == "model_pool_unavailable":
@@ -982,16 +1034,19 @@ async def chat(
                                 "schemes": _node2.get("schemes"),
                                 "selected_scheme_indices": _node2.get("selected_scheme_indices"),
                                 "scheme_raw": _node2.get("scheme_raw"),
+                                "thinking_text": _node2.get("thinking_text"),
                             })
                         elif _current_after == "c3":
                             _interrupt.update({
                                 "generate_prompts": _node3.get("generate_prompts"),
                                 "prompts_detail": _node3.get("prompts_detail"),
+                                "thinking_text": _node3.get("thinking_text"),
                             })
                         elif _current_after == "c4":
                             _interrupt.update({
                                 "outputs": _node4.get("outputs"),
                                 "failed_items": _node4.get("failed_items"),
+                                "thinking_text": _node4.get("thinking_text"),
                             })
                         print(f"[chat] 📤 stale 恢复后 SSE payload node={_current_after}", flush=True)
 

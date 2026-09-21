@@ -46,11 +46,16 @@ def persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str)
             event_type = f"graph_interrupt_{node}"
 
             # 按 node 类型提取要持久化的产物字段（去掉 hint/schema 这种非产物字段）
+            # 💭 thinking_text 必须进白名单——前端 /api/conversations/{id}/timeline
+            # 是从 task_event 表读 payload_json 恢复会话的，漏了就刷新后丢失思考过程
             payload_fields = {
-                "c1": ["report"],
-                "c2": ["schemes", "scheme_raw", "generate_prompts"],
-                "c3": ["generate_prompts", "prompts_detail", "prompt_raw"],
-                "c4": ["outputs"],
+                "c1": ["report", "report_sections", "product_insight",
+                       "thinking_text", "report_locked", "report_hash"],
+                "c2": ["schemes", "scheme_raw", "generate_prompts",
+                       "selected_scheme_indices", "thinking_text"],
+                "c3": ["generate_prompts", "prompts_detail", "prompt_raw",
+                       "thinking_text", "per_prompt_size", "image_model"],
+                "c4": ["outputs", "failed_items", "thinking_text"],
             }.get(node, [])
             payload = {k: v for k, v in interrupt_value.items() if k in payload_fields}
             # 总是带上 phase + hint（恢复时有用）
