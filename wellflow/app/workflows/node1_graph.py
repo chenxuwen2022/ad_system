@@ -101,9 +101,9 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     # --- Step 3: 推 phase = 调用 VLM ---
     publish(task_id, "phase", {"phase": "node1_vlm_analyzing"})
 
-    # --- Step 4: 统一流式 + reasoning_effort=low（Node1/Node2/Node3 一致） ---
-    # low：开启 thinking 但推理成本可控，逐 token 推 SSE
-    effort = "low"
+    # --- Step 4: 统一流式 + reasoning_effort（从 settings 读取，Node1/Node2/Node3 各自可配） ---
+    from wellflow.app.config import settings as _settings
+    effort = _settings.node1_reasoning_effort
 
     t0 = time.time()
     full_report_parts: list[str] = []

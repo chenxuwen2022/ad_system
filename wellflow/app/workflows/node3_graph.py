@@ -102,7 +102,9 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
           f"product_images={len(product_images)}, "
           f"model_images={len(model_images)}(paths={len(model_image_paths)})", flush=True)
 
-    effort = "low"   # Node1/Node2/Node3 统一 low：开启 thinking 但推理成本可控
+    # reasoning_effort 从 settings.node3_reasoning_effort 读取（默认 low，可配）
+    from wellflow.app.config import settings as _settings
+    effort = _settings.node3_reasoning_effort
 
     t_total = time.time()
     all_prompts: list[str] = []

@@ -109,7 +109,6 @@ def persist_outputs(task_id: str, node4: dict[str, Any]) -> None:
             "shot_id": wid,
             "prompt": o.get("prompt"),
             "prompt_index": o.get("prompt_index"),
-            "variant_index": o.get("variant_index"),
         })
 
     # 给 timeline 用的摘要（不重复存原始图片 URL——那在 task_image 表里有）

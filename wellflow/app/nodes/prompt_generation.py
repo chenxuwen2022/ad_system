@@ -235,7 +235,7 @@ async def stream_generate_prompt(
     from wellflow.app.config import settings
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
 
     system_prompt = GENERATE_IMAGE_PROMPT
 
@@ -326,7 +326,7 @@ async def generate_prompt_for_scheme(
     from wellflow.app.config import settings
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
 
     system_prompt = GENERATE_IMAGE_PROMPT
 

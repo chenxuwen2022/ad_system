@@ -427,14 +427,14 @@ async def optimize_prompt(
                 system=system,
                 user=user_text,
                 image_uris=ref_data_uris,
-                reasoning_effort="close",
+                reasoning_effort=settings.text_reasoning_effort,
             )
         else:
             resp, used_model = await pool.chat(
                 system=system,
                 user=user_text,
                 temperature=0.3,
-                reasoning_effort="close",
+                reasoning_effort=settings.text_reasoning_effort,
             )
 
         final_prompt = (resp.content or "").strip()
@@ -712,7 +712,7 @@ async def auto_tag_mannequin(
             user=user_text,
             image_uris=data_uris,
             response_format={"type": "json_object"},
-            reasoning_effort="close",
+            reasoning_effort=settings.text_reasoning_effort,
         )
 
         content = (resp.content or "").strip()

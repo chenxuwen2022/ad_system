@@ -1089,7 +1089,6 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             item["shot_id"] = img.shot_id
             item["prompt"] = img.prompt
             item["prompt_index"] = img.prompt_index
-            item["variant_index"] = img.variant_index
             output_images.append(item)
 
     # 🔍 thinking_text 诊断日志：三处来源的长度全打出来，定位"刷新后 thinking 丢失"根因

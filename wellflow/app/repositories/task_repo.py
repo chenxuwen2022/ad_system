@@ -75,7 +75,7 @@ class TaskRepo:
         images 每项字段：
           - image_type: "model" | "output"（必填）
           - storage_uri: 相对路径或远程 url（必填）
-          - shot_id / prompt / prompt_index / variant_index（output 可选）
+          - shot_id / prompt / prompt_index（output 可选）
         """
         ids: list[str] = []
         for img in images:
@@ -88,7 +88,6 @@ class TaskRepo:
                 shot_id=img.get("shot_id"),
                 prompt=img.get("prompt"),
                 prompt_index=img.get("prompt_index"),
-                variant_index=img.get("variant_index"),
             )
             self.db.add(obj)
             ids.append(image_id)

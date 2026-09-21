@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import json
 import re
+
+from wellflow.app.config import settings
 from typing import Any, Literal
 from wellflow.app.prompt.constant import CLASSIFIER_SYSTEM
 
@@ -344,7 +346,7 @@ async def _classify_via_llm(
         user=user_prompt,
         response_format={"type": "json_object"},
         temperature=0.2,
-        reasoning_effort="close",
+        reasoning_effort=settings.text_reasoning_effort,
     )
     used_model = CLASSIFIER_MODEL
 

@@ -22,6 +22,8 @@ import json as json_mod
 import time
 from typing import Any
 
+from wellflow.app.config import settings
+
 
 # ---------------------------------------------------------------------------
 # Node1 refine：商品识别报告 增量修改（Markdown 文本）
@@ -107,7 +109,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     async for item in client.stream_chat(
         system=REFINE_NODE1_REPORT_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="close",
+        reasoning_effort=settings.text_reasoning_effort,
     ):
         if not item:
             continue
@@ -327,7 +329,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     async for item in client.stream_chat(
         system=REFINE_NODE2_SCHEMES_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="close",
+        reasoning_effort=settings.text_reasoning_effort,
     ):
         if not item:
             continue
@@ -615,7 +617,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     async for item in client.stream_chat(
         system=REFINE_NODE3_PROMPTS_SYSTEM_PROMPT,
         user=user_message,
-        reasoning_effort="close",
+        reasoning_effort=settings.text_reasoning_effort,
     ):
         if not item:
             continue

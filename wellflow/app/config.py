@@ -28,17 +28,23 @@ class Settings(BaseSettings):
     model_pool_cooldown: float = 30.0               # 熔断后冷却自动恢复（秒）
 
 
-    # ====== Node1 ======
-    llm_reasoning_effort: str = "low"   # Node1/Node2/Node3 统一 low（开启 thinking 但推理成本可控，逐 token 推 SSE）
+    # ====== Reasoning Effort（全项目统一配置，方便查看/调优）======
+    # Node1 商品识别 / Node2 方案规划 / Node3 提示词生成：VLM 多模态，
+    # 默认 low（开启 thinking 但推理成本可控，逐 token 推 SSE）。
+    # 可选值：close / low / medium / high
+    node1_reasoning_effort: str = "low"
+    node2_reasoning_effort: str = "low"
+    node3_reasoning_effort: str = "low"
+    # 意图识别 / refine 增量编辑 / outfit 抠图 / mannequins 模特图：
+    # 纯文本 LLM，不需要 thinking（省预算 + 省延迟），默认 close。
+    text_reasoning_effort: str = "close"
 
     # ====== Node2 ======
-    node2_reasoning_effort: str = "low"
     # Node2 默认生成 3 套风格迥异的候选方案，供 C2 阶段让用户挑选 1 套确认。
     # 最终进入 Node3 时只保留用户选中的那 1 套，围绕它生成 5 份差异化 prompt。
     node2_scheme_count_default: int = 3
 
     # ====== Node3 ======
-    node3_reasoning_effort: str = "low"
     # C2 用户锁定 1 套方案后，Node3 围绕这一套生成几份差异化 prompt（每份 = 1 张生图）。
     # 新链路下固定为 5 —— C3 用户从 5 份里挑 1~5 份生图。
     node3_variants_per_scheme_default: int = 5

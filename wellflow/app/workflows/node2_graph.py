@@ -70,8 +70,9 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
           f"user_requirement={'有' if user_requirement else '无'}, "
           f"product_images={len(product_images)}", flush=True)
 
-    # 统一 low —— Node1/Node2/Node3 默认 low，保持 thinking 开启但推理成本可控
-    effort = "low"
+    # reasoning_effort 从 settings.node2_reasoning_effort 读取（默认 low，可配）
+    from wellflow.app.config import settings as _settings
+    effort = _settings.node2_reasoning_effort
 
     t0 = time.time()
     content_parts: list[str] = []

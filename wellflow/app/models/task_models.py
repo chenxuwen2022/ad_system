@@ -90,7 +90,6 @@ class TaskImage(Base):
     shot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # output 用，= work_item_id
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)          # output 用
     prompt_index: Mapped[int | None] = mapped_column(Integer, nullable=True) # output 用
-    variant_index: Mapped[int | None] = mapped_column(Integer, nullable=True)# output 用
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 

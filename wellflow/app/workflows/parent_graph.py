@@ -41,6 +41,8 @@ Phase 枚举（前端 PHASE_LABELS 对齐）：
   → node2_plan_scheme → c2_select → node3_prompt_gen → c3_confirm
   → node4_prepare → node4_generation → node4_archive → c4_review → done/failed
   + node1_refining / node2_refining / node3_refining（refine 中间态）
+
+Node4 子图内部已合并为 2 节点：prepare_work_items → run_generation（含 archive 语义）
 """
 
 from __future__ import annotations
