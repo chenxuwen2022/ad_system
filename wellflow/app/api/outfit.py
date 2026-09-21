@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -699,9 +700,9 @@ async def ai_extract(body: OutfitExtractRequest, db: Session = Depends(get_db)):
     响应 {outfit_id, task_id},前端关弹窗回列表,轮询 ai-status 看进度。
     """
 
-    raw = _read_original_image(body.original_uri)
+    raw = await run_in_threadpool(_read_original_image, body.original_uri)
 
-    _sweep_stale_tasks()
+    await run_in_threadpool(_sweep_stale_tasks)
 
     mode = body.mode or "real"  # 显式传 mode 优先;默认真实识别
     sid = body.session_id or f"outfit_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
@@ -821,7 +822,7 @@ async def flatlay(body: OutfitFlatlayRequest):
             raise HTTPException(400, f"单品图不存在: {uri}")
 
     try:
-        png_bytes = _compose_flatlay(body.items)
+        png_bytes = await run_in_threadpool(_compose_flatlay, body.items)
     except ValueError as e:
         raise HTTPException(400, str(e))
     except ImportError:
@@ -1034,11 +1035,11 @@ async def generate(body: OutfitGenerateRequest, db: Session = Depends(get_db)):
     outfit_id 传了=选件后生成:更新已有拆解行(必须 pending_select),不新建;
     不传=一键新建(auto 模式保留,前端不挂入口)。
     """
-    raw = _read_original_image(body.original_uri)
+    raw = await run_in_threadpool(_read_original_image, body.original_uri)
     if not body.items and (body.mode == "items" or body.outfit_id is not None):
         raise HTTPException(400, "必须传 items 单品清单")
 
-    _sweep_stale_tasks()
+    await run_in_threadpool(_sweep_stale_tasks)
 
     sid = body.session_id or f"outfit_{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
     items_db = [it.model_dump() for it in body.items] if body.items else []
