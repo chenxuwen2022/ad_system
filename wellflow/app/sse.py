@@ -27,16 +27,14 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from wellflow.app.config import settings
 from wellflow.app.database import get_db
 from wellflow.app.repositories.task_repo import TaskRepo
 
 
 router = APIRouter(tags=["SSE"])
 
-# DB 兜底间隔（秒）——事件驱动超过这个时间没收到事件才查一次 DB
-_DB_FALLBACK_INTERVAL = 30
-# SSE heartbeat 间隔（秒）——防止代理掐连接
-_HEARTBEAT_INTERVAL = 25
+# DB 兜底间隔 / heartbeat 间隔统一在 config.py（sse_db_fallback_interval_seconds / sse_heartbeat_interval_seconds）
 
 
 @router.get("/api/tasks/{task_id}/stream")
@@ -77,9 +75,8 @@ async def stream_task(task_id: str, request: Request, db: Session = Depends(get_
                 break
 
             try:
-                # 阻塞等事件，最长 _DB_FALLBACK_INTERVAL 秒
-                # asyncio.wait_for 实现超时
-                event = await asyncio.wait_for(q.get(), timeout=_DB_FALLBACK_INTERVAL)
+                # 阻塞等事件，最长 DB fallback 间隔秒
+                event = await asyncio.wait_for(q.get(), timeout=settings.sse_db_fallback_interval_seconds)
                 event_type = event.get("type")
                 event_data = event.get("data", {})
                 print(f"[sse] task={task_id} ← queue got type={event_type}", flush=True)
@@ -107,6 +104,14 @@ async def stream_task(task_id: str, request: Request, db: Session = Depends(get_
 
                 elif event_type == "report_chunk_done":
                     yield _sse("report_chunk_done", event_data)
+
+                elif event_type == "prompt_chunk":
+                    # Node3 生图 prompt 流式输出片段
+                    yield _sse("prompt_chunk", event_data)
+
+                elif event_type == "prompt_chunk_done":
+                    # Node3 单个 variant 的 prompt 完整生成完成
+                    yield _sse("prompt_chunk_done", event_data)
 
                 elif event_type == "error":
                     yield _sse("error", {"phase": "failed", "message": event_data.get("message", "")})

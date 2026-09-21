@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, String, Integer, DateTime
+from sqlalchemy import create_engine, Column, String, Integer, DateTime, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 import datetime
 import os
@@ -62,6 +62,7 @@ class MaterialLaunchDB(Base):
     file_path = Column(String, nullable=False, index=True)
     status = Column(String, nullable=False, default="success")  # success / fail
     mode = Column(String, nullable=False, default="real")       # real / test
+    biz_status = Column(String, nullable=False, default="")     # 业务状态：待审核/审核驳回/通过-待投放/直播间已投放/商城已投放/已投放商品+直播间/放弃测试
     plan_id = Column(String, nullable=False, default="")
     plan_name = Column(String, nullable=False, default="")
     product_id = Column(String, nullable=False, default="")
@@ -69,8 +70,40 @@ class MaterialLaunchDB(Base):
     create_time = Column(DateTime, default=datetime.datetime.now)
 
 
+# 素材投放业务状态枚举（页面徽标 + 手动标注共用）
+MATERIAL_BIZ_STATUSES = [
+    "待审核",
+    "审核驳回",
+    "通过-待投放",
+    "直播间已投放",
+    "商城已投放",
+    "已投放商品+直播间",
+    "放弃测试",
+]
+
+# 各业务状态 → 徽标样式类（与 upload_routes.py 中 .launch-badge.* 对应）
+MATERIAL_BIZ_STATUS_CLASS = {
+    "待审核": "pending",
+    "审核驳回": "fail",
+    "通过-待投放": "ready",
+    "直播间已投放": "live",
+    "商城已投放": "shop",
+    "已投放商品+直播间": "both",
+    "放弃测试": "abandon",
+}
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # 兼容旧库：material_launch 表补 biz_status 列（SQLite 不支持 IF NOT EXISTS 加列）
+    try:
+        with engine.connect() as conn:
+            cols = [r[1] for r in conn.execute(text("PRAGMA table_info(material_launch)")).fetchall()]
+            if "biz_status" not in cols:
+                conn.execute(text("ALTER TABLE material_launch ADD COLUMN biz_status VARCHAR DEFAULT ''"))
+                conn.commit()
+    except Exception:
+        pass
     # 同时初始化 PostgreSQL 投放记录表（不可用时自动降级，不影响主流程）
     try:
         from ad.pg_db import init_pg_db

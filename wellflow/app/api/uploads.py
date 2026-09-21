@@ -25,16 +25,13 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
 from wellflow.app.api.utils import ok, StandardResponse
+from wellflow.app.config import settings
 from wellflow.app.utils.image_store import save_asset_upload
 
 
 router = APIRouter(prefix="/wellflow/image", tags=["WellFlow 通用上传"])
 
-
-# 常见图片 MIME + 扩展名白名单
-_ALLOWED_MIME_PREFIXES = ("image/",)
-_MAX_FILE_SIZE = 20 * 1024 * 1024  # 单张 20MB
-_MAX_FILES = 20
+# 上传规则统一在 config.py（upload_allowed_mime_prefixes / upload_max_file_size_mb / upload_max_files）
 
 
 class UploadedImageInfo(BaseModel):
@@ -78,23 +75,24 @@ async def upload_images(
     if not files:
         raise HTTPException(400, "files 不能为空")
 
-    if len(files) > _MAX_FILES:
-        raise HTTPException(400, f"单次最多上传 {_MAX_FILES} 张，当前 {len(files)} 张")
+    if len(files) > settings.upload_max_files:
+        raise HTTPException(400, f"单次最多上传 {settings.upload_max_files} 张，当前 {len(files)} 张")
 
     raw_pairs: list[tuple[str, bytes, str | None]] = []
     for f in files:
         # MIME 校验
         content_type = f.content_type or ""
-        if not content_type.startswith(_ALLOWED_MIME_PREFIXES):
+        if not content_type.startswith(settings.upload_allowed_mime_prefixes):
             raise HTTPException(400, f"文件 {f.filename} 不是图片（mime={content_type or '未知'}）")
 
         raw = await f.read()
 
         # 大小校验
-        if len(raw) > _MAX_FILE_SIZE:
+        max_bytes = settings.upload_max_file_size_mb * 1024 * 1024
+        if len(raw) > max_bytes:
             raise HTTPException(
                 400,
-                f"文件 {f.filename} 超过 {_MAX_FILE_SIZE // 1024 // 1024}MB 上限（{len(raw) // 1024 // 1024}MB）",
+                f"文件 {f.filename} 超过 {settings.upload_max_file_size_mb}MB 上限（{len(raw) // 1024 // 1024}MB）",
             )
 
         raw_pairs.append((f.filename or "image", raw, content_type))

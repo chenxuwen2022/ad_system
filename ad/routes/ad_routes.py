@@ -94,8 +94,10 @@ def _save_material_marks(file_path: str, tags):
 def _save_launch_record(file_path: str, status: str, mode: str,
                         plan_id: str = "", plan_name: str = "",
                         product_id: str = "", detail: str = "",
-                        advertiser_id: str = "", budget: float = 0):
+                        advertiser_id: str = "", budget: float = 0,
+                        biz_status: str = ""):
     """记录一次素材投放历史，用于素材库展示投放状态。
+    biz_status：业务状态（待审核/审核驳回/通过-待投放/直播间已投放/商城已投放/已投放商品+直播间/放弃测试）。
     SQLite material_launch（现有功能）+ PostgreSQL launch_record（投放记录表）双写。"""
     if not file_path:
         return
@@ -103,6 +105,7 @@ def _save_launch_record(file_path: str, status: str, mode: str,
     try:
         db.add(MaterialLaunchDB(
             file_path=file_path, status=status, mode=mode,
+            biz_status=biz_status or "",
             plan_id=plan_id or "", plan_name=plan_name or "",
             product_id=product_id or "", detail=(detail or "")[:300],
         ))
@@ -182,7 +185,8 @@ async def ad_launch(req: AdLaunchRequest):
                                 plan_id=req.plan_id or "", plan_name=plan_ref,
                                 product_id=chosen_pid or "",
                                 detail="测试模式模拟投放",
-                                advertiser_id=advertiser_id or "", budget=budget)
+                                advertiser_id=advertiser_id or "", budget=budget,
+                                biz_status="通过-待投放")
             return {
                 "success": True,
                 "test_mode": True,
@@ -236,7 +240,8 @@ async def ad_launch(req: AdLaunchRequest):
             _save_launch_record(req.local_file_path, "success", "real",
                                 plan_id=req.plan_id, product_id=",".join(req.product_ids or []),
                                 detail="已追加到投放计划",
-                                advertiser_id=advertiser_id or "", budget=req.budget or 0)
+                                advertiser_id=advertiser_id or "", budget=req.budget or 0,
+                                biz_status="待审核")
             delete_media_file(req.local_file_path)
         else:
             _save_launch_record(req.local_file_path, "fail", "real",
@@ -463,6 +468,19 @@ async def material_export(material_id: str, advertiser_id: str = ""):
         return {"success": False, "error": str(e)}
 
 
+@router.get("/api/product_style")
+async def product_style(product_id: str, advertiser_id: str = "", refresh: bool = False):
+    """AI 识别商品主图/商详图样式（场景图/模特图/白底图/其他）。
+    每张图结果磁盘缓存 7 天；refresh=true 强制重新识别。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.classify_product_images(product_id, force=bool(refresh))
+        return data
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @router.get("/api/material_style")
 async def material_style(material_id: str, mtype: str = "视频", advertiser_id: str = "", refresh: bool = False):
     """AI 识图打标：判断素材属于 场景图/模特图/白底图/其他（素材库无此字段，用 VLM 识别）。
@@ -472,6 +490,31 @@ async def material_style(material_id: str, mtype: str = "视频", advertiser_id:
         svc = DouYinAdService(advertiser_id=aid)
         data = svc.classify_material_style(material_id, mtype=mtype, force=bool(refresh))
         return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/audience_profile")
+async def audience_profile(img_url: str, label: str = "素材图", advertiser_id: str = "", refresh: bool = False):
+    """AI 受众画像：对单张图（投流素材图/商品主图/商详图）推断目标受众画像。
+    输出 性别/年龄段/地域/兴趣标签/消费场景/一句话画像，磁盘缓存 7 天。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.classify_image_audience(img_url, label=label, force=bool(refresh))
+        return data
+    except Exception as e:
+        return {"success": False, "label": label, "error": str(e)}
+
+
+@router.get("/api/product_audience")
+async def product_audience(product_id: str, advertiser_id: str = "", refresh: bool = False):
+    """AI 受众画像：对商品主图 + 商详图逐张分析（去重，最多 5 张）。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.classify_product_audience(product_id, force=bool(refresh))
+        return data
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -508,6 +551,54 @@ async def list_products(advertiser_id: str = "", refresh: bool = False):
             p["material_count"] = len(mids)
             p["has_materials"] = len(mids) > 0
         return {"success": True, "data": products}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/product/detail")
+async def product_detail(advertiser_id: str = "", product_id: str = "", refresh: bool = False):
+    """返回单个商品的完整信息：主图、商详图、价格、库存、销量等。
+    从商品列表缓存中取（秒级），refresh=true 强制从千川重拉。"""
+    try:
+        if not product_id:
+            return {"success": False, "error": "缺少 product_id 参数"}
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        products = svc.get_available_products(force=refresh)
+        for p in products:
+            if str(p.get("id")) == str(product_id):
+                # 售价单位：分 → 元
+                p = dict(p)
+                if isinstance(p.get("discount_price"), (int, float)) and p["discount_price"] > 1000:
+                    p["discount_price_yuan"] = round(p["discount_price"] / 100, 2)
+                else:
+                    p["discount_price_yuan"] = p.get("discount_price")
+                return {"success": True, "data": p}
+        return {"success": False, "error": f"未找到商品 {product_id}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/dmp/audiences")
+async def dmp_audiences(advertiser_id: str = "", refresh: bool = False):
+    """DMP 人群包列表：平台精选 + 自定义。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.get_dmp_audiences(force=refresh)
+        return {"success": True, "data": data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/scene/report")
+async def scene_report(advertiser_id: str = "", days: int = 7, refresh: bool = False):
+    """场景维度投放报表（消耗/订单/GMV 按营销场景分布）。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.get_scene_report(days=days, force=refresh)
+        return {"success": True, "data": data}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -689,8 +780,9 @@ async def get_launch_records(advertiser_id: str = "", limit: int = 100):
 
 @router.get("/api/material_launch_status")
 async def get_material_launch_status():
-    """返回全部素材的投放状态汇总：{file_path: {status, mode, count, time, plan_name, product_id, detail}}
-    status 取该素材最近一次投放结果（success/fail），mode 区分真实/测试。"""
+    """返回全部素材的投放状态汇总：{file_path: {status, mode, biz_status, count, time, plan_name, product_id, detail}}
+    status 取该素材最近一次投放结果（success/fail），mode 区分真实/测试；
+    biz_status 业务状态：待审核/审核驳回/通过-待投放/直播间已投放/商城已投放/已投放商品+直播间/放弃测试。"""
     from collections import defaultdict
     db = SessionLocal()
     try:
@@ -703,9 +795,19 @@ async def get_material_launch_status():
                 latest[r.file_path] = r
         out = {}
         for path, r in latest.items():
+            biz = getattr(r, "biz_status", "") or ""
+            if not biz:
+                # 兼容旧记录：按投放结果推导默认业务状态
+                if r.status == "fail":
+                    biz = "审核驳回" if r.mode == "real" else "放弃测试"
+                elif r.mode == "test":
+                    biz = "通过-待投放"
+                else:
+                    biz = "待审核"
             out[path] = {
                 "status": r.status,
                 "mode": r.mode,
+                "biz_status": biz,
                 "count": counts[path],
                 "time": r.create_time.strftime("%m-%d %H:%M") if r.create_time else "",
                 "plan_id": r.plan_id,
@@ -716,3 +818,83 @@ async def get_material_launch_status():
         return {"success": True, "data": out}
     finally:
         db.close()
+
+
+class MaterialBizStatusBody(BaseModel):
+    file_path: str
+    biz_status: str = ""
+
+
+@router.post("/api/material/set_biz_status")
+async def set_material_biz_status(body: MaterialBizStatusBody):
+    """手动设置素材业务投放状态（审核驳回/放弃测试等需人工判断的状态）。"""
+    from ad.db import MATERIAL_BIZ_STATUSES
+    fp = (body.file_path or "").strip()
+    biz = (body.biz_status or "").strip()
+    if not fp:
+        return {"success": False, "error": "缺少素材文件路径"}
+    if biz and biz not in MATERIAL_BIZ_STATUSES:
+        return {"success": False, "error": f"无效状态：{biz}"}
+    db = SessionLocal()
+    try:
+        if biz:
+            db.add(MaterialLaunchDB(
+                file_path=fp, status="success", mode="manual",
+                biz_status=biz, detail="手动标注状态",
+            ))
+        else:
+            # 清空：删除该素材最近一条手动标注记录
+            rows = db.query(MaterialLaunchDB).filter(
+                MaterialLaunchDB.file_path == fp,
+                MaterialLaunchDB.mode == "manual",
+            ).all()
+            for r in rows:
+                db.delete(r)
+        db.commit()
+        return {"success": True, "file_path": fp, "biz_status": biz}
+    finally:
+        db.close()
+
+
+# ---------------- 直播投放效果（千川已授权权限：全域投放数据 + 今日直播数据） ----------------
+@router.get("/api/live/effect")
+async def get_live_effect(advertiser_id: str = "", refresh: bool = False):
+    """直播投放效果汇总：
+    - anchors: 直播间画面投放数据（按主播：展示/观看/CVR/消耗/ROI/GMV/成交）
+    - materials: 直播视频素材数据（素材粒度）
+    - boards: 直播大屏（流量来源观看/GMV + 商品列表GMV/成交/ROI/成本）
+    仅用千川已授权权限，无需「电商直播数据」权限。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.get_live_effect_report(force=bool(refresh))
+        return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+# ---------------- 直播整体数据（千川权限：获取今日直播数据 22100400） ----------------
+@router.get("/api/live/overview")
+async def get_live_overview(advertiser_id: str = "", refresh: bool = False):
+    """直播整体数据（report/live/get，全部流量 自然+营销）：
+    按抖音号返回 消耗/点击/观看/点击商品/下单/成单/GMV/ROI/粉丝/互动等。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.get_live_overview(force=bool(refresh))
+        return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+# ---------------- 直播间商品列表（千川权限：获取今日直播数据 22100400） ----------------
+@router.get("/api/live/room_products")
+async def get_live_room_products(advertiser_id: str = "", refresh: bool = False):
+    """直播间商品列表（today_live/room/product_list/get/）：
+    先从直播大屏拿 room_id，再逐个直播间拉商品（名称/价格/销量/支付/退款/点击/曝光）。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        data = svc.get_live_room_products(force=bool(refresh))
+        return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}

@@ -8,7 +8,7 @@
   - 最多取前 image_max_per_call 张（超出忽略）
   - 所有非 data URI 统一 PIL → JPEG q=90（格式归一化：PNG/WebP/HEIC 等 → JPEG，消除模型 image_url 兼容性问题）
   - 归一化后若仍 > 1.5MB → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
-  - Pillow 不可用时安全降级（原样 base64，风险自负，由 ofox_gateway 重试 + 上层错误处理兜底）
+  - Pillow 不可用时安全降级（原样 base64，风险自负，由 newapi_gateway 重试 + 上层错误处理兜底）
 
 用法：
   from wellflow.app.utils.image_store import save_upload, path_to_data_uri, paths_to_data_uris
@@ -34,19 +34,17 @@ from typing import Sequence
 
 
 # ---------------------------------------------------------------------------
-# 压缩策略常量 —— 从 config.settings 统一读取（.env 可覆盖）
+# 压缩策略常量 —— 统一在 config.py（pil_quality_start / pil_quality_min / pil_max_side_fallback）
 # ---------------------------------------------------------------------------
-def _image_constants():
-    """延迟读取，避免模块 import 时 settings 还没初始化。"""
+
+
+def _image_constants() -> dict:
+    """从 settings 抽取图片处理相关常量（集中一处，便于调整）。"""
     from wellflow.app.config import settings
     return {
         "MAX_IMAGES_PER_CALL": settings.image_max_per_call,
         "SINGLE_THRESHOLD_RAW_MB": settings.image_single_compress_threshold_mb,
     }
-
-PIL_MAX_SIDE_FALLBACK = 2800         # 极端兜底：quality=50 仍超限时才收缩长边到这里
-PIL_QUALITY_START = 90               # JPEG 质量起点
-PIL_QUALITY_MIN = 50                 # JPEG 质量下限（低于此值画质不可接受）
 
 
 def _get_upload_dir() -> Path:
@@ -251,7 +249,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
       - 最多取前 image_max_per_call 张（config 里配置）
       - 所有文件路径一律 PIL → JPEG q=90（格式归一化，消除 PNG/WebP 等模型兼容问题）
       - 归一化后若仍 > 1.5MB raw → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
-      - Pillow 不可用时安全降级（原样 base64，风险自负，由 ofox_gateway 重试 + 上层错误处理兜底）
+      - Pillow 不可用时安全降级（原样 base64，风险自负，由 newapi_gateway 重试 + 上层错误处理兜底）
     """
     constants = _image_constants()
     MAX_IMAGES_PER_CALL = constants["MAX_IMAGES_PER_CALL"]
@@ -362,10 +360,15 @@ def _compress_single(raw: bytes, threshold_bytes: int) -> tuple[bytes, int, bool
     Returns:
         (compressed_bytes, final_quality, used_resize)
     """
+    from wellflow.app.config import settings
+    quality_start = settings.pil_quality_start
+    quality_min = settings.pil_quality_min
+    max_side_fallback = settings.pil_max_side_fallback
+
     # 先尝试只降 quality（不 resize）
     best_enc = raw
-    best_q = PIL_QUALITY_START
-    for q in range(PIL_QUALITY_START, PIL_QUALITY_MIN - 1, -10):
+    best_q = quality_start
+    for q in range(quality_start, quality_min - 1, -10):
         try:
             enc, _, _, _ = _pil_compress(raw, quality=q)  # max_side=None
         except Exception as e:
@@ -379,8 +382,8 @@ def _compress_single(raw: bytes, threshold_bytes: int) -> tuple[bytes, int, bool
 
     # quality 降到最低还超限 → 兜底 resize
     try:
-        enc, _, _, _ = _pil_compress(raw, quality=best_q, max_side=PIL_MAX_SIDE_FALLBACK)
-        print(f"[image_store] 🔍 兜底 side={PIL_MAX_SIDE_FALLBACK} q={best_q}: {len(enc)/1024:.0f}KB", flush=True)
+        enc, _, _, _ = _pil_compress(raw, quality=best_q, max_side=max_side_fallback)
+        print(f"[image_store] 🔍 兜底 side={max_side_fallback} q={best_q}: {len(enc)/1024:.0f}KB", flush=True)
         return enc, best_q, True
     except Exception as e:
         print(f"[image_store] ⚠️ PIL resize 失败 ({e})，退回 quality-only 结果", flush=True)

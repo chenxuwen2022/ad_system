@@ -22,6 +22,7 @@ Thumbs.db
 
 # ===== 运行时数据与敏感信息（禁止入库）=====
 .env
+.env.localbak
 *.db
 *.log
 token_store.db

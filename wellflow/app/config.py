@@ -9,40 +9,48 @@ _REPO_ROOT = _PROJECT_ROOT.parent
 
 
 class Settings(BaseSettings):
-    # new-api 中转网关 — 所有 LLM/VLM/生图请求统一走这里
+    # ------------------------------------------------------------------
+    # 网关 —— 统一走 new-api 中转网关（局域网 192.168.110.254）
+    # 业务层所有 VLM / 文本 LLM / 生图请求都经由 new-api，渠道分发由 new-api 后台配置。
+    # ------------------------------------------------------------------
     newapi_base_url: str = "http://192.168.110.254/v1"
     newapi_api_key: str | None = None              # ← .env 提供
+    newapi_admin_access_token: str | None = None    # 管理员面板 PAT，不是模型调用 API Key
 
-    # 通用 VLM 模型轮询池 —— Node1/2/3 + 意图识别 + 模特打标 全部走这里
-    model_pool_domestic_models: list[str] = [
-        "volcengine/doubao-seed-1-6-flash",
-        "deepseek/deepseek-v4.1-flash",
-        "qwen/qwen3.8-flash",
-        "z-ai/glm-5.3-flash",
-        "deepseek/deepseek-v4-flash-0731",
-    ]
-    model_pool_overseas_fallback: str = "google/gemini-3.7-flash"
+    # ====== new-api 渠道 ID ======
+    # LLM / VLM / text 模型统一走这个渠道拉列表 + 分发（Node1/Node2/Node3/意图识别/refine/outfit/mannequins 全部继承）
+    # Node4 生图渠道单独配 node4_image_channel_id（语义不同，不要合并）
+    llm_channel_id: int = 4
+
+    # 模型池熔断参数（模型列表本身由 new-api /models?channel_id=llm_channel_id 动态获取）
     model_pool_fail_threshold: int = 2              # 连续 2 次失败熔断
     model_pool_fail_window: float = 10.0            # 失败统计窗口（秒）
     model_pool_cooldown: float = 30.0               # 熔断后冷却自动恢复（秒）
 
 
     # ====== Node1 ======
-    llm_reasoning_effort: str | None = "medium"   # Node1 商品识别需要深度思考
-    http_proxy_url: str | None = "http://127.0.0.1:7890"  # Node1 调研 tools（web_search / competitor / trend）走代理
+    llm_reasoning_effort: str = "low"   # Node1/Node2/Node3 统一 low（开启 thinking 但推理成本可控，逐 token 推 SSE）
 
     # ====== Node2 ======
-    node2_reasoning_effort: str | None = "none"   # Node2 生成方案，关 Deep Thinking 但走流式
-    node2_prompt_count_default: int = 3       # Node2 生成提示词数量（默认 3，前端 C1 可覆盖）
+    node2_reasoning_effort: str = "low"
+    # Node2 默认生成 3 套风格迥异的候选方案，供 C2 阶段让用户挑选 1 套确认。
+    # 最终进入 Node3 时只保留用户选中的那 1 套，围绕它生成 5 份差异化 prompt。
+    node2_scheme_count_default: int = 3
 
     # ====== Node3 ======
-    node3_reasoning_effort: str | None = "none"   # Node3 生成生图 prompt，关 Deep Thinking 但走流式
-    node3_images_per_prompt_default: int = 1  # 每个提示词生成几张图（C2 interrupt 前端选择，默认 1）
+    node3_reasoning_effort: str = "low"
+    # C2 用户锁定 1 套方案后，Node3 围绕这一套生成几份差异化 prompt（每份 = 1 张生图）。
+    # 新链路下固定为 5 —— C3 用户从 5 份里挑 1~5 份生图。
+    node3_variants_per_scheme_default: int = 5
     node3_gen_concurrency: int = 10           # Node3 并行生图并发上限（Semaphore），越大越快但易触发 429
 
     # ====== Node4 ======
-    llm_model_image: str = "openai/gpt-image-2"    # Node4 图像生成
-    llm_model_responses: str = "openai/gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
+    node4_image_channel_id: int = 4                # new-api 生图渠道 ID
+    node4_image_models_fallback: list[str] = [     # 动态拉失败时的硬编码兜底链
+        "qwen-image-3.0",
+        "gpt-image-2",
+    ]
+    llm_model_responses: str = "gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
     image_ratio_to_pixel_size_gpt: dict[str, str] = {
         "9:16": "1024x1536",   # 降级：用 3:4 近似 9:16
         "3:4": "1024x1536",
@@ -65,21 +73,56 @@ class Settings(BaseSettings):
     llm_timeout: float = 60.0                     # VLM / 文本 LLM 超时（秒）
     image_timeout: float = 180.0                   # 生图超时（秒）
 
-    llm_model_text: str = "qwen/qwen-turbo"        # research_agent 纯文本调研（LangGraph tool-calling）
-
     image_max_per_call: int = 3                    # 单次 VLM / 生图调用最多携带图片张数
     image_single_compress_threshold_mb: float = 1.5  # 单张图片超过此值触发渐进压缩（raw bytes）
+
+    # ---- 图片压缩（Pillow）策略 ----
+    pil_quality_start: int = 90                    # JPEG 质量起点（逐次降 quality 压缩）
+    pil_quality_min: int = 50                      # JPEG 质量下限（低于此值画质不可接受）
+    pil_max_side_fallback: int = 2800              # 极端兜底：quality=min 仍超限时收缩长边到这里
 
     image_ext_map: dict[str, str] = {
         "jpeg": "jpg", "png": "png", "webp": "webp", "gif": "gif",
     }
     upload_dir: str = str(_PROJECT_ROOT / "uploads")   # 上传图片落盘目录（绝对路径）
 
+    # ---- 上传 / 图库 / SKU 图片规则（uploads.py + products.py 共用，避免 20MB 到处写）----
+    upload_allowed_mime_prefixes: tuple[str, ...] = ("image/",)  # uploads.py + products.py 共用
+    upload_max_file_size_mb: int = 10              # 单张上传大小上限（MB，前后端一致）
+    upload_max_files: int = 10                     # 通用上传单次最多几张
+    sku_image_allowed_exts: set[str] = {"jpg", "jpeg", "png", "webp", "gif"}
+    sku_image_min_count: int = 1
+    sku_image_max_count: int = 9
+
+    # ---- SSE / EventBus ----
+    sse_db_fallback_interval_seconds: int = 30     # 事件驱动超过此时间没收到事件才查一次 DB
+    sse_heartbeat_interval_seconds: int = 25       # SSE heartbeat 间隔（防代理掐连接）
+    event_bus_queue_max_size: int = 64             # 每个 task_id 的队列容量（防慢消费者拖垮内存）
+    event_bus_queue_idle_timeout_seconds: int = 600  # 队列闲置多久后自动清理（秒）
+
+    # ---- graph 运行状态 ----
+    graph_stale_threshold_seconds: int = 90        # checkpoint 年龄阈值，超过认为 graph 可能挂了
+
+    # ====== 穿搭库（outfit）======
+    outfit_extract_models: list[str] = [  # 抠图降级链(qwen 优先:2026-09-20 gpt 系网关无渠道,实测 qwen 唯一可用)
+        "qwen-image-3.0",
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "mai-image-2.5",
+    ]
+    outfit_max_items: int = 6              # VLM 单次识别最多提取几件单品
+    outfit_extract_concurrency: int = 3    # 抠图并发上限（ThreadPoolExecutor）
+
 
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
-    @field_validator("http_proxy_url", "image_gen_proxy_url", mode="before")
+    @property
+    def newapi_admin_base_url(self) -> str:
+        """管理接口与 /v1 模型接口位于同一 New API 服务。"""
+        return self.newapi_base_url.rstrip("/").removesuffix("/v1")
+
+    @field_validator("image_gen_proxy_url", mode="before")
     @classmethod
     def _empty_str_to_none(cls, v):
         if isinstance(v, str) and v.strip() == "":

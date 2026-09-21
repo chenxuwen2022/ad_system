@@ -101,14 +101,14 @@ class BaseLLMClient(ABC):
         user: str,
         response_format: dict[str, Any] | None = None,
         temperature: float = 0.3,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str = "close",
         extra_params: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """纯文本/结构化输出。
 
         Args:
-            reasoning_effort: 推理/思考强度控制，可选值 "none" / "low" / "medium" / "high"。
-                None 表示使用模型默认行为。
+            reasoning_effort: 推理/思考强度控制，可选值 "close" / "low" / "medium" / "high"。
+                "close" 表示强制关闭思考；不允许传 None（必须显式指定）。
             extra_params: 透传到 payload 的额外扩展字段，供网关识别模型特定参数。
         """
         ...
@@ -120,7 +120,7 @@ class BaseLLMClient(ABC):
         user: str,
         image_uris: list[str],
         response_format: dict[str, Any] | None = None,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str = "close",
         extra_params: dict[str, Any] | None = None,
     ) -> LLMResponse:
         """多模态 VLM 调用（完整响应）。"""
@@ -132,7 +132,7 @@ class BaseLLMClient(ABC):
         system: str,
         user: str,
         image_uris: list[str],
-        reasoning_effort: str | None = None,
+        reasoning_effort: str = "close",
         extra_params: dict[str, Any] | None = None,
     ) -> Any:
         """多模态 VLM 流式调用。
@@ -214,7 +214,7 @@ class BaseLLMClient(ABC):
         if is_gpt_image and refs and gpt_edit_endpoint == "responses":
             # 只有这个分支需要额外的 responses 端点配置
             from wellflow.app.llm.factory import _strip_provider
-            top_model = _strip_provider(getattr(settings, "llm_model_responses", "openai/gpt-5.4-mini"))
+            top_model = _strip_provider(getattr(settings, "llm_model_responses", "gpt-5.4-mini"))
         else:
             # ── ② + ③ GPT 纯文生图 / 非 GPT / 其他 → generations JSON ──
             return await self._generate_image_via_generations(
@@ -246,7 +246,7 @@ class BaseLLMClient(ABC):
         }
         if refs:
             image_tool["action"] = "edit"
-            image_tool["input_fidelity"] = in_fidelity  # ofox 只支持 high/low
+            image_tool["input_fidelity"] = in_fidelity  # 仅支持 high/low
 
         payload: dict[str, Any] = {
             "model": top_model,
@@ -356,7 +356,7 @@ class BaseLLMClient(ABC):
         response_format: str = "b64_json",
         extra_params: dict[str, Any] | None = None,
     ) -> ImageGenResult:
-        """非 GPT 模型 / ofox 网关生图 —— /v1/images/generations JSON body。"""
+        """非 GPT 模型生图 —— /v1/images/generations JSON body。"""
         import json, httpx, asyncio as _asyncio
 
         from wellflow.app.config import settings
@@ -470,7 +470,7 @@ class BaseLLMClient(ABC):
     # ------------------------------------------------------------------
     # 图像生成 —— /v1/images/edits multipart（GPT Image 图生图专用）
     #   gpt-image-2 原生编辑端点：参考图作为多个同名「image」文件字段上传，
-    #   不认 JSON reference_images。与 LaozhangGateway 的 multipart 模式一致。
+    #   不认 JSON reference_images。
     # ------------------------------------------------------------------
 
     async def _generate_image_via_edits(
@@ -521,7 +521,7 @@ class BaseLLMClient(ABC):
 
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
-        _prompt_preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
+        _prompt_preview = prompt[:200] + ("..." if len(prompt) > 200 else "") + '，严格参考图片五官等特征'
         print(f"[llm-edits] 📤 POST {base_url}/images/edits model={model_name} "
               f"refs={len(refs) if refs else 0} size={size} quality=high n={n}", flush=True)
         print(f"[llm-edits]   prompt: {_prompt_preview}", flush=True)

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from wellflow.app.config import settings
 from wellflow.app.database import get_db
-from wellflow.app.api.utils import ok, StandardResponse
+from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
 from wellflow.app.repositories.mannequin_repo import MannequinRepo, MANNEQUIN_DIMENSION_GROUPS
 from wellflow.app.schemas.asset_schemas import (
     MannequinUpdateRequest,
@@ -101,8 +101,8 @@ def list_mannequins(
             cover_storage_uri=m.cover_storage_uri,
             tag_summary=tag_summary[:5],
             description=m.description,
-            created_at=m.created_at.isoformat(),
-            updated_at=m.updated_at.isoformat(),
+            created_at=to_cn_iso(m.created_at),
+            updated_at=to_cn_iso(m.updated_at),
         ))
 
     return ok(MannequinListResponse(items=out_items, total=total, page=page, page_size=page_size))
@@ -129,8 +129,8 @@ def get_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
         generate_model=m.generate_model,
         generate_prompt=m.generate_prompt,
         tags=_tags_to_grouped(tag_rows),
-        created_at=m.created_at.isoformat(),
-        updated_at=m.updated_at.isoformat(),
+        created_at=to_cn_iso(m.created_at),
+        updated_at=to_cn_iso(m.updated_at),
     ))
 
 
@@ -261,7 +261,7 @@ async def create_mannequin(
         description=m.description,
         generate_model=m.generate_model, generate_prompt=m.generate_prompt,
         tags=_tags_to_grouped(tag_rows),
-        created_at=m.created_at.isoformat(), updated_at=m.updated_at.isoformat(),
+        created_at=to_cn_iso(m.created_at), updated_at=to_cn_iso(m.updated_at),
     ))
 
 
@@ -291,7 +291,7 @@ def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Sessio
         description=m.description,
         generate_model=m.generate_model, generate_prompt=m.generate_prompt,
         tags=_tags_to_grouped(tag_rows),
-        created_at=m.created_at.isoformat(), updated_at=m.updated_at.isoformat(),
+        created_at=to_cn_iso(m.created_at), updated_at=to_cn_iso(m.updated_at),
     ))
 
 
@@ -426,12 +426,14 @@ async def optimize_prompt(
                 system=system,
                 user=user_text,
                 image_uris=ref_data_uris,
+                reasoning_effort="close",
             )
         else:
             resp, used_model = await pool.chat(
                 system=system,
                 user=user_text,
                 temperature=0.3,
+                reasoning_effort="close",
             )
 
         final_prompt = (resp.content or "").strip()
@@ -663,6 +665,7 @@ async def auto_tag_mannequin(
             user=user_text,
             image_uris=data_uris,
             response_format={"type": "json_object"},
+            reasoning_effort="close",
         )
 
         content = (resp.content or "").strip()

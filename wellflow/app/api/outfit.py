@@ -33,7 +33,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from wellflow.app.api.utils import ok
+from wellflow.app.api.utils import ok, to_cn_iso
 from wellflow.app.config import settings
 from wellflow.app.database import get_db, session_scope
 from wellflow.app.llm.factory import get_llm_client
@@ -94,11 +94,8 @@ OUTFIT_DIMENSION_GROUPS: dict[str, dict[str, Any]] = {
     },
 }
 
-# 抠图降级链(qwen-image-3.0 优先 —— 2026-09-20 gpt 系网关无渠道/mai 上游 500,
-# qwen 实测唯一可用;gpt 系保留兜底,网关恢复后可调整顺序)
-EXTRACT_MODELS = ["qwen-image-3.0", "gpt-image-2", "gpt-image-2.5-flare", "mai-image-2.5"]
-MAX_ITEMS = 6
-EXTRACT_CONCURRENCY = 3
+# 抠图链/上限/并发已迁移到 settings(outfit_extract_models / outfit_max_items /
+# outfit_extract_concurrency,见 config.py)—— 2026-09-20 qwen-image-3.0 置于链首
 _TASK_LOCK = threading.RLock()
 
 # 生成流水线并发闸:保护公司网关,排队不拒绝(技术主管要求可同时开多个,但限制同时在跑)
@@ -316,7 +313,7 @@ def _to_list_item(o) -> OutfitListItem:
         cover_url=_storage_uri_url(o.cover_storage_uri),
         original_storage_uri=o.original_storage_uri,
         original_url=_storage_uri_url(o.original_storage_uri),
-        created_at=o.created_at.isoformat(), updated_at=o.updated_at.isoformat(),
+        created_at=to_cn_iso(o.created_at), updated_at=to_cn_iso(o.updated_at),
     )
 
 
@@ -328,7 +325,7 @@ def _to_detail(o) -> OutfitDetailResponse:
         original_storage_uri=o.original_storage_uri,
         original_url=_storage_uri_url(o.original_storage_uri),
         items=o.items or [], dims=o.dims or {},
-        created_at=o.created_at.isoformat(), updated_at=o.updated_at.isoformat(),
+        created_at=to_cn_iso(o.created_at), updated_at=to_cn_iso(o.updated_at),
     )
 
 
@@ -490,7 +487,7 @@ def delete_outfit(outfit_id: int, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 
 def _call_vlm_recognize(raw: bytes):
-    """VLM(模型池)识别照片单品清单,≤ MAX_ITEMS 件。
+    """VLM(模型池)识别照片单品清单,≤ settings.outfit_max_items 件。
 
     模型池偶发返回空清单(同一张图重试即有结果)——空结果自动重试一次再判失败。
     """
@@ -513,6 +510,7 @@ def _call_vlm_recognize(raw: bytes):
             user=prompt,
             image_uris=[f"data:image/png;base64,{b64}"],
             response_format={"type": "json_object"},
+            reasoning_effort="close",
         )
         return resp.content or ""
 
@@ -524,7 +522,7 @@ def _call_vlm_recognize(raw: bytes):
         if not isinstance(items, list) or not items:
             continue  # 空清单/解析失败 → 再试一次
         norm = []
-        for it in items[:MAX_ITEMS]:
+        for it in items[:settings.outfit_max_items]:
             if not isinstance(it, dict) or not it.get("name"):
                 continue
             norm.append({
@@ -564,7 +562,7 @@ def _extract_item_image(raw: bytes, name: str):
             "背景纯白,居中构图,无阴影、无文字"
         )
         errors = []
-        for model in EXTRACT_MODELS:
+        for model in settings.outfit_extract_models:
             try:
                 client = get_llm_client("image", model_override=model)
                 r = await client.generate_image(
@@ -589,7 +587,7 @@ def _extract_item_image(raw: bytes, name: str):
 
 
 def _run_cutout(task: dict, raw: bytes, items: list[dict], session_id: str) -> tuple[int, dict]:
-    """并发抠图(EXTRACT_CONCURRENCY 路),更新 task 的 items/failed_items/progress。
+    """并发抠图(settings.outfit_extract_concurrency 路),更新 task 的 items/failed_items/progress。
 
     items:任务清单元素(含 id/name/category/color,storage_uri 由本函数回填)。
     返回 (成功件数, 失败件 {idx: error})。每件完成即落盘任务文件。
@@ -619,7 +617,7 @@ def _run_cutout(task: dict, raw: bytes, items: list[dict], session_id: str) -> t
             task["progress"] = {"done": len(results) + len(errors), "total": len(items)}
             _save_task(task)
 
-    with ThreadPoolExecutor(max_workers=min(EXTRACT_CONCURRENCY, len(items))) as ex:
+    with ThreadPoolExecutor(max_workers=min(settings.outfit_extract_concurrency, len(items))) as ex:
         list(ex.map(worker, range(len(items))))
     return len(results), errors
 
@@ -869,6 +867,7 @@ async def _do_auto_tag(
     resp, used_model = await pool.chat_with_images(
         system=system, user=user_text, image_uris=data_uris,
         response_format={"type": "json_object"},
+        reasoning_effort="close",
     )
     content = (resp.content or "").strip()
     if content.startswith("```"):

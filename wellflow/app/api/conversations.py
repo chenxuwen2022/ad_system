@@ -9,8 +9,8 @@ from sqlalchemy import select, func, desc
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db
-from wellflow.app.api.utils import ok, StandardResponse
-from wellflow.app.models.task_models import Conversation, ChatMessage, Task
+from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
+from wellflow.app.models.task_models import Conversation, ChatMessage, Task, TaskImage
 from wellflow.app.repositories.conversation_repo import ConversationRepo
 from wellflow.app.schemas.conversation_schemas import (
     ConversationListResponse,
@@ -74,6 +74,30 @@ def list_conversations(
             )
         ).scalar() or 0
 
+        # 当前活跃 task 的 phase（可选优化：避免 N+1，集中查询）
+        current_phase: str = ""
+        current_saved_img_count = 0
+        if c.current_task_id:
+            t = db.get(Task, c.current_task_id)
+            if t:
+                current_phase = t.phase or ""
+                current_saved_img_count = db.execute(
+                    select(func.count(TaskImage.image_id)).where(
+                        TaskImage.task_id == t.task_id,
+                        TaskImage.image_type == "output",
+                    )
+                ).scalar() or 0
+
+        # 该 conversation 下所有 task 已保存的 output 图片总数
+        total_saved_img_count = db.execute(
+            select(func.count(TaskImage.image_id))
+            .join(Task, Task.task_id == TaskImage.task_id)
+            .where(
+                Task.conversation_id == c.conversation_id,
+                TaskImage.image_type == "output",
+            )
+        ).scalar() or 0
+
         # 最后一条用户消息预览：优先取 role=user 的 session_index 最大那条，
         # 确保预览稳定（assistant 的 resume_ack/error 等系统消息不应抢占 preview）
         preview: str | None = None
@@ -93,11 +117,14 @@ def list_conversations(
             conversation_id=c.conversation_id,
             title=c.title,
             current_task_id=c.current_task_id,
+            current_phase=current_phase,
+            current_task_saved_image_count=current_saved_img_count,
+            total_saved_image_count=total_saved_img_count,
             latest_message_preview=preview,
             message_count=msg_count,
             task_count=task_count,
-            created_at=c.created_at.isoformat(),
-            updated_at=c.updated_at.isoformat(),
+            created_at=to_cn_iso(c.created_at),
+            updated_at=to_cn_iso(c.updated_at),
         ))
 
     return ok(ConversationListResponse(
@@ -144,7 +171,7 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
             images=imgs,
             intent=m.intent,
             session_index=m.session_index,
-            created_at=m.created_at.isoformat(),
+            created_at=to_cn_iso(m.created_at),
         ))
 
     # 关联 task 列表
@@ -163,8 +190,8 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
             phase=t.phase,
             description=req.get("description", "")[:80],
             has_interrupt=bool(t.interrupt_json),
-            created_at=t.created_at.isoformat(),
-            updated_at=t.updated_at.isoformat(),
+            created_at=to_cn_iso(t.created_at),
+            updated_at=to_cn_iso(t.updated_at),
         ))
 
     return ok(ConversationDetailResponse(
@@ -173,8 +200,8 @@ def get_conversation(conversation_id: str, db: Session = Depends(get_db)):
         current_task_id=c.current_task_id,
         messages=chat_out,
         tasks=task_out,
-        created_at=c.created_at.isoformat(),
-        updated_at=c.updated_at.isoformat(),
+        created_at=to_cn_iso(c.created_at),
+        updated_at=to_cn_iso(c.updated_at),
     ))
 
 
@@ -233,7 +260,7 @@ def get_timeline(conversation_id: str, db: Session = Depends(get_db)):
             "text": ch.text or "",
             "intent": ch.intent,
             "session_index": ch.session_index,
-            "created_at": ch.created_at.isoformat() if ch.created_at else None,
+            "created_at": to_cn_iso(ch.created_at),
         })
 
     for ev in events:
@@ -245,7 +272,7 @@ def get_timeline(conversation_id: str, db: Session = Depends(get_db)):
             "phase": ev.phase,
             "payload": ev.payload_json or {},
             "cost_usd": ev.cost_usd,
-            "created_at": ev.created_at.isoformat() if ev.created_at else None,
+            "created_at": to_cn_iso(ev.created_at),
         })
 
     # 5. 按 created_at 升序排（chat 没 created_at 的退到最后）

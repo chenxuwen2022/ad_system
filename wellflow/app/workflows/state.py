@@ -90,20 +90,33 @@ class TaskError(TypedDict, total=False):
 class Node1State(TypedDict, total=False):
     input_analysis: dict[str, Any]
     product_insight: str             # VLM 输出的 Markdown 报告全文
+    report_sections: dict[str, Any]   # 归一化的四块结构（前端"重点洞察"面板使用）
+    next_actions: str                 # LLM 动态生成的下一步引导语（报告正文 ---NEXT--- 分隔线之下的部分）
     compressed_images: list[str]      # 商品图 data URI 缓存（给下游复用）
     thinking_text: str                # VLM 深度思考过程文本（用于刷新后恢复展示）
+    # —— 确认/锁定相关字段（由 C1 confirm 写入，锁定后任何入口都不得修改）——
+    report_locked: bool               # True = 用户已确认并锁定；当前任务内不可再改
+    report_hash: str                  # 当次确认时 product_insight 的哈希（版本绑定）
+    confirmed_at: float               # 当次确认的 unix 时间戳
+    # —— 多轮修改计数（调试用，可选）——
+    refine_count: int
 
 
 # ---------------------------------------------------------------------------
-# Node2：PlanningScheme — VLM 生成 N 套结构化商拍方案（12 维 JSON）
+# Node2：PlanningScheme — VLM 生成 3 套候选商拍方案（12 维 JSON，C2 让用户选定 1 套）
 # ---------------------------------------------------------------------------
 
 
 class SchemeState(TypedDict, total=False):
-    schemes: list[dict[str, Any]]          # 3 套完整 12 维 JSON（每套 = PLANNING_AGENT_SYSTEM_PROMPT 输出）
+    schemes: list[dict[str, Any]]          # N 套完整 12 维 JSON（由 PLANNING_AGENT_SYSTEM_PROMPT 输出）
     scheme_raw: str                         # VLM 原始 JSON 文本（前端展示/调试）
-    selected_scheme_indices: list[int]      # C2 选的方案索引，如 [0, 2] 或 [0, 1, 2]
+    selected_scheme_indices: list[int]      # C2 用户选定的方案索引（新链路通常只有 1 套被锁）
+    per_scheme_count: list[int]             # C2 每套选中方案要生成几份 prompt，默认 [5]
     thinking_text: str                      # VLM 深度思考过程文本
+    # —— 诊断锚点：Node2 正向产出时写入，表示"本次任务原始应该有几套方案"——
+    # 防止 LangGraph checkpoint 异常合并或中间步骤脏写导致 schemes 数量被污染
+    # （例如 Node3 的 prompt_detail 被错误混入，出现 3×4=12 条脏方案）
+    base_scheme_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -116,13 +129,12 @@ class PromptState(TypedDict, total=False):
     ratio: str                              # C1 用户选的画面比例
     image_model: str                        # 生图模型选择
 
-    # 由 Node3 产出（循环 N 次，N = 选中方案数）
-    generate_prompts: list[str]             # 每套选中方案 → 1 个最终 prompt 字符串
-    prompts_detail: list[dict[str, Any]]    # 对应每个 prompt 的详情：{scheme_index, prompt_raw, ...}
+    # 由 Node3 产出（循环 N 次，N = sum(node2.per_scheme_count)）
+    generate_prompts: list[str]             # N 份最终 prompt 字符串（每份 = 一张生图）
+    prompts_detail: list[dict[str, Any]]    # 对应每个 prompt 的详情：{scheme_index, variant_index, prompt_raw, ...}
     prompt_raw: str                         # VLM 原始输出拼接（调试用）
 
     # C3 interrupt 后 resume 写入
-    per_prompt_count: list[int]             # 每个 prompt 生成几张图，如 [3, 1]
     per_prompt_size: list[str]              # 每个 prompt 的图片规格，如 ["3:4", "3:4"]
     compressed_model_images: list[str]      # 模特图 data URI 缓存
     thinking_text: str                      # VLM 深度思考过程文本（多个方案的 thinking 拼接）
@@ -162,8 +174,24 @@ class TaskState(TypedDict, total=False):
     node2: Annotated[SchemeState, REDUCER]
     node3: Annotated[PromptState, REDUCER]
     node4: Annotated[Node4State, REDUCER]
+    # HITL 确认记录：{"c1": True, ...}。用户点"生成方案"确认 c1 时由 _c1_confirm_report 写入，
+    # 供 compute_completed_mask 反推已完成步骤（interrupt 丢失后仍能识别 c1 已确认）
+    confirmations: Annotated[dict[str, bool], REDUCER]
     progress: Annotated[Progress, REDUCER]
     cost: Annotated[CostSummary, REDUCER]
     interrupt: Annotated[InterruptSnapshot | None, REDUCER]
     error: Annotated[TaskError | None, REDUCER]
     event_ids: Annotated[list[str], REDUCER]
+
+    # ---- 临时控制字段（refine / redo 专用，消费后自动清空）----
+    # refine 路径：interrupt resume(decision="refine") 写入，refine 节点消费后清 None
+    _refine_target: Annotated[str | None, REDUCER]       # "node1" | "node2" | "node3" | None
+    _refine_instruction: Annotated[str | None, REDUCER]  # 用户修改指令文本
+    # node2 refine 专用：LLM 意图分类器返回的 selected_indices
+    # 决定 refine_node2_schemes 能看到哪几套原方案（用户明确点名了哪些 → 只传那些；"all"或None → 全部传）
+    _refine_selected_indices: Annotated[list[int] | str | None, REDUCER]
+    # 多轮 refine 历史：每轮 refine 前把本轮指令 append 进去
+    # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）
+    _refine_history: Annotated[list[str], REDUCER]       # 历史 refine 指令列表（按时间顺序，包含本轮）
+    # redo 路径：仅 C4 redo→node4 保留（其他节点都走 refine）
+    _redo_target: Annotated[str | None, REDUCER]         # "node4" | None

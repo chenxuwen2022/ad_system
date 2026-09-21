@@ -610,6 +610,100 @@ class DouYinAdService:
         return f"{prefix} code:{code}, msg:{msg}{extra}"
 
     # ===============================================================
+    # 人群/场景数据（DMP人群包 + 场景维度报表）
+    # ===============================================================
+    def get_dmp_audiences(self, force: bool = False) -> dict:
+        """拉取 DMP 人群包：平台精选(type=0) + 自定义(type=1)，带三级缓存。
+        返回 {platform: [...], custom: [...], total_platform, total_custom}"""
+        cache_key = ("dmp", str(self.advertiser_id))
+        return _load_3level(cache_key, 600, lambda: self._fetch_dmp_audiences(), force)
+
+    def _fetch_dmp_audiences(self) -> dict:
+        out = {"platform": [], "custom": [], "total_platform": 0, "total_custom": 0}
+        for tt, key in [(0, "platform"), (1, "custom")]:
+            offset, limit = 0, 100
+            while True:
+                try:
+                    resp = requests.get(
+                        f"{self.base_url}/open_api/v1.0/qianchuan/dmp/audiences/get/",
+                        headers=self.headers,
+                        params={"advertiser_id": int(self.advertiser_id),
+                                "retargeting_tags_type": tt, "offset": offset, "limit": limit},
+                        timeout=30)
+                    j = resp.json()
+                    if j.get("code") != 0:
+                        break
+                    d = j.get("data") or {}
+                    for x in (d.get("retargeting_tags") or []):
+                        out[key].append({
+                            "id": x.get("retargeting_tags_id") or x.get("id"),
+                            "name": x.get("name", ""),
+                            "cover_num": x.get("cover_num") or 0,
+                            "source": x.get("source", ""),
+                            "tip": x.get("retargeting_tags_tip", ""),
+                        })
+                    new_offset = d.get("offset", 0)
+                    total = d.get("total_num", 0)
+                    if key == "platform":
+                        out["total_platform"] = total
+                    else:
+                        out["total_custom"] = total
+                    if not new_offset or len(out[key]) >= total:
+                        break
+                    offset = new_offset
+                except Exception:
+                    break
+        return out
+
+    def get_scene_report(self, days: int = 7, force: bool = False) -> dict:
+        """场景维度投放报表（自定义报表 ECP_BASIC_DATA，按 scene 维度）。
+        返回 [{scene, scene_name, stat_cost, pay_order_count, gmv}]"""
+        cache_key = ("scene", str(self.advertiser_id), str(days))
+        return _load_3level(cache_key, 300, lambda: self._fetch_scene_report(days), force)
+
+    def _fetch_scene_report(self, days: int = 7) -> list:
+        import datetime as _dt
+        now = _dt.datetime.now()
+        start = (now - _dt.timedelta(days=days)).strftime("%Y-%m-%d") + " 00:00:00"
+        end = now.strftime("%Y-%m-%d") + " 23:59:59"
+        scene_names = {"1": "通投广告", "2": "搜索广告", "3": "直播加热", "4": "新客转化",
+                       "5": "全域推广", "6": "商品全域推广", "7": "品牌广告"}
+        out = []
+        try:
+            resp = requests.get(
+                f"{self.base_url}/open_api/v1.0/qianchuan/report/custom/get/",
+                headers=self.headers,
+                params={
+                    "advertiser_id": int(self.advertiser_id),
+                    "data_topic": "ECP_BASIC_DATA",
+                    "dimensions": json.dumps(["scene"]),
+                    "metrics": json.dumps(["stat_cost", "total_pay_order_count_for_roi2",
+                                           "total_pay_order_gmv_include_coupon_for_roi2"]),
+                    "filters": json.dumps([]),
+                    "order_by": json.dumps([{"type": 2, "field": "stat_cost"}]),
+                    "start_time": start, "end_time": end,
+                    "page": 1, "page_size": 20,
+                }, timeout=30)
+            j = resp.json()
+            if j.get("code") != 0:
+                return out
+            for row in (j.get("data") or {}).get("rows", []) or []:
+                dim = row.get("dimensions") or {}
+                met = row.get("metrics") or {}
+                s = str(dim.get("scene", ""))
+                out.append({
+                    "scene": s,
+                    "scene_name": scene_names.get(s, s),
+                    "stat_cost": float(met.get("stat_cost") or 0),
+                    "pay_order_count": float(met.get("total_pay_order_count_for_roi2") or 0),
+                    "gmv": float(met.get("total_pay_order_gmv_include_coupon_for_roi2") or 0),
+                })
+        except Exception:
+            pass
+        return out
+
+
+    # ===============================================================
     # 可投商品列表 + 每个商品已挂素材数
     # ===============================================================
     def get_available_products(self, force: bool = False) -> list:
@@ -634,7 +728,23 @@ class DouYinAdService:
                 # 过滤下架/无库存商品：inventory<=0 的不展示
                 if (p.get("inventory") or 0) <= 0:
                     continue
-                out.append({"id": str(p.get("id")), "name": p.get("name", "")})
+                # 保留主图/商详图/价格/销量等字段，供页面展示
+                img_list = [im.get("img_url") for im in (p.get("img_list") or []) if im.get("img_url")]
+                out.append({
+                    "id": str(p.get("id")),
+                    "name": p.get("name", ""),
+                    "img": p.get("img", ""),            # 商品主图
+                    "img_list": img_list,               # 商详图（第0张即主图）
+                    "category_name": p.get("category_name", ""),
+                    "discount_price": p.get("discount_price") or 0,   # 售价（单位：分）
+                    "discount_higher_price": p.get("discount_higher_price") or 0,
+                    "discount_lower_price": p.get("discount_lower_price") or 0,
+                    "market_price": p.get("market_price") or 0,       # 市场价（元）
+                    "inventory": p.get("inventory") or 0,             # 库存
+                    "sell_num": p.get("sell_num") or 0,               # 销量
+                    "product_rate": p.get("product_rate") or 0,       # 好评率
+                    "sale_time": p.get("sale_time", ""),              # 开售时间
+                })
             page_info = data.get("page_info", {}) or {}
             total_page = page_info.get("total_page", 1)
             if page >= total_page:
@@ -1382,27 +1492,36 @@ class DouYinAdService:
             f"【算法诊断】\n{algo_text}"
         )
 
-        api_key = DOUYIN_CONFIG.get("DEEPSEEK_API_KEY", "")
-        base = DOUYIN_CONFIG.get("DEEPSEEK_BASE", "https://api.deepseek.com")
-        resp = requests.post(
-            f"{base}/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "deepseek-chat",
-                "messages": [
-                    {"role": "system", "content": "你是资深千川投放优化师，擅长素材诊断。"},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.5,
-            },
-            timeout=90,
-        )
-        rj = resp.json()
+        api_key = os.environ.get("NEWAPI_API_KEY", "") or DOUYIN_CONFIG.get("NEWAPI_API_KEY", "")
+        base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
         ai_text = ""
-        if resp.status_code == 200 and rj.get("choices"):
-            ai_text = rj["choices"][0]["message"]["content"]
-        else:
-            ai_text = f"DeepSeek 调用失败: HTTP {resp.status_code} {rj}"
+        try:
+            if not api_key:
+                ai_text = "AI 点评不可用：未配置 NEWAPI_API_KEY"
+            else:
+                resp = requests.post(
+                    f"{base}/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": "deepseek-v4.1-flash",
+                        "messages": [
+                            {"role": "system", "content": "你是资深千川投放优化师，擅长素材诊断。"},
+                            {"role": "user", "content": prompt},
+                        ],
+                        "temperature": 0.5,
+                    },
+                    timeout=90,
+                )
+                try:
+                    rj = resp.json()
+                except Exception:
+                    rj = {"raw": (resp.text or "")[:200]}
+                if resp.status_code == 200 and rj.get("choices"):
+                    ai_text = rj["choices"][0]["message"]["content"]
+                else:
+                    ai_text = f"DeepSeek 调用失败: HTTP {resp.status_code} {rj}"
+        except Exception as e:
+            ai_text = f"DeepSeek 调用失败: {e}"
         return {"materials": materials, "diagnosis": diagnosis, "ai": ai_text}
 
     # ---- 单素材详情 ----
@@ -1594,19 +1713,25 @@ class DouYinAdService:
                 if _ctx.get("market_data"):
                     prompt += "行业市场数据：\n" + _ctx["market_data"][:3000] + "\n"
                 prompt += "请结合这些参考资料，输出更有针对性的点评与修改建议（与竞品对比、结合行业水平判断），并明确标注哪些结论来自参考资料。"
-            api_key = DOUYIN_CONFIG.get("DEEPSEEK_API_KEY", "")
-            base = DOUYIN_CONFIG.get("DEEPSEEK_BASE", "https://api.deepseek.com")
+            api_key = os.environ.get("NEWAPI_API_KEY", "") or DOUYIN_CONFIG.get("NEWAPI_API_KEY", "")
+            base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
             try:
-                resp = requests.post(
-                    f"{base}/chat/completions",
-                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                    json={"model": "deepseek-chat",
-                          "messages": [{"role": "system", "content": "你是资深千川投放优化师。"},
-                                       {"role": "user", "content": prompt}],
-                          "temperature": 0.5},
-                    timeout=90)
-                rj = resp.json()
-                ai_text = rj["choices"][0]["message"]["content"] if (resp.status_code == 200 and rj.get("choices")) else f"DeepSeek失败:{rj}"
+                if not api_key:
+                    ai_text = "AI 点评不可用：未配置 NEWAPI_API_KEY"
+                else:
+                    resp = requests.post(
+                        f"{base}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={"model": "deepseek-v4.1-flash",
+                              "messages": [{"role": "system", "content": "你是资深千川投放优化师。"},
+                                           {"role": "user", "content": prompt}],
+                              "temperature": 0.5},
+                        timeout=90)
+                    try:
+                        rj = resp.json()
+                    except Exception:
+                        rj = {"raw": (resp.text or "")[:200]}
+                    ai_text = rj["choices"][0]["message"]["content"] if (resp.status_code == 200 and rj.get("choices")) else f"DeepSeek失败:{rj}"
             except Exception as e:
                 ai_text = f"DeepSeek调用失败:{e}"
             _cache_set(ai_key, ai_text, 600)
@@ -1837,17 +1962,74 @@ class DouYinAdService:
             return {"style": "未知", "confidence": "", "note": "无素材画面地址"}
 
         # 本地下载图片转 base64（千川 URL 1 小时过期，先落盘再识别）
-        b64 = ""
-        try:
-            import base64 as _b64
-            r = requests.get(img_url, timeout=20)
-            if r.status_code == 200 and r.content:
-                b64 = _b64.b64encode(r.content).decode()
-        except Exception:
-            b64 = ""
-
+        b64 = self._download_img_b64(img_url)
         if not b64:
             return {"style": "未知", "confidence": "", "note": "素材图片下载失败"}
+        return self._classify_style_b64(b64, cache_path, force)
+
+    def classify_product_images(self, product_id: str, force: bool = False) -> dict:
+        """AI 识别商品主图/商详图样式：场景图/模特图/白底图/其他。
+        返回 {success, product_id, images: [{kind, img_url, style, reason, model}]}。
+        每张图按 (广告主, product_id, 图url hash) 磁盘缓存 7 天。"""
+        import hashlib as _hl
+        pid = str(product_id)
+        try:
+            products = self.get_available_products(force=False)
+        except Exception as e:
+            return {"success": False, "error": f"商品列表拉取失败: {e}"}
+        p = next((x for x in products if str(x.get("id")) == pid), None)
+        if not p:
+            return {"success": False, "error": "商品不存在或已下架"}
+        # 主图 + 商详图（去重：商详第0张就是主图）
+        imgs = []
+        main = p.get("img") or ""
+        if main:
+            imgs.append(("主图", main))
+        seen = {main}
+        for i, u in enumerate((p.get("img_list") or [])):
+            if u and u not in seen:
+                imgs.append((f"商详{i+1}", u))
+                seen.add(u)
+        if not imgs:
+            return {"success": False, "error": "该商品无图片"}
+        out = []
+        for kind, u in imgs:
+            h = _hl.md5(u.encode("utf-8")).hexdigest()[:16]
+            cache_path = os.path.join(self._STYLE_CACHE_DIR, f"pstyle_{self.advertiser_id}_{pid}_{h}.json")
+            b64 = self._download_img_b64(u)
+            if not b64:
+                out.append({"kind": kind, "img_url": u, "style": "未知", "reason": "图片下载失败", "model": ""})
+                continue
+            r = self._classify_style_b64(b64, cache_path, force)
+            out.append({"kind": kind, "img_url": u, "style": r.get("style") or "未知",
+                        "reason": r.get("reason") or "", "model": r.get("model") or ""})
+        return {"success": True, "product_id": pid, "images": out}
+
+    # ---------- 公共：下载图片转 base64 ----------
+    def _download_img_b64(self, img_url: str) -> str:
+        """下载图片并转 base64，失败返回空串。"""
+        try:
+            import base64 as _b64
+            r = requests.get(img_url, timeout=25)
+            if r.status_code == 200 and r.content:
+                return _b64.b64encode(r.content).decode()
+        except Exception:
+            pass
+        return ""
+
+    # ---------- 公共：VLM 样式识别核心（场景图/模特图/白底图/其他） ----------
+    def _classify_style_b64(self, b64: str, cache_path: str, force: bool = False) -> dict:
+        """对已下载转 base64 的图片做样式识别。
+        查磁盘缓存(7天) → wellflow 模型池 → 网关兜底轮询 → 解析 JSON → 写缓存。"""
+        if not force:
+            try:
+                if os.path.isfile(cache_path):
+                    with open(cache_path, encoding="utf-8") as f:
+                        d = json.load(f)
+                    if d.get("style"):
+                        return d
+            except Exception:
+                pass
 
         api_key = os.environ.get("NEWAPI_API_KEY", "") or DOUYIN_CONFIG.get("NEWAPI_API_KEY", "")
         base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
@@ -1921,6 +2103,148 @@ class DouYinAdService:
                   "reason": reason, "model": used_model or "wellflow-pool"}
 
         # 磁盘缓存（7 天）
+        try:
+            os.makedirs(self._STYLE_CACHE_DIR, exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False)
+        except Exception:
+            pass
+        return result
+
+    # ---------- AI 受众画像：投流素材图 / 商品主图 / 商详图 ----------
+    def classify_image_audience(self, img_url: str, label: str = "素材图", force: bool = False) -> dict:
+        """对单张图（投流素材图/商品主图/商详图）做 AI 受众画像推断。
+        输出 性别/年龄段/地域/兴趣标签/消费场景/一句话画像，磁盘缓存 7 天。"""
+        import hashlib as _hl
+        if not img_url:
+            return {"success": False, "label": label, "error": "无图片地址"}
+        h = _hl.md5(img_url.encode("utf-8")).hexdigest()[:16]
+        cache_path = os.path.join(self._STYLE_CACHE_DIR, f"aud_{self.advertiser_id}_{h}.json")
+        b64 = self._download_img_b64(img_url)
+        if not b64:
+            return {"success": False, "label": label, "img_url": img_url, "error": "图片下载失败"}
+        r = self._audience_profile_b64(b64, cache_path, force)
+        return {"success": True, "label": label, "img_url": img_url, "profile": r.get("profile") or {},
+                "note": r.get("note") or "", "model": r.get("model") or "", "cached": r.get("cached") or False}
+
+    def classify_product_audience(self, product_id: str, force: bool = False) -> dict:
+        """AI 受众画像：对商品主图 + 商详图逐张分析（去重，最多 5 张）。"""
+        pid = str(product_id)
+        try:
+            products = self.get_available_products(force=False)
+        except Exception as e:
+            return {"success": False, "error": f"商品列表拉取失败: {e}"}
+        p = next((x for x in products if str(x.get("id")) == pid), None)
+        if not p:
+            return {"success": False, "error": "商品不存在或已下架"}
+        imgs = []
+        main = p.get("img") or ""
+        if main:
+            imgs.append(("主图", main))
+        seen = {main}
+        for i, u in enumerate((p.get("img_list") or [])):
+            if u and u not in seen and len(imgs) < 5:
+                imgs.append((f"商详{i+1}", u))
+                seen.add(u)
+        if not imgs:
+            return {"success": False, "error": "该商品无图片"}
+        out = []
+        for kind, u in imgs:
+            r = self.classify_image_audience(u, label=kind, force=force)
+            out.append(r)
+        return {"success": True, "product_id": pid, "images": out}
+
+    def _audience_profile_b64(self, b64: str, cache_path: str, force: bool = False) -> dict:
+        """VLM 受众画像核心：查缓存(7天) → wellflow 模型池 → 网关兜底 → 解析 JSON → 写缓存。"""
+        if not force:
+            try:
+                if os.path.isfile(cache_path):
+                    with open(cache_path, encoding="utf-8") as f:
+                        d = json.load(f)
+                    if d.get("profile"):
+                        d["cached"] = True
+                        return d
+            except Exception:
+                pass
+
+        api_key = os.environ.get("NEWAPI_API_KEY", "") or DOUYIN_CONFIG.get("NEWAPI_API_KEY", "")
+        base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
+        if not api_key:
+            return {"profile": {}, "note": "未配置 NEWAPI_API_KEY"}
+
+        prompt = (
+            "这是一张电商投放素材图/商品图（可能包含商品主体、模特、场景或文字）。"
+            "请基于画面内容推断这条素材所面向的受众画像，只输出 JSON：\n"
+            "{\n"
+            "  \"gender\": \"性别倾向（如：女性为主/男女均衡/男性为主/宝妈为主）\",\n"
+            "  \"age\": \"主要年龄段（如：25-35岁）\",\n"
+            "  \"region\": \"地域特征（如：一二线城市为主/全国通用/下沉市场）\",\n"
+            "  \"interest_tags\": [\"兴趣标签1\", \"兴趣标签2\", \"兴趣标签3\"],\n"
+            "  \"scene\": \"消费场景/购买动机（一句话）\",\n"
+            "  \"style_pref\": \"这类受众偏好的素材风格（一句话）\",\n"
+            "  \"summary\": \"一句话受众画像总结（含身份特征与消费心理）\"\n"
+            "}\n"
+            "要求：基于画面真实内容推断，不要编造画面中不存在的信息；各字段精炼，每项不超过20字。"
+        )
+
+        content, used_model = "", ""
+        try:
+            from wellflow.app.llm.model_pool import get_model_pool
+            import asyncio as _aio
+
+            async def _go():
+                resp, model = await get_model_pool().chat_with_images(
+                    system="你是资深的电商广告受众分析专家，擅长从素材画面推断目标人群画像。",
+                    user=prompt,
+                    image_uris=[f"data:image/jpeg;base64,{b64}"],
+                    response_format={"type": "json_object"},
+                )
+                return resp.content or "", model
+            content, used_model = _aio.run(_go())
+        except Exception:
+            for _m in ("gemini-3.7-flash", "gemini-3.8-flash", "deepseek-v4.1-flash",
+                       "glm-5.3-flash", "qwen3.8-flash", "doubao-seed-1-6-flash"):
+                try:
+                    resp = requests.post(
+                        f"{base}/chat/completions",
+                        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                        json={
+                            "model": _m,
+                            "messages": [{"role": "user", "content": [
+                                {"type": "text", "text": prompt},
+                                {"type": "image_url",
+                                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}],
+                            "temperature": 0.1,
+                        },
+                        timeout=50,
+                    )
+                    rj = resp.json()
+                    if resp.status_code == 200 and rj.get("choices"):
+                        content = rj["choices"][0]["message"]["content"] or ""
+                        used_model = _m
+                        break
+                except Exception:
+                    continue
+
+        import re as _re
+        m = _re.search(r'\{.*\}', content or "", _re.S)
+        profile = {}
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+                profile = {
+                    "gender": obj.get("gender") or "",
+                    "age": obj.get("age") or "",
+                    "region": obj.get("region") or "",
+                    "interest_tags": obj.get("interest_tags") or [],
+                    "scene": obj.get("scene") or "",
+                    "style_pref": obj.get("style_pref") or "",
+                    "summary": obj.get("summary") or "",
+                }
+            except Exception:
+                profile = {}
+        result = {"profile": profile, "note": "" if profile else "AI 未能解析画像",
+                  "model": used_model or "wellflow-pool", "cached": False}
         try:
             os.makedirs(self._STYLE_CACHE_DIR, exist_ok=True)
             with open(cache_path, "w", encoding="utf-8") as f:
@@ -2062,3 +2386,405 @@ class DouYinAdService:
         if resp_json.get("code") != 0:
             raise Exception(self._friendly_error("追加素材失败", resp_json))
         return str(resp_json.get("data", {}).get("ad_id", ad_id))
+
+    # ---------------------------------------------------------------
+    # 直播数据（千川侧已授权权限：全域投放数据 22100600 + 今日直播数据 22100400）
+    # ---------------------------------------------------------------
+    _LIVE_ANCHORS = [
+        (1101052921254393, "Babycare童装奥莱旗舰店"),
+        (1329751737513440, "Babycare婴童服饰直播间"),
+    ]
+
+    def _live_filters(self, anchor_id=None):
+        """直播主题通用筛选：ecp_app_id + aggregate_smart_bid_type + 可选 anchor_id"""
+        filters = [
+            {"field": "ecp_app_id", "operator": 7, "values": ["179"]},
+            {"field": "aggregate_smart_bid_type", "operator": 7, "values": ["SMART_BID_CUSTOM"]},
+        ]
+        if anchor_id:
+            filters.append({"field": "anchor_id", "operator": 7, "values": [str(anchor_id)]})
+        return filters
+
+    def _get_live_anchors(self):
+        """动态获取当前店铺绑定的可直播抖音号（v1.0/qianchuan/aweme/authorized/get/）。
+        接口失败时回退硬编码 _LIVE_ANCHORS。返回 [(aweme_id, 昵称), ...]"""
+        try:
+            resp = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/aweme/authorized/get/",
+                                headers=self.headers,
+                                params={"advertiser_id": int(self.advertiser_id)}, timeout=30)
+            j = resp.json()
+            if j.get("code") == 0:
+                lst = (j.get("data") or {}).get("aweme_id_list", []) or []
+                anchors = []
+                for a in lst:
+                    aid = a.get("aweme_id")
+                    if aid and a.get("aweme_has_live_permission"):
+                        anchors.append((int(aid), a.get("aweme_name") or str(aid)))
+                if anchors:
+                    return anchors
+        except Exception:
+            pass
+        return self._LIVE_ANCHORS
+
+    def get_live_effect_report(self, days: int = 30, force: bool = False) -> dict:
+        """直播投放效果汇总（全域报表·直播主题）：
+        - 直播间画面（SITE_PROMOTION_POST_DATA_LIVE）：按主播聚合 展示/观看/CVR/消耗/ROI/GMV
+        - 直播视频素材（SITE_PROMOTION_POST_DATA_VIDEO）：素材粒度 展示/观看/CVR/消耗/ROI/GMV
+        仅使用已授权的「获取全域投放数据」权限，无需电商直播数据权限。
+        三级缓存：内存5分钟 → 磁盘JSON → 千川；force=True 强制重拉。"""
+        cache_key = ("live_effect", str(self.advertiser_id))
+        if not force:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+            disk = _disk_get(cache_key)
+            if disk is not None:
+                data, saved_at = disk
+                if data:
+                    _cache_set(cache_key, data, 300)
+                    if _time.time() - saved_at > 300:
+                        _refresh_in_background(cache_key, 300, lambda: self._fetch_live_effect_raw())
+                    return data
+        return self._fetch_live_effect_raw()
+
+    def _fetch_live_effect_raw(self) -> dict:
+        import datetime as _dt
+        end = _dt.date.today()
+        start = end - _dt.timedelta(days=30)
+        start_s = start.strftime("%Y-%m-%d") + " 00:00:00"
+        end_s = end.strftime("%Y-%m-%d") + " 23:59:59"
+
+        def _v(sec, k):
+            node = (sec.get(k) or {})
+            return node.get("Value", node.get("ValueStr", 0))
+
+        anchors_out, mats_out, boards_out = [], [], []
+
+        # 1. 直播间画面（按主播维度；LIVE 主题要求筛选必带 anchor_id）
+        try:
+            dims = ["anchor_id", "roi2_material_anchor_name"]
+            metrics = ["live_show_count_exclude_video_for_roi2", "live_watch_count_exclude_video_for_roi2",
+                       "live_cvr_rate_exclude_video_for_roi2", "live_convert_rate_exclude_video_for_roi2",
+                       "stat_cost_for_roi2", "total_prepay_and_pay_order_roi2", "total_pay_order_gmv_for_roi2",
+                       "total_pay_order_count_for_roi2"]
+            for anchor in self._get_live_anchors():
+                rows = self._fetch_report_topic("SITE_PROMOTION_POST_DATA_LIVE", dims,
+                                                self._live_filters(anchor[0]), start_s, end_s,
+                                                metrics=metrics, order_field="stat_cost_for_roi2")
+                for row in rows:
+                    d, m = row.get("dimensions") or {}, row.get("metrics") or {}
+                    anchors_out.append({
+                        "anchor_id": str(_v(d, "anchor_id") or anchor[0]),
+                        "anchor_name": str(_v(d, "roi2_material_anchor_name") or anchor[1]),
+                        "show": int(float(_v(m, "live_show_count_exclude_video_for_roi2") or 0)),
+                        "watch": int(float(_v(m, "live_watch_count_exclude_video_for_roi2") or 0)),
+                        "cvr": float(_v(m, "live_cvr_rate_exclude_video_for_roi2") or 0),
+                        "convert_rate": float(_v(m, "live_convert_rate_exclude_video_for_roi2") or 0),
+                        "cost": round(float(_v(m, "stat_cost_for_roi2") or 0), 2),
+                        "roi": float(_v(m, "total_prepay_and_pay_order_roi2") or 0),
+                        "gmv": round(float(_v(m, "total_pay_order_gmv_for_roi2") or 0), 2),
+                        "orders": int(float(_v(m, "total_pay_order_count_for_roi2") or 0)),
+                    })
+        except Exception:
+            pass
+
+        # 2. 直播视频素材（素材粒度，按主播分别拉）
+        try:
+            dims = ["roi2_material_video_name", "roi2_material_video_type", "material_id"]
+            metrics = ["live_show_count_for_roi2_v2", "live_watch_count_for_roi2_v2",
+                       "live_cvr_rate_for_roi2_v2", "live_convert_rate_for_roi2_v2",
+                       "stat_cost_for_roi2", "total_prepay_and_pay_order_roi2",
+                       "total_pay_order_gmv_for_roi2", "total_pay_order_count_for_roi2"]
+            for anchor in self._get_live_anchors():
+                rows = self._fetch_report_topic("SITE_PROMOTION_POST_DATA_VIDEO", dims,
+                                                self._live_filters(anchor[0]), start_s, end_s,
+                                                metrics=metrics, order_field="stat_cost_for_roi2")
+                for row in rows:
+                    d, m = row.get("dimensions") or {}, row.get("metrics") or {}
+                    mats_out.append({
+                        "anchor_id": str(anchor[0]),
+                        "anchor_name": anchor[1],
+                        "material_id": str(_v(d, "material_id") or ""),
+                        "name": str(_v(d, "roi2_material_video_name") or ""),
+                        "mtype": str(_v(d, "roi2_material_video_type") or ""),
+                        "show": int(float(_v(m, "live_show_count_for_roi2_v2") or 0)),
+                        "watch": int(float(_v(m, "live_watch_count_for_roi2_v2") or 0)),
+                        "cvr": float(_v(m, "live_cvr_rate_for_roi2_v2") or 0),
+                        "convert_rate": float(_v(m, "live_convert_rate_for_roi2_v2") or 0),
+                        "cost": round(float(_v(m, "stat_cost_for_roi2") or 0), 2),
+                        "roi": float(_v(m, "total_prepay_and_pay_order_roi2") or 0),
+                        "gmv": round(float(_v(m, "total_pay_order_gmv_for_roi2") or 0), 2),
+                        "orders": int(float(_v(m, "total_pay_order_count_for_roi2") or 0)),
+                    })
+        except Exception:
+            pass
+
+        # 3. 直播大屏：流量来源 + 商品列表（今日直播数据权限）
+        try:
+            b1 = self._fetch_live_board("ROOM_FLOW_PERFORMANCE",
+                                        ["combined_third_flow_category_expand_ecom_nature"],
+                                        ["total_live_watch_cnt_flow_ecom", "total_live_pay_order_gmv_flow_ecom"])
+            for row in b1:
+                d, m = row.get("dimensions") or {}, row.get("metrics") or {}
+                boards_out.append({
+                    "type": "流量来源",
+                    "name": str(_v(d, "combined_third_flow_category_expand_ecom_nature") or ""),
+                    "watch": int(float(_v(m, "total_live_watch_cnt_flow_ecom") or 0)),
+                    "gmv": round(float(_v(m, "total_live_pay_order_gmv_flow_ecom") or 0), 2),
+                })
+        except Exception:
+            pass
+        try:
+            b2 = self._fetch_live_board("ROOM_PRODUCT_LIST",
+                                        ["product_id", "product_name"],
+                                        ["luban_live_pay_order_gmv", "luban_live_pay_order_count",
+                                         "live_pay_order_roi_per_product", "live_cost_per_product"])
+            for row in b2:
+                d, m = row.get("dimensions") or {}, row.get("metrics") or {}
+                boards_out.append({
+                    "type": "商品",
+                    "name": str(_v(d, "product_name") or ""),
+                    "product_id": str(_v(d, "product_id") or ""),
+                    "gmv": round(float(_v(m, "luban_live_pay_order_gmv") or 0), 2),
+                    "orders": int(float(_v(m, "luban_live_pay_order_count") or 0)),
+                    "roi": float(_v(m, "live_pay_order_roi_per_product") or 0),
+                    "cost": round(float(_v(m, "live_cost_per_product") or 0), 2),
+                })
+        except Exception:
+            pass
+
+        out = {
+            "anchors": anchors_out,
+            "materials": mats_out,
+            "boards": boards_out,
+            "updated": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        _cache_set(("live_effect", str(self.advertiser_id)), out, 300)
+        _disk_set(("live_effect", str(self.advertiser_id)), out)
+        return out
+
+    def _fetch_live_board(self, data_topic: str, dims: list, metrics: list) -> list:
+        """直播大屏数据（v1.0/qianchuan/report/today_live/room/data/get）。"""
+        import datetime as _dt
+        end = _dt.date.today()
+        start = end - _dt.timedelta(days=7)
+        start_s = start.strftime("%Y-%m-%d") + " 00:00:00"
+        end_s = end.strftime("%Y-%m-%d") + " 23:59:59"
+        try:
+            params = {
+                "advertiser_id": int(self.advertiser_id),
+                "data_topic": data_topic,
+                "dimensions": json.dumps(dims),
+                "metrics": json.dumps(metrics),
+                "filters": json.dumps([]),
+                "start_time": start_s, "end_time": end_s,
+                "order_by": json.dumps([{"field": metrics[0], "type": 2}]),
+                "page": 1, "page_size": 20,
+            }
+            resp = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/report/today_live/room/data/get/",
+                                headers=self.headers, params=params, timeout=40)
+            j = resp.json()
+            if j.get("code") == 0:
+                return (j.get("data") or {}).get("rows", []) or []
+        except Exception:
+            pass
+        return []
+
+    # ---------------------------------------------------------------
+    # 直播整体数据（v1.0/qianchuan/report/live/get，千川权限：获取今日直播数据 22100400）
+    # 基于全部流量（自然+营销），按主播（抖音号）聚合直播整体表现。
+    # ---------------------------------------------------------------
+    def get_live_overview(self, days: int = 30, force: bool = False) -> dict:
+        """直播整体数据（今日直播数据接口）：按抖音号返回 消耗/点击/观看/点击商品/下单/成单/GMV/ROI/粉丝等。
+        三级缓存：内存5分钟 → 磁盘JSON → 千川；force=True 强制重拉。"""
+        import datetime as _dt
+        cache_key = ("live_overview", str(self.advertiser_id))
+        if not force:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+            disk = _disk_get(cache_key)
+            if disk is not None:
+                data, saved_at = disk
+                if data:
+                    _cache_set(cache_key, data, 300)
+                    if _time.time() - saved_at > 300:
+                        _refresh_in_background(cache_key, 300, lambda: self._fetch_live_overview_raw(days))
+                    return data
+        return self._fetch_live_overview_raw(days)
+
+    def _fetch_live_overview_raw(self, days: int = 30) -> dict:
+        import datetime as _dt
+        end = _dt.date.today()
+        start = end - _dt.timedelta(days=days)
+        start_s = start.strftime("%Y-%m-%d") + " 00:00:00"
+        end_s = end.strftime("%Y-%m-%d") + " 23:59:59"
+        fields = json.dumps([
+            "stat_cost", "click_cnt", "ctr", "cpm_platform", "cpc_platform",
+            "total_live_watch_cnt", "live_watch_one_minute_count",
+            "live_click_cart_count_alias", "live_click_product_count_alias",
+            "live_create_order_count_alias", "live_pay_order_count_alias",
+            "live_pay_order_gmv_alias", "luban_live_pay_order_gmv",
+            "live_pay_order_gmv_roi", "ad_live_prepay_and_pay_order_gmv_roi",
+            "total_live_follow_cnt", "total_live_fans_club_join_cnt",
+            "total_live_comment_cnt", "total_live_share_cnt",
+            "live_pay_order_gmv_avg", "ecp_convert_rate", "ecp_convert_cnt", "ecp_cpa_platform",
+        ])
+        anchors_out = []
+        for anchor in self._get_live_anchors():
+            try:
+                params = {
+                    "advertiser_id": int(self.advertiser_id),
+                    "aweme_id": anchor[0],
+                    "start_time": start_s,
+                    "end_time": end_s,
+                    "fields": fields,
+                }
+                resp = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/report/live/get/",
+                                    headers=self.headers, params=params, timeout=40)
+                j = resp.json()
+                if j.get("code") != 0:
+                    continue
+                d = j.get("data") or {}
+                if not d:
+                    continue
+                anchors_out.append({
+                    "anchor_id": str(anchor[0]),
+                    "anchor_name": anchor[1],
+                    "cost": round(float(d.get("stat_cost") or 0) / 100000, 2),
+                    "click_cnt": int(float(d.get("click_cnt") or 0)),
+                    "ctr": float(d.get("ctr") or 0),
+                    "cpm": round(float(d.get("cpm_platform") or 0) / 100000, 2),
+                    "cpc": round(float(d.get("cpc_platform") or 0) / 100000, 2),
+                    "watch": int(float(d.get("total_live_watch_cnt") or 0)),
+                    "watch_1min": int(float(d.get("live_watch_one_minute_count") or 0)),
+                    "cart_click": int(float(d.get("live_click_cart_count_alias") or 0)),
+                    "product_click": int(float(d.get("live_click_product_count_alias") or 0)),
+                    "create_orders": int(float(d.get("live_create_order_count_alias") or 0)),
+                    "pay_orders": int(float(d.get("live_pay_order_count_alias") or 0)),
+                    "gmv": round(float(d.get("live_pay_order_gmv_alias") or 0) / 100000, 2),
+                    "marketing_gmv": round(float(d.get("luban_live_pay_order_gmv") or 0) / 100000, 2),
+                    "roi": float(d.get("live_pay_order_gmv_roi") or 0),
+                    "marketing_roi": float(d.get("ad_live_prepay_and_pay_order_gmv_roi") or 0),
+                    "avg_order_gmv": round(float(d.get("live_pay_order_gmv_avg") or 0) / 100000, 2),
+                    "follow": int(float(d.get("total_live_follow_cnt") or 0)),
+                    "fans_club": int(float(d.get("total_live_fans_club_join_cnt") or 0)),
+                    "comment": int(float(d.get("total_live_comment_cnt") or 0)),
+                    "share": int(float(d.get("total_live_share_cnt") or 0)),
+                    "convert_rate": float(d.get("ecp_convert_rate") or 0),
+                    "convert_cnt": int(float(d.get("ecp_convert_cnt") or 0)),
+                    "cpa": round(float(d.get("ecp_cpa_platform") or 0) / 100000, 2),
+                })
+            except Exception:
+                continue
+        out = {
+            "anchors": anchors_out,
+            "days": days,
+            "updated": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        _cache_set(("live_overview", str(self.advertiser_id)), out, 300)
+        _disk_set(("live_overview", str(self.advertiser_id)), out)
+        return out
+
+    # ---------------------------------------------------------------
+    # 直播间商品列表（v1.0/qianchuan/today_live/room/product_list/get/，千川权限：获取今日直播数据）
+    # room_id 从今日直播大屏 ROOM_FLOW_PERFORMANCE 获取，逐个直播间拉商品。
+    # ---------------------------------------------------------------
+    def get_live_room_products(self, days: int = 7, force: bool = False) -> dict:
+        """直播间商品列表：大屏拿 room_id → product_list/get 拉每个直播间的商品。
+        三级缓存；无直播场次时返回空列表。"""
+        import datetime as _dt
+        cache_key = ("live_room_products", str(self.advertiser_id))
+        if not force:
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+            disk = _disk_get(cache_key)
+            if disk is not None:
+                data, saved_at = disk
+                if data:
+                    _cache_set(cache_key, data, 300)
+                    if _time.time() - saved_at > 300:
+                        _refresh_in_background(cache_key, 300, lambda: self._fetch_live_room_products_raw(days))
+                    return data
+        return self._fetch_live_room_products_raw(days)
+
+    def _fetch_live_room_products_raw(self, days: int = 7) -> dict:
+        import datetime as _dt
+        end = _dt.date.today()
+        start = end - _dt.timedelta(days=days)
+        start_s = start.strftime("%Y-%m-%d") + " 00:00:00"
+        end_s = end.strftime("%Y-%m-%d") + " 23:59:59"
+
+        # 1) 从直播大屏按 room_id 维度拿直播间列表
+        room_ids = []
+        try:
+            params = {
+                "advertiser_id": int(self.advertiser_id),
+                "data_topic": "ROOM_FLOW_PERFORMANCE",
+                "dimensions": json.dumps(["room_id"]),
+                "metrics": json.dumps(["total_live_watch_cnt_flow_ecom"]),
+                "filters": json.dumps([]),
+                "start_time": start_s, "end_time": end_s,
+                "order_by": json.dumps([{"field": "total_live_watch_cnt_flow_ecom", "type": 2}]),
+                "page": 1, "page_size": 50,
+            }
+            resp = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/report/today_live/room/data/get/",
+                                headers=self.headers, params=params, timeout=40)
+            j = resp.json()
+            if j.get("code") == 0:
+                for row in (j.get("data") or {}).get("rows", []) or []:
+                    d = row.get("dimensions") or {}
+                    rid = (d.get("room_id") or {}).get("Value") or (d.get("room_id") or {}).get("ValueStr")
+                    if rid and str(rid) not in room_ids:
+                        room_ids.append(str(rid))
+        except Exception:
+            pass
+
+        # 2) 逐个直播间拉商品
+        products_out = []
+        for rid in room_ids:
+            try:
+                params = {
+                    "advertiser_id": int(self.advertiser_id),
+                    "room_id": rid,
+                    "fields": json.dumps([
+                        "product_name", "product_pic", "product_price", "product_volume",
+                        "product_pay_amount", "product_refund_amount", "product_orders",
+                        "product_click_cnt", "product_show_cnt", "product_pay_orders",
+                    ]),
+                    "explain_status": "ALL",
+                    "page": 1, "page_size": 50,
+                }
+                resp = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/today_live/room/product_list/get/",
+                                    headers=self.headers, params=params, timeout=40)
+                j = resp.json()
+                if j.get("code") != 0:
+                    continue
+                for item in (j.get("data") or {}).get("list", []) or []:
+                    products_out.append({
+                        "room_id": rid,
+                        "product_id": str(item.get("productId") or item.get("product_id") or ""),
+                        "name": item.get("productName") or item.get("product_name") or "",
+                        "pic": item.get("productPic") or item.get("product_pic") or "",
+                        "price": round(float(item.get("productPrice") or item.get("product_price") or 0) / 100, 2),
+                        "volume": int(float(item.get("productVolume") or item.get("product_volume") or 0)),
+                        "pay_amount": round(float(item.get("productPayAmount") or item.get("product_pay_amount") or 0) / 100000, 2),
+                        "refund_amount": round(float(item.get("productRefundAmount") or item.get("product_refund_amount") or 0) / 100000, 2),
+                        "orders": int(float(item.get("productOrders") or item.get("product_orders") or 0)),
+                        "pay_orders": int(float(item.get("productPayOrders") or item.get("product_pay_orders") or 0)),
+                        "click_cnt": int(float(item.get("productClickCnt") or item.get("product_click_cnt") or 0)),
+                        "show_cnt": int(float(item.get("productShowCnt") or item.get("product_show_cnt") or 0)),
+                    })
+            except Exception:
+                continue
+
+        out = {
+            "room_ids": room_ids,
+            "products": products_out,
+            "days": days,
+            "updated": _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        _cache_set(("live_room_products", str(self.advertiser_id)), out, 300)
+        _disk_set(("live_room_products", str(self.advertiser_id)), out)
+        return out

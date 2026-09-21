@@ -1,64 +1,35 @@
-"""通用 VLM 模型轮询池 —— 支持文本 / 多模态 / 流式三种调用。
+"""VLM / 文本 LLM 模型轮询池。
 
-设计要点：
-  - 国内 6 个模型优先遍历，全部熔断才兜底海外 gemini
-  - 捕获 429/超时/连接异常/5xx → 自动切下一个模型
-  - 单模型 10s 内连续 2 次失败 → 临时熔断 30s 自动恢复
-  - 轮询起点每次调用随机偏移（时间戳取模），避免 intent / Node 并发互相干扰
-  - 流式 failover 仅限「连接建立期」（first SSE chunk 前），流开始后不再切换
-  - 所有模型共用同一套网关，reasoning_effort 参数由调用方传入
+模型列表通过 `fetch_model_options(capability=...)` 动态获取，支持 channel_id 渠道过滤、
+preferred_model 偏好优先（优先使用某个模型，失败自动降级到池里其他模型）。
 
-配置来源：wellflow.app.config.settings
-  - model_pool_domestic_models      国内模型列表
-  - model_pool_overseas_fallback    海外兜底模型
-  - model_pool_fail_threshold       连续失败熔断阈值
-  - model_pool_fail_window          失败统计时间窗口（秒）
-  - model_pool_cooldown             熔断后冷却时间（秒）
+每次调用都会刷新：拉不到 → 直接抛 RuntimeError，让上层走重试或兜底。
+
+所有请求统一走 new-api，渠道分发由 new-api 后台配置。
 """
 
 from __future__ import annotations
 
 import asyncio
+import random
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 
+from wellflow.app.api.model_options import fetch_model_options
 from wellflow.app.config import settings
 
 
 # ---------------------------------------------------------------------------
-# 异常判断
-# ---------------------------------------------------------------------------
-
-def _is_retryable_error(exc: Exception) -> bool:
-    """判断某个异常是否属于「应该切下一个模型」的可恢复错误。"""
-    if isinstance(exc, httpx.HTTPStatusError):
-        status = exc.response.status_code if exc.response is not None else 0
-        if status == 429 or status >= 500:
-            return True
-    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError,
-                        httpx.ConnectTimeout, httpx.ReadError,
-                        httpx.WriteError, httpx.RequestError)):
-        return True
-    if isinstance(exc, RuntimeError):
-        msg = str(exc).lower()
-        if any(k in msg for k in ("503", "429", "502", "504", "timeout",
-                                   "temporarily", "unavailable", "rate",
-                                   "connect", "max_retries", "retry")):
-            return True
-    return False
-
-
-# ---------------------------------------------------------------------------
-# 熔断状态
+# 模型状态 + 熔断
 # ---------------------------------------------------------------------------
 
 @dataclass
 class _ModelState:
     model_key: str
-    short_name: str
     failure_timestamps: list[float] = field(default_factory=list)
     cooldown_until: float = 0.0
 
@@ -79,10 +50,7 @@ class _ModelState:
         self._purge_old(now)
         if len(self.failure_timestamps) >= settings.model_pool_fail_threshold:
             self.cooldown_until = now + settings.model_pool_cooldown
-            print(f"[model-pool] 🔴 熔断 {self.model_key} — "
-                  f"{settings.model_pool_fail_window:.0f}s 内 {len(self.failure_timestamps)} 次失败，"
-                  f"冷却 {settings.model_pool_cooldown:.0f}s",
-                  flush=True)
+            print(f"[model-pool] 🔴 熔断 {self.model_key} — 冷却 {settings.model_pool_cooldown:.0f}s", flush=True)
 
     def record_success(self) -> None:
         self.failure_timestamps.clear()
@@ -91,323 +59,308 @@ class _ModelState:
         self.cooldown_until = 0.0
 
 
+def _is_retryable_error(exc: Exception) -> bool:
+    """可恢复错误 → 自动切下一个模型。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code if exc.response is not None else 0
+        return status == 429 or status >= 500
+    return isinstance(exc, (httpx.TimeoutException, httpx.ConnectError,
+                            httpx.ConnectTimeout, httpx.ReadError,
+                            httpx.WriteError, httpx.RequestError))
+
+
 # ---------------------------------------------------------------------------
-# 模型池
+# ModelPool
 # ---------------------------------------------------------------------------
 
 class ModelPool:
-    """通用 VLM 模型轮询池。
+    """从 new-api 动态拉取文本/VLM 模型池，配合熔断 + 偏好优先 + 失败自动切换。
 
-    三种调用方式：
-      pool.chat(...)                       — 纯文本（意图识别用）
-      pool.chat_with_images(...)           — 多模态非流式（Node1/Node2/Node3 非流式路径）
-      pool.stream_chat_with_images(...)    — 多模态流式（Node1/Node2/Node3 流式路径）
+    对外三个入口：chat (纯文本) / chat_with_images (多模态非流式) / stream_chat_with_images (多模态流式)。
+
+    Args:
+        capability: 从 new-api 拉哪些能力的模型（text / vlm / None=不过滤）
+        channel_id: 只拉指定渠道的模型（None=全部渠道）
+        preferred_model: 偏好模型名（短名如 qwen3.8-flash）—— 放在轮询首位，失败自动降级
     """
 
-    def __init__(self) -> None:
-        from wellflow.app.llm.factory import _strip_provider
+    def __init__(
+        self,
+        *,
+        capability: str | None = "text",
+        channel_id: int | None = None,
+        preferred_model: str | None = None,
+    ) -> None:
+        self._capability = capability
+        self._channel_id = channel_id
+        self._preferred_model = preferred_model
+        self._states: list[_ModelState] = []
+        self._refresh_lock = asyncio.Lock()
 
-        domestic = settings.model_pool_domestic_models
-        fallback = settings.model_pool_overseas_fallback
+    # ------------------------------------------------------------------
+    # 模型列表管理
+    # ------------------------------------------------------------------
 
-        self._domestic: list[_ModelState] = [
-            _ModelState(model_key=m, short_name=_strip_provider(m))
-            for m in domestic
-        ]
-        self._fallback = _ModelState(
-            model_key=fallback,
-            short_name=_strip_provider(fallback),
-        )
-        # round-robin 全局递增索引（每次调用 +1，避免并发互相干扰）
-        self._rr_idx = 0
+    async def _ensure_models(self) -> None:
+        """每次调用都强制从 new-api 拉最新的模型列表。
+
+        注意：**不再保留任何旧列表**。拉不到 / 拉空 → 直接 raise，让上层走 fallback。
+        """
+        async with self._refresh_lock:
+            raw_items = await fetch_model_options(
+                self._capability, channel_id=self._channel_id,
+            )
+            if not raw_items:
+                raise RuntimeError(
+                    f"new-api 返回为空，没有可用的 {self._capability!r} 模型"
+                )
+
+            # 平滑重建：同名模型保留熔断状态
+            old_map = {s.model_key: s for s in self._states}
+            new_states: list[_ModelState] = []
+            for opt in raw_items:
+                key = opt.value  # 完整模型 id（带 provider 前缀，如有）
+                if key in old_map:
+                    new_states.append(old_map[key])
+                else:
+                    new_states.append(_ModelState(model_key=key))
+            self._states = new_states
+            print(
+                f"[model-pool] ✅ 已从 new-api 拉取 {len(self._states)} 个 {self._capability!r} 模型"
+                f" (channel_id={self._channel_id}, preferred={self._preferred_model})",
+                flush=True,
+            )
 
     def _pick_start(self, n: int) -> int:
-        """round-robin 全局递增。每次调用返回下一个起始位置。"""
-        idx = self._rr_idx % n
-        self._rr_idx += 1
-        return idx
+        """优先选 preferred_model 的 index；没找到则随机起始点。"""
+        if n <= 1:
+            return 0
+        if self._preferred_model:
+            for i, state in enumerate(self._states):
+                # 支持短名匹配（"qwen3.8-flash" 命中 "provider/qwen3.8-flash"）
+                if state.model_key.endswith(f"/{self._preferred_model}") or \
+                   state.model_key == self._preferred_model:
+                    return i
+        return random.randrange(n)
 
-    def _next_available(self, group: list[_ModelState], start: int) -> _ModelState | None:
-        """从 start 位置开始找下一个可用模型。"""
-        n = len(group)
+    def _next_available(self, start: int) -> _ModelState | None:
+        n = len(self._states)
+        if n == 0:
+            return None
         for offset in range(n):
-            idx = (start + offset) % n
-            state = group[idx]
+            state = self._states[(start + offset) % n]
             if state.is_available():
                 return state
-            remain = max(state.cooldown_until - time.time(), 0.0)
-            if remain > 0:
-                print(f"[model-pool] ⏭️ 跳过 {state.model_key} (冷却中 {remain:.0f}s)", flush=True)
-            else:
-                print(f"[model-pool] ⏭️ 跳过 {state.model_key} ({settings.model_pool_fail_window:.0f}s 内失败过多)", flush=True)
         return None
 
     def _build_client(self, state: _ModelState):
-        from wellflow.app.llm.factory import get_llm_client
-        return get_llm_client("vlm", model_override=state.short_name)
-
-    async def _run_fallback(self, callable_name: str, *args, **kwargs) -> tuple[Any, str]:
-        """国内池全挂时才走到这里。"""
-        print(f"[model-pool] ⚠️ 国内全部不可用，尝试海外兜底 {self._fallback.model_key}", flush=True)
-        fn = getattr(self, callable_name + "_internal")
-        result = await fn([self._fallback], *args, **kwargs)
-        if result is not None:
-            return result
-        raise RuntimeError(
-            f"模型池全部不可用（国内 {len(self._domestic)} + 海外兜底）"
-        )
+        from wellflow.app.llm.factory import get_llm_client, _strip_provider
+        return get_llm_client("vlm", model_override=_strip_provider(state.model_key))
 
     # ------------------------------------------------------------------
-    # 1. 纯文本 chat（意图识别用）
+    # helpers
+    # ------------------------------------------------------------------
+
+    @contextmanager
+    def _with_retries_disabled(self) -> Iterator[None]:
+        """临时关闭 NewApiGateway 的内部重试，让模型池自己接管 failover。"""
+        from wellflow.app.llm.newapi_gateway import NewApiGateway
+        original = NewApiGateway.MAX_RETRIES
+        NewApiGateway.MAX_RETRIES = 0
+        try:
+            yield
+        finally:
+            NewApiGateway.MAX_RETRIES = original
+
+    # ------------------------------------------------------------------
+    # 非流式统一入口
+    # ------------------------------------------------------------------
+
+    async def _call_internal(
+        self,
+        method_name: str,                 # "chat" | "chat_with_images"
+        *,
+        system: str,
+        user: str,
+        image_uris: list[str] | None = None,
+        response_format: dict[str, Any] | None = None,
+        temperature: float = 0.3,
+        reasoning_effort: str,
+    ) -> tuple[Any, str]:
+        """遍历动态模型池，失败自动切下一个。"""
+        await self._ensure_models()
+
+        if image_uris is not None:
+            client_kwargs = dict(
+                system=system, user=user, image_uris=image_uris,
+                response_format=response_format, reasoning_effort=reasoning_effort,
+            )
+        else:
+            client_kwargs = dict(
+                system=system, user=user,
+                response_format=response_format, temperature=temperature,
+                reasoning_effort=reasoning_effort,
+            )
+
+        n = len(self._states)
+        if n == 0:
+            raise RuntimeError("模型池为空，无法调用 LLM")
+
+        start = self._pick_start(n)
+        last_exc: Exception | None = None
+        for offset in range(n):
+            state = self._next_available((start + offset) % n)
+            if state is None:
+                break
+            client = self._build_client(state)
+            print(f"[model-pool] 📤 {method_name} → {state.model_key}", flush=True)
+            try:
+                resp = await getattr(client, method_name)(**client_kwargs)
+                state.record_success()
+                print(f"[model-pool] ✅ {state.model_key}", flush=True)
+                return (resp, state.model_key)
+            except Exception as exc:
+                last_exc = exc
+                state.record_failure()
+                label = "可恢复" if _is_retryable_error(exc) else "其他"
+                print(f"[model-pool] ❌ {state.model_key} [{label}]: {type(exc).__name__}", flush=True)
+
+        if last_exc:
+            raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
+        raise RuntimeError("模型池全部不可用")
+
+    # ------------------------------------------------------------------
+    # 对外三个入口
     # ------------------------------------------------------------------
 
     async def chat(
-        self,
-        *,
-        system: str,
-        user: str,
+        self, *, system: str, user: str,
         response_format: dict[str, Any] | None = None,
-        temperature: float = 0.3,
-        reasoning_effort: str | None = None,
+        temperature: float = 0.3, reasoning_effort: str,
     ) -> tuple[Any, str]:
-        from wellflow.app.llm.ofox_gateway import OfoxGateway
-        original_retries = OfoxGateway.MAX_RETRIES
-        OfoxGateway.MAX_RETRIES = 0
-
-        try:
-            result = await self._chat_internal(
-                self._domestic, system=system, user=user,
+        with self._with_retries_disabled():
+            return await self._call_internal(
+                "chat", system=system, user=user,
                 response_format=response_format, temperature=temperature,
                 reasoning_effort=reasoning_effort,
             )
-            if result is not None:
-                return result
-            return await self._run_fallback("chat",
-                system=system, user=user,
-                response_format=response_format, temperature=temperature,
-                reasoning_effort=reasoning_effort,
-            )
-        finally:
-            OfoxGateway.MAX_RETRIES = original_retries
-
-    async def _chat_internal(
-        self, group: list[_ModelState],
-        *, system: str, user: str,
-        response_format: dict[str, Any] | None,
-        temperature: float, reasoning_effort: str | None,
-    ) -> tuple[Any, str] | None:
-        n = len(group)
-        start = self._pick_start(n)
-        last_exc: Exception | None = None
-
-        for offset in range(n):
-            state = self._next_available(group, (start + offset) % n)
-            if state is None:
-                break
-
-            client = self._build_client(state)
-            print(f"[model-pool] 📤 chat → {state.model_key}", flush=True)
-            try:
-                resp = await client.chat(
-                    system=system, user=user,
-                    response_format=response_format,
-                    temperature=temperature,
-                    reasoning_effort=reasoning_effort,
-                )
-                state.record_success()
-                print(f"[model-pool] ✅ {state.model_key}", flush=True)
-                return (resp, state.model_key)
-            except Exception as exc:
-                last_exc = exc
-                state.record_failure()
-                label = "可恢复" if _is_retryable_error(exc) else "其他"
-                print(f"[model-pool] ❌ {state.model_key} [{label}]: {type(exc).__name__}", flush=True)
-
-        if last_exc:
-            print(f"[model-pool] ⚠️ 本组全部失败", flush=True)
-        return None
-
-    # ------------------------------------------------------------------
-    # 2. 多模态非流式 chat_with_images
-    # ------------------------------------------------------------------
 
     async def chat_with_images(
-        self,
-        *,
-        system: str,
-        user: str,
-        image_uris: list[str],
+        self, *, system: str, user: str, image_uris: list[str],
         response_format: dict[str, Any] | None = None,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str,
     ) -> tuple[Any, str]:
-        from wellflow.app.llm.ofox_gateway import OfoxGateway
-        original_retries = OfoxGateway.MAX_RETRIES
-        OfoxGateway.MAX_RETRIES = 0
-
-        try:
-            result = await self._chat_with_images_internal(
-                self._domestic, system=system, user=user,
-                image_uris=image_uris,
-                response_format=response_format,
-                reasoning_effort=reasoning_effort,
+        with self._with_retries_disabled():
+            return await self._call_internal(
+                "chat_with_images", system=system, user=user, image_uris=image_uris,
+                response_format=response_format, reasoning_effort=reasoning_effort,
             )
-            if result is not None:
-                return result
-            return await self._run_fallback("chat_with_images",
-                system=system, user=user,
-                image_uris=image_uris,
-                response_format=response_format,
-                reasoning_effort=reasoning_effort,
-            )
-        finally:
-            OfoxGateway.MAX_RETRIES = original_retries
-
-    async def _chat_with_images_internal(
-        self, group: list[_ModelState],
-        *, system: str, user: str, image_uris: list[str],
-        response_format: dict[str, Any] | None,
-        reasoning_effort: str | None,
-    ) -> tuple[Any, str] | None:
-        n = len(group)
-        start = self._pick_start(n)
-        last_exc: Exception | None = None
-
-        for offset in range(n):
-            state = self._next_available(group, (start + offset) % n)
-            if state is None:
-                break
-
-            client = self._build_client(state)
-            n_img = len(image_uris)
-            print(f"[model-pool] 📤 chat_with_images → {state.model_key} (imgs={n_img})", flush=True)
-            try:
-                resp = await client.chat_with_images(
-                    system=system, user=user, image_uris=image_uris,
-                    response_format=response_format,
-                    reasoning_effort=reasoning_effort,
-                )
-                state.record_success()
-                print(f"[model-pool] ✅ {state.model_key}", flush=True)
-                return (resp, state.model_key)
-            except Exception as exc:
-                last_exc = exc
-                state.record_failure()
-                label = "可恢复" if _is_retryable_error(exc) else "其他"
-                print(f"[model-pool] ❌ {state.model_key} [{label}]: {type(exc).__name__}", flush=True)
-
-        if last_exc:
-            print(f"[model-pool] ⚠️ 本组全部失败", flush=True)
-        return None
-
-    # ------------------------------------------------------------------
-    # 3. 多模态流式 —— 连接期 failover，流开始后不再切换
-    # ------------------------------------------------------------------
 
     async def stream_chat_with_images(
-        self,
-        *,
-        system: str,
-        user: str,
-        image_uris: list[str],
-        reasoning_effort: str | None = None,
+        self, *, system: str, user: str, image_uris: list[str],
+        reasoning_effort: str, extra_params: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
     ):
-        """流式多模态 VLM 调用，yield {"type": "thinking"|"content", "text": "..."}。
+        """流式多模态。failover 仅限连接建立期，流开始后不再切换。"""
+        await self._ensure_models()
 
-        Failover 策略：
-          - 在第一个 SSE data chunk 到达之前发生异常 → 自动切下一个模型
-          - 流已开始 yield chunk 后发生断裂 → 不再切换，直接抛异常给上层
-        """
-        from wellflow.app.llm.ofox_gateway import OfoxGateway
-        original_retries = OfoxGateway.MAX_RETRIES
-        OfoxGateway.MAX_RETRIES = 0
+        with self._with_retries_disabled():
+            n = len(self._states)
+            if n == 0:
+                raise RuntimeError("模型池为空，无法调用 LLM")
 
-        try:
-            gen = self._stream_chat_with_images_internal(
-                self._domestic, system=system, user=user,
-                image_uris=image_uris, reasoning_effort=reasoning_effort,
-            )
-            async for item in gen:
-                yield item
-        except RuntimeError:
-            # 国内全部失败 → 海外兜底
-            print(f"[model-pool] ⚠️ 国内全部不可用，尝试海外兜底 stream", flush=True)
-            gen = self._stream_chat_with_images_internal(
-                [self._fallback], system=system, user=user,
-                image_uris=image_uris, reasoning_effort=reasoning_effort,
-            )
-            async for item in gen:
-                yield item
-        finally:
-            OfoxGateway.MAX_RETRIES = original_retries
+            start = self._pick_start(n)
+            last_exc: Exception | None = None
+            for offset in range(n):
+                state = self._next_available((start + offset) % n)
+                if state is None:
+                    break
+                client = self._build_client(state)
+                print(f"[model-pool] 📤 stream → {state.model_key}", flush=True)
 
-    async def _stream_chat_with_images_internal(
-        self, group: list[_ModelState],
-        *, system: str, user: str, image_uris: list[str],
-        reasoning_effort: str | None,
-    ):
-        """内部实现：遍历模型，连接期 failover，流式 yield。"""
-        n = len(group)
-        start = self._pick_start(n)
-        last_exc: Exception | None = None
+                _stream_started = False
+                _got_content = False
+                try:
+                    async for delta in client.stream_chat_with_images(
+                        system=system, user=user, image_uris=image_uris,
+                        reasoning_effort=reasoning_effort, extra_params=extra_params,
+                        response_format=response_format,
+                    ):
+                        if not _stream_started:
+                            _stream_started = True
+                            state.record_success()
+                            print(f"[model-pool] ✅ {state.model_key} 流已建立", flush=True)
+                        if isinstance(delta, dict):
+                            if delta.get("type") == "content" and delta.get("text"):
+                                _got_content = True
+                        elif delta:
+                            _got_content = True
+                        yield delta
+                    # 流正常结束
+                    if _stream_started:
+                        if _got_content:
+                            return
+                        print(f"[model-pool] ⚠️ {state.model_key} 流结束但 content 为空，试下一个", flush=True)
+                        state.record_failure()
+                        continue
+                    print(f"[model-pool] ⚠️ {state.model_key} 空流，试下一个", flush=True)
+                    continue
+                except Exception as exc:
+                    last_exc = exc
+                    if _stream_started:
+                        print(f"[model-pool] 💥 {state.model_key} 流中断（已 yield），不再 failover", flush=True)
+                        raise
+                    state.record_failure()
+                    label = "可恢复" if _is_retryable_error(exc) else "其他"
+                    print(f"[model-pool] ❌ {state.model_key} 连接期失败 [{label}]: {type(exc).__name__}", flush=True)
+                    continue
 
-        for offset in range(n):
-            state = self._next_available(group, (start + offset) % n)
-            if state is None:
-                break
-
-            client = self._build_client(state)
-            n_img = len(image_uris)
-            print(f"[model-pool] 📤 stream → {state.model_key} (imgs={n_img}, eff={reasoning_effort})", flush=True)
-
-            _stream_started = False
-            try:
-                async for delta in client.stream_chat_with_images(
-                    system=system, user=user, image_uris=image_uris,
-                    reasoning_effort=reasoning_effort,
-                ):
-                    if not _stream_started:
-                        _stream_started = True
-                        state.record_success()
-                        print(f"[model-pool] ✅ {state.model_key} 流已建立", flush=True)
-                    yield delta
-                # 流正常结束（[DONE]）
-                if _stream_started:
-                    return  # 正常结束，不再遍历其他模型
-                # 没 yield 任何东西就退出了？可能是模型返回空流
-                print(f"[model-pool] ⚠️ {state.model_key} 空流，试下一个", flush=True)
-                continue
-            except Exception as exc:
-                last_exc = exc
-                if _stream_started:
-                    # 流已开始后断裂 → 不再切换，直接抛出
-                    print(f"[model-pool] 💥 {state.model_key} 流中断（已 yield），不再 failover", flush=True)
-                    raise
-                # 连接期失败 → 切下一个模型
-                state.record_failure()
-                label = "可恢复" if _is_retryable_error(exc) else "其他"
-                print(f"[model-pool] ❌ {state.model_key} 连接期失败 [{label}]: {type(exc).__name__}", flush=True)
-                continue
-
-        # 全部遍历完
-        if last_exc:
-            print(f"[model-pool] ⚠️ 本组全部失败", flush=True)
-        raise RuntimeError("模型池全部不可用")
+            if last_exc:
+                raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
+            raise RuntimeError("模型池全部不可用")
 
 
 # ---------------------------------------------------------------------------
-# 单例
+# 单例 / 工厂
 # ---------------------------------------------------------------------------
 
 _pool_instance: ModelPool | None = None
 
 
-def get_model_pool() -> ModelPool:
+def get_model_pool(
+    *,
+    capability: str | None = "text",
+    channel_id: int | None = None,          # None → 从 config.settings.llm_channel_id 读
+    preferred_model: str | None = "qwen3.8-flash",
+) -> ModelPool:
+    """拿到共享 ModelPool 实例（首次调用按参数创建，后续调用参数变化会重建）。
+
+    默认配置：
+      - capability='text'  → 拉 text/VLM 模型
+      - channel_id=None    → 走 settings.llm_channel_id（默认 4，LLM/VLM 统一渠道）
+      - preferred_model='qwen3.8-flash' → 优先用 qwen3.8-flash，失败降级
+
+    node4 生图走 node4_image_channel_id=4（语义不同，不要复用）。
+    """
     global _pool_instance
-    if _pool_instance is None:
-        _pool_instance = ModelPool()
+
+    channel_id = channel_id or settings.llm_channel_id  # None → config 统一渠道
+
+    need_rebuild = (
+        _pool_instance is None
+        or _pool_instance._capability != capability
+        or _pool_instance._channel_id != channel_id
+        or _pool_instance._preferred_model != preferred_model
+    )
+    if need_rebuild:
+        _pool_instance = ModelPool(
+            capability=capability,
+            channel_id=channel_id,
+            preferred_model=preferred_model,
+        )
+        print(
+            f"[model-pool] 🏗️ 新建 ModelPool: capability={capability}"
+            f" channel_id={channel_id} preferred={preferred_model}",
+            flush=True,
+        )
     return _pool_instance
-
-
-# 兼容旧 import（intent_classifier 还在用 get_intent_pool）
-def get_intent_pool() -> ModelPool:
-    return get_model_pool()

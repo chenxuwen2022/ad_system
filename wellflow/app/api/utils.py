@@ -10,11 +10,34 @@ OpenAPI 文档用 response_model=StandardResponse[T] 声明，Swagger 与实际�
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
 
+try:
+    # Python 3.9+ 标准库
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    from backports.zoneinfo import ZoneInfo  # type: ignore
+
+_CN_TZ = ZoneInfo("Asia/Shanghai")
+
 T = TypeVar("T")
+
+
+def to_cn_iso(dt: datetime | None) -> str | None:
+    """把数据库里的 UTC datetime（aware 或 naive 都兼容）转成北京时间 ISO 字符串。
+
+    后端统一用 UTC 存，但前端展示按北京时间。直接转成带 +08:00 的 ISO 后，
+    前端 JS 的 new Date(iso) 就能按用户浏览器时区正确解析。
+    """
+    if dt is None:
+        return None
+    # SQLAlchemy 从 DateTime(timezone=True) 读出的在有些驱动下是 naive（但值是 UTC）
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_CN_TZ).isoformat()
 
 
 class StandardResponse(BaseModel, Generic[T]):

@@ -49,6 +49,7 @@ async def init_wellflow_runtime() -> None:
     _graph = None
     try:
         from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+        from psycopg_pool import AsyncConnectionPool
         from wellflow.app.config import settings
 
         conn_string = settings.database_url_async.replace(
@@ -59,12 +60,27 @@ async def init_wellflow_runtime() -> None:
             conn_string += "&connect_timeout=5"
         else:
             conn_string += "?connect_timeout=5"
-        cm = AsyncPostgresSaver.from_conn_string(conn_string)
-        saver = await cm.__aenter__()  # 进入连接池生命周期（应用运行期间保持）
+
+        # 🔑 关键：用 AsyncConnectionPool 而不是 AsyncPostgresSaver.from_conn_string。
+        # from_conn_string 内部只建一个 AsyncConnection，
+        # LangGraph graph.astream / aget_state / aput 多个协程并发访问时，
+        # psycopg/asyncpg 会报 "another command is already in progress" /
+        # "cannot enter pipeline mode, connection not idle"。
+        # 连接池让每个并发请求拿到独立连接，彻底解决单连接并发冲突。
+        pool = AsyncConnectionPool(
+            conn_string,
+            min_size=4,
+            max_size=16,
+            open=True,
+            kwargs={"autocommit": True, "prepare_threshold": 0},
+        )
+        await pool.wait()
+
+        saver = AsyncPostgresSaver(conn=pool)
         await saver.setup()
         _checkpointer = saver
-        _checkpointer_cm = cm  # 保留 cm 引用防止 GC 回收连接池
-        print("✅ [商拍子系统] AsyncPostgresSaver 初始化完成，checkpoint 表已就绪")
+        _checkpointer_cm = pool  # 保留 pool 引用，shutdown 时 close
+        print("✅ [商拍子系统] AsyncPostgresSaver(连接池 min=4 max=16) 初始化完成，checkpoint 表已就绪")
     except Exception as exc:
         print(f"⚠️  [商拍子系统] LangGraph checkpointer 初始化失败（graph 相关功能降级）: {exc}")
         _checkpointer = None
@@ -88,7 +104,11 @@ async def shutdown_wellflow_runtime() -> None:
     global _checkpointer, _checkpointer_cm
     if _checkpointer_cm is not None:
         try:
-            await _checkpointer_cm.__aexit__(None, None, None)
+            # 可能是 AsyncConnectionPool（新）或 asynccontextmanager（旧，兼容）
+            if hasattr(_checkpointer_cm, "close"):
+                await _checkpointer_cm.close()
+            else:
+                await _checkpointer_cm.__aexit__(None, None, None)
         except Exception:
             pass
         _checkpointer_cm = None
