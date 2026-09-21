@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知识库 · WellFlow</title>
+<style>
+:root{
+  --brand-green:#CCFF00;--brand-green-deep:#A8D400;--brand-green-soft:#1A2E0A;
+  --ink-900:#FFFFFF;--ink-700:#B8B8B8;--ink-500:#8A8A8A;--ink-400:#6A6A6A;--ink-300:#5A5A5A;--ink-200:#3A3A3A;--ink-100:#2A2A2A;
+  --pearl:#0F0F0F;--pearl-2:#1A1A1A;--border:#2A2A2A;--border-strong:#3A3A3A;
+  --radius-md:10px;--radius-lg:16px;--shadow-md:0 4px 12px rgba(10,10,10,.08);
+  --font:'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);font-size:14px;color:var(--ink-900);background:var(--pearl);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input{font-family:inherit;outline:none}
+img{display:block;max-width:100%}
+.top-nav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:24px;height:60px;padding:0 28px;background:#0F0F0F;border-bottom:1px solid var(--border)}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
+.nav-logo-mark{width:26px;height:26px;border-radius:7px;background:var(--brand-green);display:grid;place-items:center;font-size:13px;font-weight:800;color:#0A0A0A}
+.nav-links{display:flex;gap:4px;flex:1}
+.nav-link{padding:8px 16px;border-radius:999px;font-size:14px;color:var(--ink-500)}
+.nav-link:hover{background:var(--pearl-2);color:var(--ink-900)}
+.nav-link.active{background:var(--brand-green);color:#0A0A0A;font-weight:600}
+.nav-avatar{width:34px;height:34px;border-radius:50%;background:#333;color:#fff;display:grid;place-items:center;font-size:14px;font-weight:600}
+
+.page{max-width:1400px;margin:0 auto;padding:24px 28px}
+.page-head{margin-bottom:18px}
+.page-head .eyebrow{font-size:12px;color:var(--brand-green-deep);font-weight:700;letter-spacing:1px}
+.page-head h1{font-size:24px;font-weight:700;margin:4px 0}
+.page-head p{color:var(--ink-500);font-size:14px}
+.head-row{display:flex;justify-content:space-between;align-items:center;margin-top:14px}
+.tabs{display:flex;gap:4px;background:var(--pearl-2);padding:4px;border-radius:999px}
+.tab{padding:7px 18px;border-radius:999px;font-size:13.5px;color:var(--ink-500)}
+.tab.active{background:#1A1A1A;color:var(--ink-900);font-weight:600;box-shadow:var(--shadow-md)}
+.btn{padding:9px 18px;border-radius:999px;font-size:13.5px;font-weight:600}
+.btn-primary{background:var(--brand-green);color:#0A0A0A}
+.btn-ghost{border:1.5px solid var(--border);color:var(--ink-700)}
+
+.layout{display:grid;grid-template-columns:240px 1fr;gap:24px;align-items:start;margin-top:20px}
+@media(max-width:980px){.layout{grid-template-columns:1fr}}
+
+.side{background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-lg);padding:14px}
+.tree-group{margin-bottom:6px}
+.tree-g{font-size:13px;font-weight:600;padding:8px 10px;display:flex;align-items:center;justify-content:space-between;cursor:pointer}
+.tree-g .arrow{transition:.2s;color:var(--ink-400);font-size:11px}
+.tree-g.open .arrow{transform:rotate(90deg)}
+.tree-c{padding:6px 10px 6px 26px;font-size:13px;color:var(--ink-500);border-radius:7px;cursor:pointer;display:flex;justify-content:space-between}
+.tree-c:hover{background:var(--pearl-2)}
+.tree-c.active{background:var(--brand-green-soft);color:#3a5200;font-weight:600}
+.tree-c .n{font-size:11px;color:var(--ink-400)}
+
+.type-filter{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.tf{padding:6px 14px;border-radius:999px;font-size:12.5px;border:1px solid var(--border);color:var(--ink-500)}
+.tf.active{background:var(--brand-green);color:#0A0A0A;border-color:var(--ink-900)}
+
+.doc-list{display:flex;flex-direction:column;gap:10px}
+.doc{display:flex;align-items:center;gap:14px;background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-md);padding:14px 16px;transition:.15s}
+.doc:hover{box-shadow:var(--shadow-md)}
+.doc .ext{width:44px;height:44px;border-radius:9px;display:grid;place-items:center;font-size:11px;font-weight:800;color:#fff;flex-shrink:0}
+.ext.pdf{background:#C6473A}.ext.doc{background:#2B6CB0}.ext.img{background:#5E8F00}.ext.link{background:#666}.ext.xls{background:#2F855A}
+.doc .info{flex:1;min-width:0}
+.doc .nm{font-size:14px;font-weight:600}
+.doc .meta{font-size:12px;color:var(--ink-400);margin-top:3px}
+.doc .tag{display:inline-block;font-size:11px;background:var(--pearl-2);padding:2px 8px;border-radius:999px;margin-right:6px;color:var(--ink-500)}
+.doc .act{display:flex;gap:8px}
+.icon-btn{padding:6px 10px;border-radius:7px;font-size:12px;color:var(--ink-500)}
+.icon-btn:hover{background:var(--pearl-2);color:var(--ink-900)}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <div class="nav-logo"><div class="nav-logo-mark">W</div><span>WellFlow</span></div>
+  <div class="nav-links">
+    <button class="nav-link" onclick="location.href='01-首页.html'">首页</button>
+    <button class="nav-link" onclick="location.href='02-资产库.html'">资产库</button>
+    <button class="nav-link active">知识库</button>
+    <button class="nav-link" onclick="location.href='04-投放台.html'">投放台</button>
+  </div>
+  <div class="nav-avatar">周</div>
+</nav>
+
+<div class="page">
+  <div class="page-head">
+    <div class="eyebrow">资料沉淀</div>
+    <h1>知识库</h1>
+    <p>按品牌分类沉淀资料，产品资料、创作参考与经验文档随时取用。</p>
+    <div class="head-row">
+      <div class="tabs">
+        <button class="tab active">资料库</button>
+        <button class="tab">审核队列 · 3</button>
+      </div>
+      <button class="btn btn-primary">+ 上传资料</button>
+    </div>
+  </div>
+
+  <div class="layout">
+    <aside class="side">
+      <div class="tree-group">
+        <div class="tree-g open">Babycare <span class="arrow">▶</span></div>
+        <div class="tree-c active">产品资料 <span class="n">12</span></div>
+        <div class="tree-c">创作参考 <span class="n">8</span></div>
+        <div class="tree-c">投放经验 <span class="n">5</span></div>
+      </div>
+      <div class="tree-group">
+        <div class="tree-g open">波司登 <span class="arrow">▶</span></div>
+        <div class="tree-c">产品资料 <span class="n">6</span></div>
+        <div class="tree-c">品牌规范 <span class="n">3</span></div>
+      </div>
+      <div class="tree-group">
+        <div class="tree-g open">其他品牌 <span class="arrow">▶</span></div>
+        <div class="tree-c">待分类 <span class="n">2</span></div>
+      </div>
+    </aside>
+
+    <div>
+      <div class="type-filter">
+        <button class="tf active">全部</button>
+        <button class="tf">文档</button>
+        <button class="tf">图片</button>
+        <button class="tf">视频</button>
+        <button class="tf">链接</button>
+      </div>
+      <div class="doc-list">
+        <div class="doc"><div class="ext pdf">PDF</div><div class="info"><div class="nm">Babycare 棉麻系列产品手册.pdf</div><div class="meta"><span class="tag">产品资料</span>2026-09-12 · 本地上传</div></div><div class="act"><button class="icon-btn">预览</button><button class="icon-btn">重命名</button></div></div>
+        <div class="doc"><div class="ext doc">DOC</div><div class="info"><div class="nm">儿童衬衫卖点拆解_v2.docx</div><div class="meta"><span class="tag">创作参考</span>2026-09-10 · 本地上传</div></div><div class="act"><button class="icon-btn">预览</button><button class="icon-btn">重命名</button></div></div>
+        <div class="doc"><div class="ext img">IMG</div><div class="info"><div class="nm">模特参考图_通勤白.jpg</div><div class="meta"><span class="tag">创作参考</span>2026-09-08 · 本地上传</div></div><div class="act"><button class="icon-btn">预览</button><button class="icon-btn">重命名</button></div></div>
+        <div class="doc"><div class="ext link">LINK</div><div class="info"><div class="nm">天猫商品详情页 - 儿童纯棉长袖衬衫</div><div class="meta"><span class="tag">产品资料</span>detail.tmall.com/item.htm?id=88... · 链接</div></div><div class="act"><button class="icon-btn">打开</button></div></div>
+        <div class="doc"><div class="ext xls">XLS</div><div class="info"><div class="nm">2026Q3 投放效果复盘.xlsx</div><div class="meta"><span class="tag">投放经验</span>2026-09-05 · 本地上传</div></div><div class="act"><button class="icon-btn">预览</button><button class="icon-btn">重命名</button></div></div>
+        <div class="doc"><div class="ext pdf">PDF</div><div class="info"><div class="nm">品牌视觉规范_色彩与字体.pdf</div><div class="meta"><span class="tag">品牌规范</span>2026-08-28 · 本地上传</div></div><div class="act"><button class="icon-btn">预览</button><button class="icon-btn">重命名</button></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.querySelectorAll('.tf').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tf').forEach(i=>i.classList.remove('active'));t.classList.add('active');}));
+document.querySelectorAll('.tree-c').forEach(c=>c.addEventListener('click',()=>{document.querySelectorAll('.tree-c').forEach(i=>i.classList.remove('active'));c.classList.add('active');}));
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.tab').forEach(i=>i.classList.remove('active'));t.classList.add('active');}));
+</script>
+</body>
+</html>

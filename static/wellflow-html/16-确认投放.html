@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>确认并投放 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1E2416;--card2:#1A1F14;--line:#2E3A1E;--green:#CCFF00;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:40px}
+.wrap{max-width:1200px;margin:0 auto;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:36px}
+.eyebrow{font-size:11px;color:var(--t3);letter-spacing:2px;margin-bottom:8px}
+h1{font-size:24px;font-weight:700;margin-bottom:24px}
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.close{width:36px;height:36px;border-radius:8px;background:#222;color:#aaa;font-size:20px;border:none;cursor:pointer}
+
+.steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:24px}
+.step{border:1px solid var(--line);border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:10px;opacity:.55}
+.step.done{opacity:1}
+.step.active{border:2px solid var(--green);opacity:1}
+.step .num{width:28px;height:28px;border-radius:50%;background:#222;color:#888;display:grid;place-items:center;font-weight:700;font-size:13px}
+.step.done .num,.step.active .num{background:var(--green);color:#000}
+.step .lb{color:var(--t3);font-weight:600;font-size:14px}
+.step.done .lb,.step.active .lb{color:var(--green)}
+
+.selbar{background:var(--card2);border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;flex-wrap:wrap;gap:8px}
+.selbar .n{color:var(--green);font-weight:600}
+.selbar .shop{color:var(--t3);font-size:13px}
+
+h2{font-size:18px;margin-bottom:16px}
+.confirm-card{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px}
+.confirm-card .advid{font-size:12.5px;color:var(--t3);margin-bottom:6px}
+.confirm-card .shopname{font-size:15px;font-weight:600;margin-bottom:4px}
+.confirm-card .summary{font-size:13px;color:var(--t2);margin-bottom:16px}
+.confirm-card .thumb{width:64px;height:80px;border-radius:6px;object-fit:cover;background:#000;margin-bottom:14px}
+.confirm-card .plan-name{font-size:15px;font-weight:600;margin-bottom:6px}
+.confirm-card .row{font-size:13px;color:var(--t3);margin-bottom:4px}
+.confirm-card .row b{color:var(--text);font-weight:500}
+
+.tip{background:rgba(204,255,0,.06);border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-bottom:16px}
+.tip .t{font-weight:600;color:var(--green);margin-bottom:6px}
+.tip .d{font-size:13px;color:var(--t2);line-height:1.6}
+
+.footer-bar{display:flex;justify-content:flex-end;gap:12px;border-top:1px solid var(--line);padding-top:18px}
+.btn{padding:11px 22px;border-radius:9px;font-size:14px;cursor:pointer;border:none}
+.ghost{background:#222;color:#fff;border:1px solid #333}
+.primary{background:var(--green);color:#000;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <div class="eyebrow">MATERIAL WORKSPACE</div>
+      <h1>上传到投放计划</h1>
+    </div>
+</div>
+
+  <div class="steps">
+    <div class="step done"><span class="num">✓</span><span class="lb">选择店铺</span></div>
+    <div class="step done"><span class="num">✓</span><span class="lb">选择计划与商品</span></div>
+    <div class="step active"><span class="num">3</span><span class="lb">确认并投放</span></div>
+  </div>
+
+  <div class="selbar">
+    <span class="n" id="selCount">已选 1 份素材</span>
+    <span class="shop" id="shopInfo">—</span>
+  </div>
+
+  <h2>确认本次投放内容</h2>
+  <div id="confirmList"></div>
+
+  <div class="tip">
+    <div class="t">上传成功后，将自动关联计划并启动投放</div>
+    <div class="d">每批最多 5 份。若上传失败，计划会等待重传；已成功的素材不会重复上传。</div>
+  </div>
+
+  <div class="footer-bar">
+    <button class="btn ghost" onclick="history.back()">上一步</button>
+    <button class="btn primary" onclick="doLaunch()">上传到计划并开始投放 →</button>
+  </div>
+</div>
+
+<script>
+const qs=new URLSearchParams(location.search);
+const count=qs.get('count')||'1';
+const shop=qs.get('shop')||'';
+const aid=qs.get('aid')||'';
+document.getElementById('selCount').textContent='已选 '+count+' 份素材';
+document.getElementById('shopInfo').textContent=decodeURIComponent(shop);
+
+// 从 sessionStorage 读第二步选中的计划+商品
+const chosen=JSON.parse(sessionStorage.getItem('launch_chosen')||'[]');
+const box=document.getElementById('confirmList');
+if(chosen.length===0){
+  box.innerHTML='<div style="color:#888;padding:20px">未选择任何计划，请返回上一步。</div>';
+}else{
+  box.innerHTML=chosen.map(c=>
+    '<div class="confirm-card">'+
+      '<div class="advid">广告主 ID: '+aid+'</div>'+
+      '<div class="shopname">'+decodeURIComponent(shop)+'</div>'+
+      '<div class="summary">'+count+' 份素材 → '+chosen.length+' 个计划 · 分 '+Math.ceil(count/5)+' 批上传</div>'+
+      '<div class="plan-name">'+c.plan_name+'</div>'+
+      '<div class="row">计划 ID: <b>'+c.plan_id+'</b></div>'+
+      (c.product_ids.length?'<div class="row">商品: <b>'+c.product_ids.join(' / ')+'</b></div>':'')+
+    '</div>').join('');
+}
+
+function doLaunch(){
+  if(chosen.length===0){alert('请先选择计划');return;}
+  location.href='17-投放结果.html';
+}
+</script>
+</body>
+</html>

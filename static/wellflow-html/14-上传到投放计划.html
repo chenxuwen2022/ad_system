@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>上传到投放计划 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1E2416;--card2:#1A1F14;--line:#2E3A1E;--green:#CCFF00;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:40px}
+.wrap{max-width:900px;margin:0 auto;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:36px}
+.eyebrow{font-size:11px;color:var(--t3);letter-spacing:2px;margin-bottom:8px}
+h1{font-size:24px;font-weight:700;margin-bottom:24px}
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.close{width:36px;height:36px;border-radius:8px;background:#222;color:#aaa;font-size:20px;border:none;cursor:pointer}
+
+/* 步骤条 */
+.steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:24px}
+.step{border:1px solid var(--line);border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:10px;opacity:.55}
+.step.active{border:2px solid var(--green);opacity:1}
+.step .num{width:28px;height:28px;border-radius:50%;background:#222;color:#888;display:grid;place-items:center;font-weight:700;font-size:13px}
+.step.active .num{background:var(--green);color:#000}
+.step .lb{color:var(--t3);font-weight:600;font-size:14px}
+.step.active .lb{color:var(--green)}
+
+/* 已选素材提示 */
+.selbar{background:var(--card2);border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:22px}
+.selbar .n{color:var(--green);font-weight:600}
+.selbar .hint{color:var(--t3);font-size:13px}
+
+h2{font-size:18px;margin-bottom:8px}
+.desc{color:var(--t3);font-size:13px;margin-bottom:22px}
+
+.form{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:28px}
+@media(max-width:700px){.form{grid-template-columns:1fr}}
+label{display:block;color:var(--t3);font-size:13px;margin-bottom:8px}
+.ro{background:#0F0F0F;border:1px solid var(--line);border-radius:8px;padding:12px 14px;color:#fff;font-size:14px}
+select{width:100%;background:#0F0F0F;border:1px solid var(--line);border-radius:8px;padding:12px 14px;color:#fff;font-size:14px;appearance:none;cursor:pointer}
+
+.foot{display:flex;justify-content:flex-end;gap:12px;border-top:1px solid var(--line);padding-top:18px}
+.btn{padding:11px 22px;border-radius:9px;font-size:14px;cursor:pointer;border:none}
+.ghost{background:#222;color:#fff;border:1px solid #333}
+.primary{background:var(--green);color:#000;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <div class="eyebrow">MATERIAL WORKSPACE</div>
+      <h1>上传到投放计划</h1>
+    </div>
+</div>
+
+  <div class="steps">
+    <div class="step active">
+      <span class="num">1</span><span class="lb">选择店铺</span>
+    </div>
+    <div class="step">
+      <span class="num">2</span><span class="lb">选择计划与商品</span>
+    </div>
+    <div class="step">
+      <span class="num">3</span><span class="lb">确认并投放</span>
+    </div>
+  </div>
+
+  <div class="selbar">
+    <span class="n" id="selCount">已选 1 份素材</span>
+    <span class="hint">先确定投放渠道和店铺</span>
+  </div>
+
+  <h2>这些素材要投放到哪里？</h2>
+  <div class="desc">一个任务对应一家店铺；下一步可选择这家店铺的多个计划。</div>
+
+  <div class="form">
+    <div>
+      <label>投放渠道</label>
+      <div class="ro">巨量千川</div>
+    </div>
+    <div>
+      <label>店铺</label>
+      <select id="shopSel">
+        <option value="">请选择投放店铺</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="foot">
+    <button class="btn ghost" onclick="location.href='04-投放台.html'">取消</button>
+    <button class="btn primary" onclick="nextStep()">下一步：选择计划 →</button>
+  </div>
+</div>
+
+<script>
+// 读取选中素材数（从 localStorage 或 URL 参数）
+const n=parseInt(new URLSearchParams(location.search).get('count')||'1');
+document.getElementById('selCount').textContent='已选 '+n+' 份素材';
+
+// 加载店铺（/api/shops 直接返回数组）
+fetch('/api/shops').then(r=>r.json()).then(d=>{
+  const sel=document.getElementById('shopSel');
+  (Array.isArray(d)?d:(d.data||[])).forEach(s=>{
+    const o=document.createElement('option');
+    o.value=s.advertiser_id||s.id;
+    o.textContent=(s.shop_name||s.name||o.value)+(s.channel?' · '+s.channel:'');
+    sel.appendChild(o);
+  });
+}).catch(e=>{console.error('加载店铺失败',e);});
+
+function nextStep(){
+  const sel=document.getElementById('shopSel');
+  if(!sel.value){alert('请先选择投放店铺');return;}
+  const shop=encodeURIComponent(sel.selectedOptions[0].textContent);
+  const aid=encodeURIComponent(sel.value);
+  const count=new URLSearchParams(location.search).get('count')||'1';
+  location.href='15-选择计划.html?count='+count+'&shop='+shop+'&aid='+aid;
+}
+</script>
+</body>
+</html>

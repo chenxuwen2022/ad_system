@@ -1,4 +1,4 @@
-import asyncio
+﻿import asyncio
 import sys
 from pathlib import Path
 
@@ -29,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from ad.routes.upload_routes import router as upload_router
 from ad.routes.ad_routes import router as ad_router
+from ad.routes.shops_routes import router as shops_router, init_ads_shops
 from wellflow.app.api.outfit import router as wf_outfit_router
 from wellflow.app.api.uploads import router as wf_uploads_router
 from ad.config import MEDIA_STORAGE_PATH
@@ -57,6 +58,8 @@ async def lifespan(app: FastAPI):
     # 第一步：广告投放系统初始化
     init_db()
     print("[ok] 数据库表初始化完成")
+    try: await init_ads_shops()
+    except Exception as _e: print(f"[ads_shops] 建表失败: {_e}")
     _ = get_token_mgr()
     print(f"广告投放系统启动，media目录: {MEDIA_STORAGE_PATH}")
     # 第二步：商拍子系统初始化（checkpointer + graph，PG 不可用时自动降级）
@@ -97,6 +100,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 # ── 子系统一：广告投放（原 ad_system 全部路由，路径不变）──
 app.include_router(upload_router)
 app.include_router(ad_router)
+app.include_router(shops_router, prefix="/api/shops")  # 店铺广告主账户 CRUD
 app.include_router(wf_outfit_router, prefix="/api")    # 穿搭库(数据库版,wellflow/app/api/outfit.py)
 app.include_router(wf_uploads_router, prefix="/api")  # WellFlow 统一图片上传
 
@@ -209,3 +213,4 @@ if __name__ == "__main__":
 
     # 不要reload，windows下reload会多进程导致sqlite问题
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
+

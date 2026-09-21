@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>选择计划与商品 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1E2416;--card2:#1A1F14;--line:#2E3A1E;--green:#CCFF00;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:40px}
+.wrap{max-width:1200px;margin:0 auto;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:36px}
+.eyebrow{font-size:11px;color:var(--t3);letter-spacing:2px;margin-bottom:8px}
+h1{font-size:24px;font-weight:700;margin-bottom:24px}
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.close{width:36px;height:36px;border-radius:8px;background:#222;color:#aaa;font-size:20px;border:none;cursor:pointer}
+
+.steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:24px}
+.step{border:1px solid var(--line);border-radius:12px;padding:14px 18px;display:flex;align-items:center;gap:10px;opacity:.55}
+.step.done{opacity:1}
+.step.active{border:2px solid var(--green);opacity:1}
+.step .num{width:28px;height:28px;border-radius:50%;background:#222;color:#888;display:grid;place-items:center;font-weight:700;font-size:13px}
+.step.done .num,.step.active .num{background:var(--green);color:#000}
+.step .lb{color:var(--t3);font-weight:600;font-size:14px}
+.step.done .lb,.step.active .lb{color:var(--green)}
+
+.selbar{background:var(--card2);border-radius:10px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;flex-wrap:wrap;gap:8px}
+.selbar .n{color:var(--green);font-weight:600}
+.selbar .shop{color:var(--t3);font-size:13px}
+
+h2{font-size:18px;margin-bottom:8px}
+.desc{color:var(--t3);font-size:13px;margin-bottom:16px}
+.summary{display:flex;gap:20px;background:var(--card2);border-radius:10px;padding:12px 18px;margin-bottom:16px;font-size:13px;color:var(--t2);flex-wrap:wrap}
+.summary b{color:var(--green)}
+
+.plan-list{display:flex;flex-direction:column;gap:12px;margin-bottom:24px;max-height:440px;overflow-y:auto;padding-right:6px}
+.plan{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:16px 18px;display:grid;grid-template-columns:1fr 320px;gap:18px;align-items:start;cursor:pointer;transition:all .15s}
+.plan:hover{border-color:#4A6A20}
+.plan.sel{border-color:var(--green);background:rgba(204,255,0,.04)}
+.plan .left{display:flex;gap:14px}
+.plan .chk{width:20px;height:20px;border-radius:5px;border:2px solid #555;background:#111;flex-shrink:0;margin-top:3px;display:grid;place-items:center;color:#000;font-size:13px;font-weight:900}
+.plan.sel .chk{background:var(--green);border-color:var(--green)}
+.plan .chk.on::after{content:'✓'}
+.plan .info .nm{font-size:15px;font-weight:600;margin-bottom:5px}
+.plan .info .pid{font-size:12.5px;color:var(--t3);margin-bottom:4px}
+.plan .info .stage{font-size:12.5px;color:var(--t2)}
+
+/* 右侧商品区（未选中时隐藏） */
+.plan .right{display:none}
+.plan.sel .right{display:block}
+.plan .right .plb{font-size:13px;color:var(--t3);margin-bottom:8px}
+.product-sel{position:relative}
+.product-sel .toggle{width:100%;background:#0F0F0F;border:1px solid var(--line);border-radius:8px;padding:10px 12px;color:var(--t3);font-size:13px;text-align:left;cursor:pointer;display:flex;justify-content:space-between;align-items:center}
+.product-sel .toggle b{color:var(--text);font-weight:500}
+.product-sel .panel{display:none;position:absolute;top:calc(100% + 4px);left:0;right:0;max-height:220px;overflow-y:auto;background:#1A1F14;border:1px solid var(--green);border-radius:8px;z-index:20;padding:6px}
+.product-sel.open .panel{display:block}
+.product-sel .panel label{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;font-size:13px;color:var(--t2)}
+.product-sel .panel label:hover{background:rgba(204,255,0,.08)}
+.product-sel .panel input{accent-color:var(--green)}
+
+.loading,.empty{padding:40px;text-align:center;color:var(--t3);font-size:14px}
+
+.footer-bar{display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--line);padding-top:18px}
+.selcount{color:var(--t3);font-size:14px}
+.selcount b{color:var(--green)}
+.btns{display:flex;gap:12px}
+.btn{padding:11px 22px;border-radius:9px;font-size:14px;cursor:pointer;border:none}
+.ghost{background:#222;color:#fff;border:1px solid #333}
+.primary{background:var(--green);color:#000;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <div class="eyebrow">MATERIAL WORKSPACE</div>
+      <h1>上传到投放计划</h1>
+    </div>
+</div>
+
+  <div class="steps">
+    <div class="step done"><span class="num">✓</span><span class="lb">选择店铺</span></div>
+    <div class="step active"><span class="num">2</span><span class="lb">选择计划与商品</span></div>
+    <div class="step"><span class="num">3</span><span class="lb">确认并投放</span></div>
+  </div>
+
+  <div class="selbar">
+    <span class="n" id="selCount">已选 1 份素材</span>
+    <span class="shop" id="shopInfo">—</span>
+  </div>
+
+  <h2>关联计划 ID，再选择该计划的商品</h2>
+  <div class="desc">全部 N 份素材会上传到每个选中的计划。仅显示该计划可关联的商品。</div>
+  <div class="summary" id="summary" style="display:none">
+    <span>投放中计划 <b id="sumCount">0</b> 个</span>
+    <span>投放总量 <b id="sumBudget">¥0</b></span>
+    <span>已消耗 <b id="sumCost">¥0</b></span>
+    <span>剩余 <b id="sumRemain">¥0</b></span>
+  </div>
+
+  <div id="planList"><div class="loading">正在加载投放计划…</div></div>
+
+  <div class="footer-bar">
+    <span class="selcount">已选 <b id="planCount">0</b> 个计划</span>
+    <div class="btns">
+      <button class="btn ghost" onclick="history.back()">上一步</button>
+      <button class="btn primary" onclick="nextStep()">下一步：确认投放 →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const qs=new URLSearchParams(location.search);
+const count=qs.get('count')||'1';
+const shop=qs.get('shop')||'';
+const aid=qs.get('aid')||'';
+document.getElementById('selCount').textContent='已选 '+count+' 份素材';
+document.getElementById('shopInfo').textContent=decodeURIComponent(shop);
+
+function fmt(v){v=Number(v||0);return v>=10000?(v/10000).toFixed(1)+'万':v.toFixed(0);}
+
+// 商品列表缓存
+let PRODUCTS_CACHE=null;
+function loadProducts(){
+  if(PRODUCTS_CACHE) return Promise.resolve(PRODUCTS_CACHE);
+  return fetch('/api/products?advertiser_id='+encodeURIComponent(aid))
+    .then(r=>r.json()).then(d=>{
+      PRODUCTS_CACHE=(d.data||d.products||[]);
+      return PRODUCTS_CACHE;
+    }).catch(()=>{PRODUCTS_CACHE=[];return [];});
+}
+
+fetch('/api/plans?advertiser_id='+encodeURIComponent(aid))
+  .then(r=>r.json())
+  .then(d=>{
+    const box=document.getElementById('planList');
+    if(!d.success){box.innerHTML='<div class="empty">加载失败：'+(d.error||'未知错误')+'</div>';return;}
+    if(d.plan_count>0){
+      document.getElementById('summary').style.display='flex';
+      document.getElementById('sumCount').textContent=d.plan_count;
+      document.getElementById('sumBudget').textContent='¥'+fmt(d.total_budget);
+      document.getElementById('sumCost').textContent='¥'+fmt(d.total_cost);
+      document.getElementById('sumRemain').textContent='¥'+fmt(d.remain_budget);
+    }
+    const plans=d.plans||[];
+    if(plans.length===0){box.innerHTML='<div class="empty">该店铺暂无投放中的计划</div>';return;}
+    box.innerHTML=plans.map((p,i)=>
+      '<div class="plan" data-id="'+p.ad_id+'" data-name="'+encodeURIComponent(p.name||'')+'" onclick="togglePlan(this)">'+
+        '<div class="left">'+
+          '<div class="chk"></div>'+
+          '<div class="info">'+
+            '<div class="nm">'+(p.name||'未命名')+'</div>'+
+            '<div class="pid">计划 ID: '+p.ad_id+'</div>'+
+            '<div class="stage">'+(p.status_text||'')+' · 日预算 ¥'+fmt(p.budget)+'</div>'+
+          '</div>'+
+        '</div>'+
+        '<div class="right">'+
+          '<div class="plb">计划商品</div>'+
+          '<div class="product-sel" onclick="event.stopPropagation()">'+
+            '<div class="toggle" onclick="this.parentElement.classList.toggle(\'open\')">'+
+              '<b class="ph">请选择商品 SKU</b><span>▾</span>'+
+            '</div>'+
+            '<div class="panel" data-i="'+i+'">加载商品…</div>'+
+          '</div>'+
+        '</div>'+
+      '</div>').join('');
+    // 预加载商品
+    loadProducts().then(ps=>{
+      document.querySelectorAll('.product-sel .panel').forEach(panel=>{
+        panel.innerHTML=ps.map(p=>
+          '<label><input type="radio" name="prod_'+panel.dataset.i+'" value="'+p.id+'" onchange="updProd(this)"><span>'+(p.name||p.id)+'</span></label>'
+        ).join('')||'<div style="padding:10px;color:#888">无可投商品</div>';
+      });
+    });
+  })
+  .catch(e=>{document.getElementById('planList').innerHTML='<div class="empty">网络错误：'+e.message+'</div>';});
+
+function togglePlan(el){
+  el.classList.toggle('sel');
+  el.querySelector('.chk').classList.toggle('on');
+  document.getElementById('planCount').textContent=document.querySelectorAll('.plan.sel').length;
+}
+function updProd(cb){
+  const panel=cb.closest('.panel');
+  const box=panel.closest('.product-sel').querySelector('.ph');
+  const n=panel.querySelectorAll('input:checked').length;
+  box.textContent=n>0?cb.parentElement.textContent.trim():'请选择商品 SKU';
+}
+function nextStep(){
+  const n=document.querySelectorAll('.plan.sel').length;
+  if(n===0){alert('请至少选择一个计划');return;}
+  const chosen=[];
+  document.querySelectorAll('.plan.sel').forEach(el=>{
+    const pids=Array.from(el.querySelectorAll('.panel input:checked')).map(c=>c.value);
+    chosen.push({plan_id:el.dataset.id,plan_name:decodeURIComponent(el.dataset.name),product_ids:pids});
+  });
+  sessionStorage.setItem('launch_chosen', JSON.stringify(chosen));
+  const count=new URLSearchParams(location.search).get('count')||'1';
+  const shop=new URLSearchParams(location.search).get('shop')||'';
+  const aid=new URLSearchParams(location.search).get('aid')||'';
+  location.href='16-确认投放.html?count='+count+'&shop='+shop+'&aid='+aid;
+}
+</script>
+</body>
+</html>

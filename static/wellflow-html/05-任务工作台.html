@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>任务工作台 · WellFlow</title>
+<style>
+:root{
+  --brand-green:#CCFF00;--brand-green-deep:#A8D400;--brand-green-soft:#1A2E0A;
+  --ink-900:#FFFFFF;--ink-700:#B8B8B8;--ink-500:#8A8A8A;--ink-400:#6A6A6A;--ink-300:#5A5A5A;--ink-200:#3A3A3A;--ink-100:#2A2A2A;
+  --pearl:#0F0F0F;--pearl-2:#1A1A1A;--border:#2A2A2A;
+  --ok:#5E8F00;--warn:#B8782F;--err:#C6473A;
+  --radius-md:10px;--radius-lg:16px;--shadow-md:0 4px 12px rgba(10,10,10,.08);
+  --font:'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);font-size:14px;color:var(--ink-900);background:var(--pearl-2);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+img{display:block;max-width:100%}
+.top-nav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:24px;height:60px;padding:0 28px;background:#0F0F0F;border-bottom:1px solid var(--border)}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
+.nav-logo-mark{width:26px;height:26px;border-radius:7px;background:var(--brand-green);display:grid;place-items:center;font-size:13px;font-weight:800;color:#0A0A0A}
+.nav-links{display:flex;gap:4px;flex:1}
+.nav-link{padding:8px 16px;border-radius:999px;font-size:14px;color:var(--ink-500)}
+.nav-link:hover{background:var(--pearl-2);color:var(--ink-900)}
+.nav-link.active{background:var(--brand-green);color:#0A0A0A;font-weight:600}
+.nav-avatar{width:34px;height:34px;border-radius:50%;background:#333;color:#fff;display:grid;place-items:center;font-size:14px;font-weight:600}
+.page{max-width:1200px;margin:0 auto;padding:28px}
+.page-head{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px}
+.page-head h1{font-size:24px;font-weight:700}
+.page-head p{color:var(--ink-500);margin-top:4px}
+.btn{padding:10px 20px;border-radius:999px;font-size:14px;font-weight:600}
+.btn-primary{background:var(--brand-green);color:#0A0A0A}
+
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+.stat{background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px}
+.stat .n{font-size:26px;font-weight:700}
+.stat .l{font-size:12px;color:var(--ink-400);margin-top:2px}
+@media(max-width:780px){.stats{grid-template-columns:repeat(2,1fr)}}
+
+.task-list{display:flex;flex-direction:column;gap:12px}
+.task{display:flex;align-items:center;gap:16px;background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px 18px;transition:.15s;cursor:pointer}
+.task:hover{box-shadow:var(--shadow-md)}
+.task .thumb{width:64px;height:64px;border-radius:10px;object-fit:cover;background:var(--pearl-2)}
+.task .info{flex:1;min-width:0}
+.task .ttl{font-size:15px;font-weight:600}
+.task .meta{font-size:12.5px;color:var(--ink-400);margin-top:4px}
+.progress{height:6px;background:var(--pearl-2);border-radius:99px;margin-top:10px;overflow:hidden;width:260px}
+.progress .bar{height:100%;background:var(--brand-green);border-radius:99px}
+.status{font-size:12px;font-weight:600;padding:5px 12px;border-radius:999px;white-space:nowrap}
+.s-running{background:var(--brand-green-soft);color:#5A7A00}
+.s-done{background:#1A2E0A;color:#A2DDAA}
+.s-fail{background:#3A1414;color:#EA6668}
+.s-queue{background:var(--pearl-2);color:var(--ink-500)}
+.task .go{color:var(--ink-300);font-size:18px}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <div class="nav-logo"><div class="nav-logo-mark">W</div><span>WellFlow</span></div>
+  <div class="nav-links">
+    <button class="nav-link" onclick="location.href='01-首页.html'">首页</button>
+    <button class="nav-link" onclick="location.href='02-资产库.html'">资产库</button>
+    <button class="nav-link" onclick="location.href='03-知识库.html'">知识库</button>
+    <button class="nav-link" onclick="location.href='04-投放台.html'">投放台</button>
+  </div>
+  <div class="nav-avatar">周</div>
+</nav>
+
+<div class="page">
+  <div class="page-head">
+    <div><h1>任务工作台</h1><p>所有 AI 创作任务，实时查看进度与结果。</p></div>
+    <button class="btn btn-primary" onclick="location.href='01-首页.html'">+ 新建任务</button>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="n">3</div><div class="l">进行中</div></div>
+    <div class="stat"><div class="n">18</div><div class="l">已完成</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">失败</div></div>
+    <div class="stat"><div class="n">22</div><div class="l">总任务</div></div>
+  </div>
+
+  <div class="task-list">
+    <div class="task" onclick="location.href='06-阶段创作台.html'">
+      <img class="thumb" src="assets/shirt-front.jpg">
+      <div class="info">
+        <div class="ttl">儿童纯棉长袖衬衫 · 投流图生成（拉新）</div>
+        <div class="meta">SKU: BC-BABY-001 · 巨量千川 · 2026-09-20 10:32</div>
+        <div class="progress"><div class="bar" style="width:65%"></div></div>
+      </div>
+      <span class="status s-running">进行中 65%</span>
+      <span class="go">›</span>
+    </div>
+    <div class="task" onclick="location.href='06-阶段创作台.html'">
+      <img class="thumb" src="assets/shirt-detail.jpg">
+      <div class="info">
+        <div class="ttl">棉麻通勤系列 · 商详图制作</div>
+        <div class="meta">SKU: LINEN-SHIRT-001 · 淘宝 · 2026-09-19 16:20</div>
+        <div class="progress"><div class="bar" style="width:100%"></div></div>
+      </div>
+      <span class="status s-done">已完成</span>
+      <span class="go">›</span>
+    </div>
+    <div class="task" onclick="location.href='06-阶段创作台.html'">
+      <img class="thumb" src="assets/shirt-side.jpg">
+      <div class="info">
+        <div class="ttl">儿童衬衫 · 主图白底+场景版</div>
+        <div class="meta">SKU: BC-BABY-002 · 抖音 · 2026-09-19 11:05</div>
+        <div class="progress"><div class="bar" style="width:100%"></div></div>
+      </div>
+      <span class="status s-done">已完成</span>
+      <span class="go">›</span>
+    </div>
+    <div class="task">
+      <img class="thumb" src="assets/shirt-back.jpg">
+      <div class="info">
+        <div class="ttl">成人衬衫 · 再创作变体 4 张</div>
+        <div class="meta">SKU: LINEN-SHIRT-003 · 巨量千川 · 2026-09-18 19:40</div>
+        <div class="progress"><div class="bar" style="width:0%"></div></div>
+      </div>
+      <span class="status s-queue">排队中</span>
+      <span class="go">›</span>
+    </div>
+    <div class="task">
+      <img class="thumb" src="assets/good-front.jpg">
+      <div class="info">
+        <div class="ttl">商品短视频 · 6 秒信息流</div>
+        <div class="meta">SKU: BC-BABY-001 · 巨量千川 · 2026-09-18 14:12</div>
+        <div class="progress"><div class="bar" style="width:30%"></div></div>
+      </div>
+      <span class="status s-fail">失败 · 重试</span>
+      <span class="go">›</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>本地上传 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1A1F14;--card2:#1E2416;--line:#2E3A1E;--green:#CCFF00;--red:#FF6B6B;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);font-size:14px;min-height:100vh}
+button,select,input{font-family:inherit;outline:none}
+button{cursor:pointer;border:none;background:none;color:inherit}
+.eyebrow{font-size:12px;color:var(--t3);letter-spacing:2px;margin-bottom:10px}
+h1{font-size:26px;font-weight:700}
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.close{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;color:var(--t2);font-size:20px}
+.close:hover{background:var(--card2)}
+.page{max-width:1400px;margin:0 auto;padding:36px 40px 60px}
+.sub{color:var(--t2);margin-top:12px;font-size:14px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:28px}
+@media(max-width:800px){.row{grid-template-columns:1fr}}
+.f label{display:block;font-size:13.5px;color:var(--t2);margin-bottom:8px}
+.f select{width:100%;background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:13px 16px;color:#fff;font-size:14px;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238A9A78' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 16px center}
+.drop{margin-top:22px;border:1.5px dashed #3A4A24;border-radius:14px;background:rgba(60,80,30,.18);padding:48px 20px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:10px;transition:.2s}
+.drop.drag{border-color:var(--green);background:rgba(120,160,40,.22)}
+.up-ic{width:54px;height:54px;color:var(--t2)}
+.drop .big{font-size:17px;color:var(--text);font-weight:500}
+.drop .fmt{font-size:13px;color:var(--t3)}
+.pick{margin-top:8px;padding:11px 22px;border-radius:9px;background:var(--card2);border:1px solid var(--line);color:var(--text);font-size:14px}
+.pick:hover{border-color:var(--green)}
+.drop .size{font-size:12.5px;color:var(--t3);margin-top:6px}
+.list{margin-top:22px;display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px}
+.item{background:var(--card2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.item .prev{width:100%;height:110px;background:#000;object-fit:cover;display:block}
+.item .meta{padding:8px 10px;font-size:12px}
+.item .nm{color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .st{margin-top:3px;font-size:11.5px}
+.st.doing{color:#FAAD14}.st.ok{color:var(--green)}.st.err{color:var(--red)}
+.foot{margin-top:30px;border-top:1px solid var(--line);padding-top:24px;display:flex;justify-content:space-between;align-items:center}
+.tip{font-size:13px;color:var(--t3)}
+.btns{display:flex;gap:12px}
+.btn{padding:11px 22px;border-radius:9px;font-size:14px}
+.ghost{background:var(--card2);color:var(--text);border:1px solid var(--line)}
+.primary{background:var(--green);color:#000;font-weight:600}
+.primary:disabled{opacity:.5;cursor:not-allowed}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <div>
+      <div class="eyebrow">MATERIAL WORKSPACE</div>
+      <h1>本地上传</h1>
+    </div>
+    <button class="close" onclick="location.href='04-投放台.html'">✕</button>
+  </div>
+  <p class="sub">选择文件与关联商品，支持单个或批量上传到素材库。</p>
+
+  <div class="row">
+    <div class="f">
+      <label>关联产品</label>
+      <select id="product"><option value="">（暂不关联）</option></select>
+    </div>
+    <div class="f">
+      <label>投放场景</label>
+      <select><option>直播间</option><option>达人</option><option>商品卡</option></select>
+    </div>
+  </div>
+
+  <div class="drop" id="drop">
+    <svg class="up-ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 16V4m0 0L7 9m5-5l5 5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 15v3a2 2 0 002 2h12a2 2 0 002-2v-3" stroke-linecap="round"/></svg>
+    <div class="big" id="big">拖入图片或视频，批量添加素材</div>
+    <div class="fmt">图片：JPG / PNG / WebP / GIF · 视频：MP4 / WebM / MOV</div>
+    <button class="pick" onclick="document.getElementById('file').click()">选择多个文件</button>
+    <input type="file" id="file" multiple accept="image/*,video/*" hidden>
+    <div class="size">单文件 ≤ 100 MB，每批 ≤ 40 个 / 500 MB</div>
+  </div>
+
+  <div class="list" id="list"></div>
+
+  <div class="foot">
+    <span class="tip" id="tip">等待选择文件</span>
+    <div class="btns">
+      <button class="btn ghost" onclick="location.href='04-投放台.html'">取消</button>
+      <button class="btn primary" id="uploadBtn" disabled>开始上传</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const drop=document.getElementById('drop'), fileInput=document.getElementById('file'),
+      list=document.getElementById('list'), tip=document.getElementById('tip'),
+      upBtn=document.getElementById('uploadBtn'), big=document.getElementById('big');
+let pending=[];  // {file, status, url}
+
+function addFiles(files){
+  for(const f of files){
+    pending.push({file:f,status:'待上传',url:URL.createObjectURL(f)});
+  }
+  render();
+  upBtn.disabled=!pending.length;
+}
+function render(){
+  list.innerHTML=pending.map((p,i)=>{
+    const isV=/\.(mp4|mov|webm|avi|mkv)$/i.test(p.file.name);
+    const media=isV
+      ? `<video class="prev" src="${p.url}" muted></video>`
+      : `<img class="prev" src="${p.url}">`;
+    return `<div class="item">${media}
+      <div class="meta"><div class="nm">${p.file.name}</div>
+      <div class="st ${p.status==='上传中'?'doing':p.status==='成功'?'ok':'err'}">${p.status}</div></div></div>`;
+  }).join('');
+  big.textContent=pending.length? ('已选择 '+pending.length+' 个文件') : '拖入图片或视频，批量添加素材';
+  tip.textContent=pending.length? ('共 '+pending.length+' 个文件待上传') : '等待选择文件';
+}
+fileInput.onchange=()=>{addFiles(fileInput.files);fileInput.value='';};
+['dragover','dragenter'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.add('drag');}));
+['dragleave','drop'].forEach(e=>drop.addEventListener(e,ev=>{ev.preventDefault();drop.classList.remove('drag');}));
+drop.addEventListener('drop',ev=>addFiles(ev.dataTransfer.files));
+
+upBtn.onclick=async()=>{
+  upBtn.disabled=true;
+  let ok=0, fail=0;
+  for(let i=0;i<pending.length;i++){
+    const p=pending[i];
+    if(p.status==='成功') continue;
+    p.status='上传中'; render();
+    try{
+      const fd=new FormData(); fd.append('file', p.file);
+      const r=await fetch('/api/upload_material',{method:'POST',body:fd});
+      const j=await r.json();
+      if(j.success){p.status='成功';ok++;}
+      else{p.status='失败: '+(j.msg||'');fail++;}
+    }catch(e){p.status='失败';fail++;}
+    render();
+  }
+  tip.textContent=`完成：成功 ${ok}，失败 ${fail}`;
+  upBtn.textContent= fail? '重试失败项':'全部完成';
+  if(!fail){setTimeout(()=>location.href='04-投放台.html',1200);}
+};
+</script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BI 数据看板 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1A1A1A;--card2:#1F1F1F;--line:#2A2A2A;--text:#fff;--t2:#B8B8B8;--t3:#8A8A8A;--green:#CCFF00;--amber:#FFB454;--blue:#5B9DFF;--red:#FF6B6B;--radius:10px}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+.topnav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:28px;height:56px;padding:0 28px;background:var(--bg);border-bottom:1px solid var(--line)}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:17px}
+.logo-mark{width:28px;height:28px;border-radius:7px;background:var(--green);display:grid;place-items:center;color:#000;font-weight:900}
+.nav-links{display:flex;gap:4px;flex:1}.nav-link{padding:7px 16px;border-radius:8px;font-size:14px;color:var(--t2)}.nav-link.active{background:var(--green);color:#000;font-weight:600}
+.bell{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:var(--t2)}.avatar{width:34px;height:34px;border-radius:50%;background:#333;display:grid;place-items:center;font-size:13px}
+.page{max-width:1500px;margin:0 auto;padding:28px 32px}
+.crumb{font-size:12px;color:#6A6A6A;letter-spacing:1px;margin-bottom:8px}
+h1{font-size:26px;font-weight:700}.sub{color:var(--t3);margin-top:6px;font-size:14px}
+.tabs{display:flex;gap:6px;margin:22px 0 18px}
+.tab{padding:9px 18px;border-radius:8px;font-size:14px;background:var(--card);color:var(--t2)}
+.tab.active{background:#1A2E0A;color:var(--green);font-weight:600}
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
+@media(max-width:1200px){.kpis{grid-template-columns:repeat(3,1fr)}}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.kpi .lb{font-size:12.5px;color:var(--t3)}.kpi .nv{font-size:24px;font-weight:700;margin:6px 0 4px}
+.kpi .chg{font-size:12px}.up{color:var(--green)}.down{color:var(--red)}
+.cols{display:grid;grid-template-columns:1.6fr 1fr;gap:14px;margin-bottom:14px}
+@media(max-width:1100px){.cols{grid-template-columns:1fr}}
+.panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px}
+.pt{font-size:15px;font-weight:600;margin-bottom:14px;display:flex;justify-content:space-between;align-items:center}
+.pt .tag{font-size:11px;color:var(--green);background:#1A2E0A;padding:3px 9px;border-radius:5px;font-weight:400}
+.chart{height:220px;background:var(--card2);border-radius:8px;position:relative;overflow:hidden}
+.bars{display:flex;align-items:flex-end;gap:8px;height:180px;padding:10px}
+.bar{flex:1;background:linear-gradient(180deg,#CCFF00,#5A7A00);border-radius:4px 4px 0 0;position:relative}
+.bar span{position:absolute;bottom:100%;left:50%;transform:translateX(-50%);font-size:10px;color:var(--t3)}
+.labels{display:flex;gap:8px;padding:6px 10px;color:var(--t3);font-size:10.5px}
+.labels span{flex:1;text-align:center}
+.rank{display:flex;flex-direction:column;gap:10px}
+.rk{display:flex;align-items:center;gap:10px;padding:10px;background:var(--card2);border-radius:8px}
+.rk .n{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:12px;font-weight:700;background:#333;color:var(--t2)}
+.rk.top .n{background:var(--green);color:#000}
+.rk .nm{flex:1;font-size:13px}.rk .nm small{display:block;color:var(--t3);font-size:11px;margin-top:2px}
+.rk .v{font-size:14px;font-weight:600;color:var(--green)}
+.ai{background:linear-gradient(135deg,#1A2E0A,#1A1A1A);border:1px solid #2A3A10}
+.ai .row{display:flex;gap:10px;align-items:flex-start;margin-bottom:10px;font-size:13.5px;color:var(--t2);line-height:1.6}
+.ai .row b{color:var(--green)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line)}
+th{color:var(--t3);font-weight:500;font-size:12px}
+td .pill{display:inline-block;padding:2px 9px;border-radius:5px;font-size:11px}
+.pill.g{background:#1A2E0A;color:var(--green)}.pill.b{background:#10243A;color:var(--blue)}.pill.a{background:#3A2A10;color:var(--amber)}
+</style>
+</head>
+<body>
+<nav class="topnav">
+  <div class="logo"><div class="logo-mark">W</div>WellFlow</div>
+  <div class="nav-links">
+    <button class="nav-link" onclick="location.href='01-首页.html'">首页</button>
+    <button class="nav-link" onclick="location.href='02-资产库.html'">资产库</button>
+    <button class="nav-link" onclick="location.href='03-知识库.html'">知识库</button>
+    <button class="nav-link active" onclick="location.href='04-投放台.html'">投放台</button>
+  </div>
+  <div class="bell">🔔</div><div class="avatar">周</div>
+</nav>
+<div class="page">
+  <div class="crumb">ADS WORKSPACE / BI</div>
+  <h1>BI 数据看板</h1>
+  <p class="sub">品牌、商品与店铺多维观察，让素材表现可比、可追踪。</p>
+  <div class="tabs">
+    <button class="tab" onclick="location.href='04-投放台.html'">素材管理</button>
+    <button class="tab active">BI 数据看板</button>
+  </div>
+
+  <div class="kpis">
+    <div class="kpi"><div class="lb">总消耗</div><div class="nv">¥46,732</div><div class="chg up">▲ 12.4% 环比</div></div>
+    <div class="kpi"><div class="lb">总成交金额</div><div class="nv">¥12.8万</div><div class="chg up">▲ 8.1%</div></div>
+    <div class="kpi"><div class="lb">整体 ROI</div><div class="nv">2.74</div><div class="chg down">▼ 0.12</div></div>
+    <div class="kpi"><div class="lb">总曝光</div><div class="nv">286万</div><div class="chg up">▲ 21%</div></div>
+    <div class="kpi"><div class="lb">点击率</div><div class="nv">2.62%</div><div class="chg up">▲ 0.3%</div></div>
+    <div class="kpi"><div class="lb">转化率</div><div class="nv">1.49%</div><div class="chg down">▼ 0.08%</div></div>
+  </div>
+
+  <div class="cols">
+    <div class="panel">
+      <div class="pt">范围时间趋势 <span class="tag">近30天</span></div>
+      <div class="chart">
+        <div class="bars">
+          <div class="bar" style="height:40%"><span>3.2k</span></div>
+          <div class="bar" style="height:55%"></div>
+          <div class="bar" style="height:48%"></div>
+          <div class="bar" style="height:70%"></div>
+          <div class="bar" style="height:62%"></div>
+          <div class="bar" style="height:85%"></div>
+          <div class="bar" style="height:78%"></div>
+          <div class="bar" style="height:92%"><span>5.1k</span></div>
+          <div class="bar" style="height:71%"></div>
+          <div class="bar" style="height:66%"></div>
+          <div class="bar" style="height:80%"></div>
+          <div class="bar" style="height:95%"></div>
+        </div>
+        <div class="labels"><span>9/9</span><span>9/11</span><span>9/13</span><span>9/15</span><span>9/17</span><span>9/19</span><span>9/21</span><span>9/23</span><span>9/25</span><span>9/27</span><span>9/29</span><span>9/30</span></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="pt">素材表现 TOP 5 <span class="tag">按 ROI</span></div>
+      <div class="rank">
+        <div class="rk top"><div class="n">1</div><div class="nm">亚麻衬衫海岸自然光<small>直播间 · 已投放</small></div><div class="v">4.58</div></div>
+        <div class="rk top"><div class="n">2</div><div class="nm">周末度假衬衫短裤<small>商品卡 · 已结束</small></div><div class="v">3.62</div></div>
+        <div class="rk"><div class="n">3</div><div class="nm">场景切换竖版04<small>商品卡 · 已投放</small></div><div class="v">3.13</div></div>
+        <div class="rk"><div class="n">4</div><div class="nm">白衬衫女模通勤<small>达人 · 已投放</small></div><div class="v">2.37</div></div>
+        <div class="rk"><div class="n">5</div><div class="nm">面料细节竖版02<small>商品卡 · 已投放</small></div><div class="v">2.47</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel ai" style="margin-bottom:14px">
+    <div class="pt">✨ 优秀素材 AI 共性分析 <span class="tag">共性分析素材类型：视频</span></div>
+    <div class="row"><b>共同点 1</b><span>高 ROI 素材均为<b>竖版 9:16</b>，前 3 秒出现完整产品 + 价格锚点，完播率比横版高 41%。</span></div>
+    <div class="row"><b>共同点 2</b><span>封面统一使用<b>自然光外景</b>，模特白衬衫在海边/街头的成交转化比棚拍高 2.3 倍。</span></div>
+    <div class="row"><b>共同点 3</b><span>标签集中在<b>百城通勤 + 质感面料 + 细节特写</b>组合，三标签同时命中的素材平均 ROI 3.8。</span></div>
+  </div>
+
+  <div class="panel">
+    <div class="pt">店铺维度汇总 <span class="tag">演示数据</span></div>
+    <table>
+      <thead><tr><th>店铺</th><th>消耗</th><th>成交金额</th><th>ROI</th><th>曝光</th><th>点击率</th><th>转化率</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>Babycare 童装奥莱旗舰店</td><td>¥11,817</td><td>¥2.31万</td><td>1.96</td><td>38.0万</td><td>2.11%</td><td>1.38%</td><td><span class="pill g">投放中</span></td></tr>
+        <tr><td>华智-母婴-贝咖</td><td>¥7,764</td><td>¥1.84万</td><td>2.37</td><td>21.9万</td><td>2.78%</td><td>1.62%</td><td><span class="pill g">投放中</span></td></tr>
+        <tr><td>亚麻衬衫旗舰店</td><td>¥6,947</td><td>¥3.18万</td><td>4.58</td><td>23.4万</td><td>2.86%</td><td>2.14%</td><td><span class="pill b">测试中</span></td></tr>
+        <tr><td>通勤女装专营</td><td>¥4,048</td><td>¥1.46万</td><td>3.62</td><td>10.0万</td><td>2.44%</td><td>2.22%</td><td><span class="pill a">已结束</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,445 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>素材投流管理 · WellFlow</title>
+<style>
+:root{
+  --bg:#0F0F0F;--bg-2:#161616;--card:#1A1A1A;--card-2:#1F1F1F;--card-hover:#242424;
+  --line:#2A2A2A;--line-2:#333;
+  --text:#FFFFFF;--text-2:#B8B8B8;--text-3:#8A8A8A;--text-4:#6A6A6A;
+  --green:#CCFF00;--green-deep:#A8D400;--green-bg:#1A2E0A;
+  --amber:#FFB454;--amber-bg:#3A2A10;
+  --blue:#5B9DFF;--blue-bg:#10243A;
+  --radius:10px;
+  --font:'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);font-size:14px;color:var(--text);background:var(--bg);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,select{font-family:inherit;outline:none}
+img{display:block;max-width:100%}
+.topnav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:28px;height:56px;padding:0 28px;background:var(--bg);border-bottom:1px solid var(--line)}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:17px}
+.logo-mark{width:28px;height:28px;border-radius:7px;background:var(--green);display:grid;place-items:center;color:#000;font-weight:900;font-size:14px}
+.nav-links{display:flex;gap:4px;flex:1}
+.nav-link{padding:7px 16px;border-radius:8px;font-size:14px;color:var(--text-2)}
+.nav-link:hover{color:#fff;background:var(--card)}
+.nav-link.active{background:var(--green);color:#000;font-weight:600}
+.nav-right{display:flex;align-items:center;gap:16px}
+.bell{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:var(--text-2)}
+.avatar{width:34px;height:34px;border-radius:50%;background:#333;color:#fff;display:grid;place-items:center;font-size:13px;font-weight:600}
+.page{max-width:1500px;margin:0 auto;padding:28px 32px}
+.crumb{font-size:12px;color:var(--text-4);letter-spacing:1px;margin-bottom:8px}
+h1{font-size:28px;font-weight:700;letter-spacing:-.5px}
+.sub{color:var(--text-3);margin-top:6px;font-size:14px}
+.row1{display:flex;justify-content:space-between;align-items:center;margin:24px 0 18px;gap:12px;flex-wrap:wrap}
+.tabs{display:flex;gap:6px}
+.tab{padding:9px 18px;border-radius:8px;font-size:14px;color:var(--text-2);background:var(--card)}
+.tab.active{background:var(--green-bg);color:var(--green);font-weight:600}
+.tools{display:flex;gap:8px}
+.tbtn{padding:9px 16px;border-radius:8px;font-size:13.5px;background:var(--card);color:var(--text-2);border:1px solid var(--line)}
+.tbtn.primary{background:var(--green);color:#000;font-weight:600;border-color:var(--green)}
+.stats{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:14px}
+@media(max-width:1200px){.stats{grid-template-columns:repeat(4,1fr)}}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.stat .lb{font-size:13px;color:var(--text-2)}
+.stat .nv{font-size:30px;font-weight:700;margin:6px 0 4px}
+.stat .hint{font-size:11.5px;color:var(--text-4)}
+.stat.accent{background:var(--green-bg);border-color:var(--green-deep)}
+.stat.accent .lb,.stat.accent .nv{color:var(--green)}
+.note{font-size:12.5px;color:var(--text-4);margin-bottom:18px}
+.filter{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px;margin-bottom:22px}
+.fhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.fhead .ft{font-size:14px;font-weight:600}
+.fhead .fbtns{display:flex;gap:8px}
+.fbtn{padding:6px 12px;border-radius:7px;font-size:12.5px;background:var(--card-2);color:var(--text-2);border:1px solid var(--line)}
+.frow{display:flex;align-items:flex-start;gap:14px;padding:10px 0;border-top:1px solid var(--line)}
+.frow:first-of-type{border-top:none}
+.frow .fl{width:90px;flex-shrink:0;font-size:13px;color:var(--text-3);padding-top:6px}
+.fopts{display:flex;flex-wrap:wrap;gap:6px;flex:1}
+.fopt{padding:5px 12px;border-radius:6px;font-size:12.5px;color:var(--text-2);background:var(--card-2);border:1px solid var(--line)}
+.fopt.active{background:var(--green-bg);color:var(--green);border-color:var(--green-deep);font-weight:600}
+.fsearch{width:180px;padding:6px 10px;border-radius:7px;background:var(--card-2);border:1px solid var(--line);color:#fff;font-size:12.5px}
+.chip{padding:5px 11px;border-radius:6px;font-size:12px;background:var(--card-2);color:var(--text-2);border:1px solid var(--line)}
+.chip.on{background:var(--blue-bg);color:var(--blue);border-color:var(--blue)}
+.chip.warn{background:var(--amber-bg);color:var(--amber)}
+.drop{flex:1;min-width:120px;padding:8px 10px;border-radius:7px;background:var(--card-2);border:1px solid var(--line);color:#fff;font-size:13px}
+.lhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.lhead .lt{font-size:16px;font-weight:600}
+.lhead .lt .cnt{color:var(--green);margin-left:6px}
+.lhead .lt .total{font-size:13px;color:var(--text-4);font-weight:400;margin-left:8px}
+.search{display:flex;align-items:center;gap:8px;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 14px;width:280px}
+.search input{flex:1;background:none;border:none;color:#fff;font-size:13px}
+.batch{display:flex;align-items:center;gap:14px;margin-bottom:14px;font-size:13px;color:var(--text-3)}
+.batch .link{color:var(--green);cursor:pointer}
+.view-toggle{margin-left:auto;display:flex;gap:6px}
+.grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+@media(max-width:1400px){.grid{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:1000px){.grid{grid-template-columns:repeat(3,1fr)}}
+.m{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;cursor:pointer}
+.m:hover{border-color:var(--line-2);background:var(--card-hover)}
+.m .cover{aspect-ratio:3/4;background:#000;position:relative;overflow:hidden}
+.m .cover img{width:100%;height:100%;object-fit:cover}
+.m .cover video{width:100%;height:100%;object-fit:cover}
+.m .chk{position:absolute;top:8px;left:8px;width:20px;height:20px;border-radius:5px;background:rgba(0,0,0,.6);border:2px solid rgba(255,255,255,.5);z-index:3;display:grid;place-items:center;cursor:pointer}
+.m .chk.on{background:var(--green);border-color:var(--green)}
+.m .chk.on::after{content:'\2713';color:#000;font-size:13px;font-weight:900}
+.m.sel{border-color:var(--green);box-shadow:0 0 0 1px var(--green)}
+.tag-l{position:absolute;top:8px;left:36px;font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:5px;background:rgba(0,0,0,.65);color:#fff}
+.tag-r{position:absolute;top:8px;right:8px;font-size:10.5px;font-weight:600;padding:3px 8px;border-radius:5px}
+.st-live{background:var(--green);color:#000}
+.st-pause{background:#333;color:#bbb}
+.st-review{background:var(--amber);color:#000}
+.st-wait{background:var(--blue);color:#fff}
+.st-end{background:#444;color:#ddd}
+.m .data{display:grid;grid-template-columns:1fr 1fr;gap:2px 8px;padding:10px 12px;background:var(--card-2);font-size:11px;color:var(--text-3)}
+.m .data b{color:var(--text);font-size:12px;font-weight:600}
+.m .info{padding:10px 12px}
+.m .ttl{font-size:13px;font-weight:600;line-height:1.4;height:36px;overflow:hidden}
+.m .meta{font-size:11.5px;color:var(--text-3);margin-top:6px}
+.m .tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.m .tags span{font-size:10.5px;padding:2px 7px;border-radius:4px;background:var(--card-2);color:var(--text-2)}
+.m .tags span.hi{background:var(--green-bg);color:var(--green)}
+.m .foot{display:flex;justify-content:space-between;padding:8px 12px;border-top:1px solid var(--line);font-size:11px;color:var(--text-3)}
+.m .foot .spend{color:var(--text);font-weight:600}
+.pager{display:flex;justify-content:space-between;align-items:center;margin-top:20px;font-size:13px;color:var(--text-3)}
+.pages{display:flex;gap:6px}
+.pg{width:32px;height:32px;border-radius:7px;display:grid;place-items:center;background:var(--card);border:1px solid var(--line);color:var(--text-2)}
+.pg.on{background:var(--green);color:#000;font-weight:700;border-color:var(--green)}
+</style>
+</head>
+<body>
+
+<nav class="topnav">
+  <div class="logo"><div class="logo-mark">W</div>WellFlow</div>
+  <div class="nav-links">
+    <button class="nav-link" onclick="location.href='01-首页.html'">首页</button>
+    <button class="nav-link" onclick="location.href='02-资产库.html'">资产库</button>
+    <button class="nav-link" onclick="location.href='03-知识库.html'">知识库</button>
+    <button class="nav-link active">投放台</button>
+  </div>
+  <div class="nav-right"><button class="bell">🔔</button><div class="avatar">周</div></div>
+</nav>
+
+<div class="page">
+  <div class="crumb">ADS WORKSPACE / MATERIALS</div>
+  <h1>素材投流管理</h1>
+  <p class="sub">管理投放素材、连接产品、计划与增长表现。</p>
+
+  <div class="row1">
+    <div class="tabs">
+      <button class="tab active" onclick="location.href='04-投放台.html'">素材管理</button>
+      <button class="tab" onclick="location.href='04b-BI数据看板.html'">BI 数据看板</button>
+    </div>
+    <div class="tools">
+      <button class="tbtn" onclick="openSetting('09-店铺设置.html')">店铺设置</button>
+      <button class="tbtn" onclick="openSetting('10-素材筛选配置.html')">素材筛选配置</button>
+      <button class="tbtn" onclick="openSetting('11-投放任务.html')">投放任务</button>
+      <button class="tbtn primary" onclick="location.href='12-本地上传.html'">↑ 本地上传</button>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat accent"><div class="lb">全部素材</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat"><div class="lb">审核中</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat"><div class="lb">待投放</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat"><div class="lb">已投放</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat"><div class="lb">已暂停</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat"><div class="lb">已结束</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat"><div class="lb">未提交</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+  </div>
+  <p class="note">同一素材可出现在多个计划阶段，统计数量不一定相加。品牌筛选配置、未关联维度的素材保留在全部素材中。</p>
+
+  <div class="filter">
+    <div class="fhead">
+      <div class="ft">≡ 筛选素材</div>
+      <div class="fbtns">
+        <button class="fbtn">🔖 常用筛选预设</button>
+        <button class="fbtn">保存当前筛选 ▾</button>
+      </div>
+    </div>
+    <div class="frow"><div class="fl">素材类型</div><div class="fopts">
+      <button class="fopt active" onclick="filterByType(this,'全部')">全部</button><button class="fopt" onclick="filterByType(this,'图片')">图片</button><button class="fopt" onclick="filterByType(this,'视频')">视频</button>
+    </div></div>
+    <div class="frow"><div class="fl">投放场景</div><div class="fopts">
+      <button class="fopt active">全部</button><button class="fopt">直播间</button><button class="fopt">达人</button><button class="fopt">商品卡</button>
+    </div></div>
+    <div class="frow"><div class="fl">主类目</div><div class="fopts">
+      <button class="fopt active">全部</button><button class="fopt">服饰BU</button><button class="fopt">配饰BU</button><button class="fopt">家居BU</button>
+    </div></div>
+    <div class="frow"><div class="fl">一级分类</div><div class="fopts">
+      <button class="fopt active">全部</button><button class="fopt">衬衫</button><button class="fopt">针织</button><button class="fopt">外套</button><button class="fopt">包袋</button><button class="fopt">鞋履</button><button class="fopt">家纺</button><button class="fopt">生活用品</button>
+    </div></div>
+    <div class="frow"><div class="fl">二级分类</div><div class="fopts"><input class="fsearch" placeholder="Q 搜索分类"></div></div>
+    <div class="frow"><div class="fl"></div><div class="fopts">
+      <button class="fopt active">全部</button><button class="fopt">亚麻衬衫</button><button class="fopt">条纹衬衫</button><button class="fopt">通勤衬衫</button><button class="fopt">针织开衫</button><button class="fopt">基础针织</button><button class="fopt">休闲外套</button><button class="fopt">轻薄外套</button><button class="fopt">通勤包</button><button class="fopt">旅行包</button><button class="fopt">休闲鞋</button><button class="fopt">通勤鞋</button><button class="fopt">床品</button><button class="fopt">毛巾</button><button class="fopt">水杯</button><button class="fopt">收纳</button>
+    </div></div>
+    <div class="frow"><div class="fl">计划阶段</div><div class="fopts">
+      <button class="fopt active" onclick="filterByStatus(this,'全部')">全部</button><button class="fopt" onclick="filterByStatus(this,'审核中')">审核中</button><button class="fopt" onclick="filterByStatus(this,'待投放')">待投放</button><button class="fopt" onclick="filterByStatus(this,'已投放')">已投放</button><button class="fopt" onclick="filterByStatus(this,'已暂停')">已暂停</button><button class="fopt" onclick="filterByStatus(this,'已结束')">已结束</button><button class="fopt" onclick="filterByStatus(this,'未提交')">未提交</button>
+    </div></div>
+    <div class="frow"><div class="fl">公共标签</div><div class="fopts">
+      <input class="fsearch" placeholder="Q 搜索标签">
+      <button class="fopt">浏览标签分组</button><button class="fopt active">全部</button>
+      <button class="fopt">卖点</button><button class="fopt">内容类型</button><button class="fopt">场景</button><button class="fopt">营销节点</button><button class="fopt">清除标签条件</button>
+    </div></div>
+    <div class="frow"><div class="fl"></div><div class="fopts" style="flex-direction:column;gap:8px">
+      <div style="font-size:12px;color:var(--text-4)">已选标签匹配方式 <button class="fopt" style="display:inline-block">全部满足 ▾</button>　需同时包含所有已选公共标签 · 已选 0 个</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="chip on">舒适透气</button><button class="chip on">显瘦版型</button><button class="chip on">质感面料</button><button class="chip on">百城通勤</button>
+        <button class="chip">商品展示</button><button class="chip">穿搭推荐</button><button class="chip">细节特写</button>
+        <button class="chip warn">日常通勤</button><button class="chip warn">周末出游</button><button class="chip warn">国家生活</button>
+        <button class="chip warn">秋季上新</button><button class="chip warn">双11预热</button>
+      </div>
+    </div></div>
+    <div class="frow"><div class="fl">个人标签</div><div class="fopts">
+      <input class="fsearch" placeholder="Q 搜索标签">
+      <button class="fopt active">全部</button><button class="fopt">无个人标签</button><button class="fopt">有个人标签</button>
+      <button class="fopt">重点关注</button><button class="fopt">待复盘</button><button class="fopt">重置</button><button class="fopt" style="color:var(--green)">✎ 管理标签</button>
+    </div></div>
+    <div class="frow"><div class="fl">高级搜索</div><div class="fopts" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;flex:1">
+      <select class="drop"><option>全部渠道</option></select><select class="drop"><option>全部店铺</option></select>
+      <select class="drop"><option>全部SPU</option></select><select class="drop"><option>全部SKC</option></select>
+      <select class="drop"><option>全部SKU</option></select>
+    </div></div>
+    <div class="frow"><div class="fl"></div><div class="fopts">
+      <select class="drop" style="max-width:140px"><option>排序 最新上传</option></select>
+      <select class="drop" style="max-width:140px"><option>消耗 不限</option></select>
+      <select class="drop" style="max-width:140px"><option>系统标签 全部</option></select>
+      <button class="fbtn">↻ 重置</button>
+    </div></div>
+  </div>
+
+  <div class="lhead">
+    <div class="lt">全部素材 <span class="cnt">0</span><span class="total">共 0 份素材</span></div>
+    <div class="search">🔍 <input placeholder="搜索素材名称、ID..."></div>
+  </div>
+  <div class="batch">
+    <label><input type="checkbox" id="chkAll" onclick="toggleAll(this.checked)"> 选中本页</label>
+    <span>已选 <b id="selText" style="color:#CCFF00">0</b></span>
+    <span class="link" style="cursor:pointer" onclick="openLaunchModal()">↗ 上传到投放计划</span>
+    <div class="view-toggle">
+      <button class="fbtn">作者/搜索</button>
+      <button class="fbtn">上传时间 yyyy/mm/日</button>
+      <button class="fbtn">至 yyyy/mm/日</button>
+      <button class="fbtn">▦ 网格</button>
+      <button class="fbtn">☰ 列表</button>
+    </div>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="pager">
+    <span>共 33 条 · 每页 12 条</span>
+    <div class="pages">
+      <button class="pg">‹</button><button class="pg on">1</button><button class="pg">2</button><button class="pg">3</button><button class="pg">›</button>
+    </div>
+  </div>
+</div>
+
+  <!-- 模态框：上传到投放计划（iframe 加载独立页） -->
+  <div id="launchModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center">
+    <div style="position:relative;width:960px;max-width:96vw;max-height:94vh">
+      <button onclick="closeLaunchModal()" style="position:absolute;top:-14px;right:-14px;z-index:10;width:36px;height:36px;border-radius:50%;background:#222;color:#fff;font-size:18px;border:1px solid #444;cursor:pointer">✕</button>
+      <iframe id="launchFrame" src="" style="width:100%;height:88vh;border:none;border-radius:16px;background:#0F0F0F"></iframe>
+    </div>
+  </div>
+
+  <!-- 详情弹窗 -->
+  <div id="detailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center">
+    <div style="position:relative;width:1200px;max-width:96vw;max-height:94vh">
+      <button onclick="closeDetail()" style="position:absolute;top:-14px;right:-14px;z-index:10;width:36px;height:36px;border-radius:50%;background:#222;color:#fff;font-size:18px;border:1px solid #444;cursor:pointer">✕</button>
+      <iframe id="detailFrame" src="" style="width:100%;height:92vh;border:none;border-radius:16px;background:#0F0F0F"></iframe>
+    </div>
+  </div>
+
+  <!-- 设置弹窗（店铺设置/素材筛选/投放任务） -->
+  <div id="settingModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center">
+    <div style="position:relative;width:1200px;max-width:96vw;max-height:94vh">
+      <button onclick="closeSetting()" style="position:absolute;top:-14px;right:-14px;z-index:10;width:36px;height:36px;border-radius:50%;background:#222;color:#fff;font-size:18px;border:1px solid #444;cursor:pointer">✕</button>
+      <iframe id="settingFrame" src="" style="width:100%;height:92vh;border:none;border-radius:16px;background:#0F0F0F"></iframe>
+    </div>
+  </div>
+
+<script>
+let ALL=[], STATUS={};
+let curPage = 1;
+const pageSize = 12;
+let filterType = '全部';
+let filterStatus = '全部';
+// 加载状态统计
+fetch('/api/material_stats').then(r=>r.json()).then(j=>{
+  if(j.error) return;
+  document.querySelectorAll('.stat').forEach((el,i)=>{
+    var lb = el.querySelector('.lb').textContent;
+    if(j[lb] !== undefined) el.querySelector('.nv').textContent = j[lb];
+  });
+}).catch(()=>{});
+function mapBiz(biz){
+  if(!biz) return '未提交';
+  if(biz==='待审核') return '审核中';
+  if(biz==='通过-待投放') return '待投放';
+  if(['直播间已投放','商城已投放','已投放商品+直播间'].includes(biz)) return '已投放';
+  if(biz==='审核驳回') return '已暂停';
+  if(biz==='放弃测试') return '已结束';
+  return '未提交';
+}
+function stCls(s){
+  return {'已投放':'st-live','审核中':'st-review','待投放':'st-wait','已暂停':'st-pause','已结束':'st-end','未提交':'st-pause'}[s]||'st-pause';
+}
+function infoOf(m){ return STATUS[m.path]||STATUS[m.name]||{}; }
+async function load(){
+  try{
+    const [mRes,sRes]=await Promise.all([
+      fetch('/api/db_materials').then(r=>r.json()),
+      fetch('/api/material_launch_status').then(r=>r.json()),
+    ]);
+    ALL=(mRes&&mRes.data)||[];
+    STATUS=(sRes&&sRes.data)||{};
+    render();
+  }catch(e){
+    document.getElementById('grid').innerHTML='<div style="grid-column:1/-1;padding:60px;text-align:center;color:#FF6B6B">加载素材失败：'+e.message+'</div>';
+  }
+}
+function render(){
+  const g=document.getElementById('grid');
+  // 更新统计数字
+  document.querySelector('.lt .cnt').textContent = ALL.length;
+  document.querySelector('.lt .total').textContent = '共 ' + ALL.length + ' 份素材';
+  if(!ALL.length){
+    g.innerHTML='<div style="grid-column:1/-1;padding:60px;text-align:center;color:var(--text-3)">暂无上传素材，点右上"本地上传"添加</div>';
+    document.querySelector('.pager span').textContent='共 0 条 · 每页 ' + pageSize + ' 条';
+    document.querySelector('.pages').innerHTML='';
+    return;
+  }
+  // 筛选
+  var filtered = ALL;
+  if(filterType !== '全部'){
+    filtered = filtered.filter(m => (m.type||'image') === (filterType==='图片'?'image':'video'));
+  }
+  if(filterStatus !== '全部'){
+    filtered = filtered.filter(m => {
+      var info = infoOf(m);
+      var st = mapBiz(info.biz_status);
+      return st === filterStatus;
+    });
+  }
+  // 分页
+  var totalPages = Math.ceil(filtered.length / pageSize);
+  if(curPage > totalPages) curPage = totalPages;
+  if(curPage < 1) curPage = 1;
+  var start = (curPage - 1) * pageSize;
+  var pageData = filtered.slice(start, start + pageSize);
+  document.querySelector('.pager span').textContent='共 '+filtered.length+' 条 · 每页 ' + pageSize + ' 条';
+  // 页码
+  var pagesHtml = '<button class="pg" onclick="goPage(' + (curPage-1) + ')" ' + (curPage<=1?'disabled':'') + '>‹</button>';
+  for(var i=1; i<=totalPages; i++){
+    pagesHtml += '<button class="pg' + (i===curPage?' on':'') + '" onclick="goPage(' + i + ')">' + i + '</button>';
+  }
+  pagesHtml += '<button class="pg" onclick="goPage(' + (curPage+1) + ')" ' + (curPage>=totalPages?'disabled':'') + '>›</button>';
+  document.querySelector('.pages').innerHTML = pagesHtml;
+  g.innerHTML=pageData.map(m=>{
+    const info=infoOf(m);
+    const st=mapBiz(info.biz_status);
+    const url='/api/uploaded_media/'+encodeURIComponent(m.name);
+    const cover=m.type==='video'
+      ? '<video src="'+url+'" muted preload="auto" playsinline controlslist="nodownload"></video>'
+      : '<img src="'+url+'" alt="">';
+    const fn=m.name.replace(/\.[^.]+$/,'');
+    const sz=m.size? (m.size>1048576?(m.size/1048576).toFixed(1)+' MB':Math.round(m.size/1024)+' KB'):'';
+    const time=m.mtime?new Date(m.mtime*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
+    const goto='15-素材详情-新版.html?name='+encodeURIComponent(m.name)+'&type='+encodeURIComponent(m.type||'');
+    return '<div class="m" style="cursor:pointer" onclick="openDetail(\''+goto+'\')">'+
+      '<div class="cover">'+cover+
+        '<div class="chk" onclick="event.stopPropagation();this.classList.toggle(\'on\');this.closest(\'.m\').classList.toggle(\'sel\');updateFloatBar()"></div>'+
+        '<span class="tag-l">'+(m.type==='video'?'视频':'图片')+'</span>'+
+        '<span class="tag-r '+stCls(st)+'">'+st+'</span>'+
+      '</div>'+
+      '<div class="data">'+
+        '<span>成交 <b>—</b></span><span>点击率 <b>—</b></span>'+
+        '<span>转化率 <b>—</b></span><span>ROI <b>—</b></span>'+
+      '</div>'+
+      '<div class="info">'+
+        '<div class="ttl">'+fn+'</div>'+
+        '<div class="meta">'+(info.plan_name||'本地上传')+' · '+sz+'</div>'+
+        '<div class="tags"><span class="hi">'+st+'</span></div>'+
+      '</div>'+
+      '<div class="foot"><span class="spend">消耗 ¥—</span><span>曝光 —</span></div>'+
+      '<div class="foot" style="border-top:none;padding-top:2px"><span>本地上传</span><span>'+time+'</span></div>'+
+    '</div>';
+  }).join('');
+}
+
+function filterByType(el, type){
+  el.parentElement.querySelectorAll('.fopt').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');
+  filterType = type;
+  curPage = 1;
+  render();
+}
+function filterByStatus(el, status){
+  el.parentElement.querySelectorAll('.fopt').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');
+  filterStatus = status;
+  curPage = 1;
+  render();
+}
+function goPage(p){
+  curPage = p;
+  render();
+}
+function getSelCount(){return document.querySelectorAll('.m .chk.on').length;}
+function updateFloatBar(){
+  document.getElementById('selText').textContent=getSelCount();
+}
+function toggleAll(ck){
+  document.querySelectorAll('.m .chk').forEach(function(x){
+    if(ck && !x.classList.contains('on')){x.click();}
+    if(!ck && x.classList.contains('on')){x.click();}
+  });
+}
+function clearSel(){
+  document.querySelectorAll('.chk.on').forEach(c=>c.classList.remove('on'));
+  document.querySelectorAll('.m.sel').forEach(c=>c.classList.remove('sel'));
+  updateFloatBar();
+}
+function openLaunchModal(){
+  if(getSelCount()===0) return;
+  var f=document.getElementById('launchFrame');
+  f.src='14-上传到投放计划.html?count='+getSelCount();
+  document.getElementById('launchModal').style.display='flex';
+}
+// 详情弹窗
+function openDetail(url){
+  var m=document.getElementById('detailModal');
+  document.getElementById('detailFrame').src=url;
+  m.style.display='flex';
+}
+function closeDetail(){document.getElementById('detailModal').style.display='none';}
+function closeLaunchModal(){document.getElementById('launchModal').style.display='none';}
+function nextStep(){
+  const shop=document.getElementById('shopSel').value;
+  if(!shop){alert('请先选择投放店铺');return;}
+  alert('下一步：选择计划与商品（待实现）\n店铺：'+document.getElementById('shopSel').selectedOptions[0].textContent);
+}
+// 监听 checkbox 变化（事件委托）
+document.addEventListener('click',e=>{
+  if(e.target.classList&&e.target.classList.contains('chk')){
+    setTimeout(updateFloatBar,0);
+  }
+});
+load();
+function openSetting(url){
+  document.getElementById('settingFrame').src=url + (url.indexOf('?')>=0?'&':'?') + '_t=' + Date.now();
+  document.getElementById('settingModal').style.display='flex';
+}
+function closeSetting(){
+  document.getElementById('settingModal').style.display='none';
+  document.getElementById('settingFrame').src='about:blank';
+}
+</script>
+</body>
+</html>
+
+

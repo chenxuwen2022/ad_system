@@ -29,7 +29,7 @@ def _load_env():
 _load_env()
 DATABASE_URL = os.environ.get(
     "DATABASE_URL",
-    "postgresql+psycopg2://postgres:postgresSY123456@localhost:5432/wellflow",
+    "postgresql+psycopg2://postgres:postgresSY123456@192.168.110.254:5432/wellflow",
 )
 
 BasePG = declarative_base()

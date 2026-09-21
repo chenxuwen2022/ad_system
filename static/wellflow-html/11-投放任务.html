@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投放任务 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1E2416;--card2:#1A1F14;--line:#2E3A1E;--green:#CCFF00;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:32px}
+.eyebrow{font-size:11px;color:var(--t3);letter-spacing:2px;margin-bottom:8px}
+h1{font-size:24px;font-weight:700;margin-bottom:8px}
+.sub{font-size:13.5px;color:var(--t3);margin-bottom:24px}
+
+.filter{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;margin-bottom:20px}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.f{display:flex;flex-direction:column;gap:8px}
+.f label{font-size:13px;color:var(--t2);font-weight:500}
+.f select,.f input{background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:11px 14px;color:var(--text);font-size:14px;outline:none}
+.f input::placeholder{color:var(--t3)}
+.f select{appearance:none;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238A9A78' stroke-width='2'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 14px center;padding-right:36px}
+.full{grid-column:1/-1}
+.reset{margin-top:8px;padding:12px;border-radius:9px;background:var(--card2);border:1px solid var(--line);color:var(--text);font-size:14px;cursor:pointer;text-align:center}
+.reset:hover{background:#2A331E}
+
+.tabs{display:flex;gap:10px;margin-bottom:20px}
+.tab{padding:9px 18px;border-radius:9px;background:var(--card);border:1px solid var(--line);color:var(--t2);font-size:14px;cursor:pointer}
+.tab.active{background:rgba(204,255,0,.12);color:var(--green);border-color:var(--green)}
+.tab b{margin-left:4px}
+
+.task{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;margin-bottom:14px}
+.task-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px}
+.task-title{font-size:17px;font-weight:600}
+.badge{padding:5px 12px;border-radius:20px;font-size:12.5px;font-weight:600}
+.badge.done{background:rgba(82,196,26,.15);color:#52C41A;border:1px solid rgba(82,196,26,.3)}
+.badge.doing{background:rgba(204,255,0,.12);color:var(--green);border:1px solid rgba(204,255,0,.3)}
+.badge.fail{background:rgba(234,102,104,.15);color:#EA6668;border:1px solid rgba(234,102,104,.3)}
+.task-desc{font-size:13px;color:var(--t3);margin-bottom:8px}
+.task-id{font-size:13px;color:var(--t2);margin-bottom:14px}
+.task-stats{display:flex;gap:24px;font-size:14px;font-weight:600;margin-bottom:16px}
+.task-stats span b{color:var(--green)}
+.task-foot{display:flex;justify-content:space-between;align-items:center;padding-top:14px;border-top:1px solid var(--line);font-size:13.5px}
+.task-foot .msg{color:var(--t3)}
+.task-foot .detail{color:var(--green);cursor:pointer;font-weight:500}
+.empty{text-align:center;padding:60px;color:var(--t3);font-size:14px}
+</style>
+</head>
+<body>
+  <div class="eyebrow">MATERIAL WORKSPACE</div>
+  <h1>投放任务</h1>
+  <p class="sub">查看每次投放的上传进度和计划结果。有异常时，进入任务即可继续或重试。</p>
+
+  <div class="filter">
+    <div class="fgrid">
+      <div class="f"><label>投放渠道</label>
+        <select id="f-channel" onchange="render()"><option>全部渠道</option></select>
+      </div>
+      <div class="f"><label>投放店铺</label>
+        <select id="f-shop" onchange="render()"><option>全部店铺</option></select>
+      </div>
+      <div class="f"><label>创建日期起</label>
+        <input type="date" id="f-start" onchange="render()">
+      </div>
+      <div class="f"><label>创建日期止</label>
+        <input type="date" id="f-end" onchange="render()">
+      </div>
+      <div class="f full"><label>搜索任务</label>
+        <input id="f-kw" placeholder="计划名称 / ID、素材名称、任务编号" oninput="render()">
+      </div>
+    </div>
+    <div class="reset" onclick="resetFilter()">重置筛选</div>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="all" onclick="setTab(this)">全部任务<b id="c-all">0</b></div>
+    <div class="tab" data-tab="doing" onclick="setTab(this)">进行中<b id="c-doing">0</b></div>
+    <div class="tab" data-tab="wait" onclick="setTab(this)">待处理<b id="c-wait">0</b></div>
+    <div class="tab" data-tab="done" onclick="setTab(this)">已完成<b id="c-done">0</b></div>
+  </div>
+
+  <div id="list"><div class="empty">加载中…</div></div>
+
+<script>
+let TASKS=[], curTab='all', SHOP_MAP={}, SHOP_CHANNEL={};
+
+async function load(){
+  try{
+    // 先读店铺
+    const sRes=await fetch('/api/shops');
+    const shops=await sRes.json();
+    const shopArr=Array.isArray(shops)?shops:(shops.data||[]);
+    const sel=document.getElementById('f-shop');
+    shopArr.forEach(s=>{
+      const o=document.createElement('option');
+      o.value=s.advertiser_id;
+      o.textContent=s.shop_name;
+      sel.appendChild(o);
+      SHOP_MAP[s.advertiser_id]=s.shop_name;
+      SHOP_CHANNEL[s.advertiser_id]=s.channel||'巨量千川';
+    });
+    // 按实际店铺数据动态生成渠道下拉项（去重）
+    const chSel=document.getElementById('f-channel');
+    [...new Set(shopArr.map(s=>s.channel||'巨量千川'))].forEach(c=>{
+      const co=document.createElement('option');
+      co.value=c; co.textContent=c;
+      chSel.appendChild(co);
+    });
+    // 再读任务
+    const res=await fetch('/api/launch_records?limit=100');
+    const j=await res.json();
+    TASKS=(j&&j.data)||j||[];
+    render();
+  }catch(e){
+    document.getElementById('list').innerHTML='<div class="empty">加载失败：'+e.message+'</div>';
+  }
+}
+
+function setTab(el){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  el.classList.add('active');
+  curTab=el.dataset.tab;
+  render();
+}
+
+function render(){
+  let c={all:TASKS.length,doing:0,wait:0,done:0};
+  TASKS.forEach(t=>{
+    if(t.status==='success') c.done++;
+    else if(t.status==='processing') c.doing++;
+    else c.wait++;
+  });
+  document.getElementById('c-all').textContent=c.all;
+  document.getElementById('c-doing').textContent=c.doing;
+  document.getElementById('c-wait').textContent=c.wait;
+  document.getElementById('c-done').textContent=c.done;
+
+  let list=TASKS;
+  if(curTab==='doing') list=list.filter(t=>t.status==='processing');
+  if(curTab==='wait') list=list.filter(t=>t.status!=='success'&&t.status!=='processing');
+  if(curTab==='done') list=list.filter(t=>t.status==='success');
+  // 渠道过滤：选中渠道时，只保留该渠道下店铺的任务
+  const chVal=document.getElementById('f-channel').value;
+  if(chVal && chVal!=='全部渠道'){
+    list=list.filter(t=>SHOP_CHANNEL[t.advertiser_id]===chVal);
+  }
+  // 店铺过滤
+  const shopVal=document.getElementById('f-shop').value;
+  if(shopVal && shopVal!=='全部店铺'){
+    list=list.filter(t=>t.advertiser_id===shopVal);
+  }
+  // 日期过滤（创建日期起/止，闭区间，按 yyyy-mm-dd 比较）
+  const dStart=document.getElementById('f-start').value;
+  const dEnd=document.getElementById('f-end').value;
+  if(dStart||dEnd){
+    list=list.filter(t=>{
+      const d=(t.create_time||'').slice(0,10);
+      if(dStart && d<dStart) return false;
+      if(dEnd && d>dEnd) return false;
+      return true;
+    });
+  }
+  // 关键词过滤：计划名称/ID、素材名称（文件名）、任务编号
+  const kw=document.getElementById('f-kw').value.trim().toLowerCase();
+  if(kw){
+    list=list.filter(t=>{
+      const fileName=(t.file_path||'').replace(/\\/g,'/').split('/').pop()||'';
+      const s=((t.plan_name||'')+' '+(t.plan_id||'')+' '+(t.id||'')+' '+(t.detail||'')+' '+fileName).toLowerCase();
+      return s.includes(kw);
+    });
+  }
+
+  if(!list.length){
+    document.getElementById('list').innerHTML='<div class="empty">暂无任务</div>';
+    return;
+  }
+
+  document.getElementById('list').innerHTML=list.map(t=>{
+    const done=t.status==='success';
+    const failed=t.status==='fail';
+    const badge=done?'<span class="badge done">已完成</span>':(failed?'<span class="badge fail">失败</span>':'<span class="badge doing">进行中</span>');
+    const date=(t.create_time||'').slice(5,16);
+    const msg=done?'1 份素材上传成功，1 个计划已启动投放':(failed?(t.detail||'投放失败'):'处理中…');
+    return `<div class="task">
+      <div class="task-head">
+        <div class="task-title">${SHOP_MAP[t.advertiser_id]||t.advertiser_id||'店铺'} · ${SHOP_CHANNEL[t.advertiser_id]||'巨量千川'}</div>
+        ${badge}
+      </div>
+      <div class="task-desc">${SHOP_CHANNEL[t.advertiser_id]||'巨量千川'} · ${date} · 1 份素材 / 1 个计划</div>
+      <div class="task-id">任务编号：${t.id||'-'} · ${t.plan_name||t.plan_id||'-'}</div>
+      <div class="task-stats">
+        <span>上传 <b>${done?'1/1':'0/1'}</b></span>
+        <span>关联 <b>${done?'1/1':'0/1'}</b></span>
+        <span>启动 <b>${done?'1/1':'0/1'}</b></span>
+      </div>
+      <div class="task-foot">
+        <span class="msg">${msg}</span>
+        <span class="detail" onclick="viewDetail(${t.id})">查看详情 →</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function viewDetail(id){
+  location.href='18-任务详情.html?id='+id;
+}
+function resetFilter(){
+  document.getElementById('f-channel').value='全部渠道';
+  document.getElementById('f-shop').value='全部店铺';
+  document.getElementById('f-start').value='';
+  document.getElementById('f-end').value='';
+  document.getElementById('f-kw').value='';
+  render();
+}
+
+load();
+</script>
+</body>
+</html>
