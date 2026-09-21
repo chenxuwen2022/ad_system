@@ -24,8 +24,11 @@ def persist_phase(task_id: str, phase: str, node_name: str) -> None:
                 # 否则前端恢复任务时会误判为「等待确认」而渲染确认按钮
                 repo.save_interrupt(task_id, None)
             repo.add_event(task_id, "phase_change", phase=phase, payload_json={"node": node_name})
-    except Exception:
-        pass
+    except Exception as e:
+        # 🔴 不再静默吞掉——DB phase 持久化失败是 graph→DB 状态脱节的头号根因
+        import traceback as _tb
+        print(f"[persist_phase] ❌ task={task_id} phase={phase} node={node_name} DB 写入失败: {e}", flush=True)
+        _tb.print_exc()
 
 
 def persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str) -> None:

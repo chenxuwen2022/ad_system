@@ -419,12 +419,47 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
     tasks = list(tasks_result.scalars().all())
     task_ids = [t.task_id for t in tasks]
 
-    # ---- 3. 活动任务防护 ----
-    active_phases = [t.phase for t in tasks if t.phase in _ACTIVE_TASK_PHASES]
-    if active_phases:
+    # ---- 3. 活动任务防护（DB phase + checkpoint 双重校验）----
+    # 后端重启后 DB phase 可能陈旧（停在 input 但 checkpoint 已 done），
+    # 必须叠加 checkpoint rt_state 才能准确判定"真的在跑"；
+    # 只有 DB phase ∈ active **且** checkpoint rt_state ∈ (running, stale) 才真正拦截
+    from wellflow.app.runtime import get_graph
+    from wellflow.app.graph_context import check_graph_runtime_state as _check_rt
+    _graph = get_graph()
+
+    _true_active: list[tuple[str, str]] = []
+    for t in tasks:
+        if t.phase not in _ACTIVE_TASK_PHASES:
+            continue
+        # DB 看起来 active → 再确认 checkpoint 是不是真在执行
+        try:
+            if _graph is None:
+                raise RuntimeError("LangGraph 未初始化")
+            config = {"configurable": {"thread_id": t.task_id}}
+            snapshot = await _graph.aget_state(config)
+            rt_state, _ = _check_rt(snapshot)
+            if rt_state in ("running", "stale"):
+                _true_active.append((t.task_id, t.phase))
+            else:
+                print(
+                    f"[delete_conversation] 🛡️ task={t.task_id} "
+                    f"DB phase={t.phase} 但 checkpoint rt_state={rt_state!r}，"
+                    f"不计为活动 → 允许删除",
+                    flush=True,
+                )
+        except Exception as _ckpt_err:
+            # checkpoint 读不到 → 保守拦截（避免误删真在跑的任务）
+            print(
+                f"[delete_conversation] ⚠️ task={t.task_id} checkpoint 状态读不到，"
+                f"保守按 DB phase 拦截: {_ckpt_err}",
+                flush=True,
+            )
+            _true_active.append((t.task_id, t.phase))
+
+    if _true_active:
         raise HTTPException(
             409,
-            f"会话下有任务正在执行中（phase={active_phases}），请等待执行完成或人工确认后再删除",
+            f"会话下有任务正在执行中（{_true_active}），请等待执行完成或人工确认后再删除",
         )
 
     # ---- 4. 判定磁盘图片是否保留 ----

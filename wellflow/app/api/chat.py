@@ -1630,7 +1630,6 @@ async def _handle_resume(
                         + f" 条提示词（共 {len(_spi)} 条）开始生图…"
                     )
                 _chunk = _sse("message", {"text": _pick_msg})
-                await _persist_sse_text(_chunk, known_task_id=t_id)
                 yield _chunk
 
     elif node == "c4":

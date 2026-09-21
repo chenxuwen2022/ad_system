@@ -807,15 +807,42 @@ async def restart_task(
     if _is_running(task_id):
         raise HTTPException(409, "任务正在执行中，不需要重启")
 
-    # 读 checkpoint 看 graph 当前状态
-    graph_state, snapshot = await _aget_graph_state(task_id)
+    # 读 checkpoint 看 graph 当前状态（graph_state 未用到，仅 snapshot 用于 rt_state 判断）
+    _graph_state, snapshot = await _aget_graph_state(task_id)
     rt_state, rt_age = check_graph_runtime_state(snapshot)
 
     print(f"[restart] task={task_id} phase={task.phase} rt_state={rt_state} age={rt_age}",
           flush=True)
 
     if rt_state == "done":
-        # graph 实际上已经跑完了，只是 DB phase 没同步？让前端重新 get 一次就行
+        # checkpoint 说 graph 已到 END，但 DB phase 可能没同步
+        # （典型根因：persist_phase 之前静默吞异常导致 DB 写入丢失）
+        if task.phase not in (TaskPhase.DONE.value, TaskPhase.FAILED.value):
+            # 🔴 graph→DB 状态脱节！主动 reconcile，让 DB 追上 checkpoint
+            print(
+                f"[restart] 🛠️ task={task_id} 状态脱节 reconcile: "
+                f"checkpoint=done vs db.phase={task.phase}",
+                flush=True,
+            )
+            with session_scope() as db2:
+                repo2 = TaskRepo(db2)
+                repo2.update_phase(task_id, TaskPhase.DONE.value)
+                repo2.save_interrupt(task_id, None)
+            # 返回 SSE 流：先发 reconciled 让前端知道发生了状态修复，
+            # 再发标准的 phase=done 终态事件（前端的 SSE 监听靠 done/error 事件自然关闭）
+            async def _reconcile_event_generator():
+                yield _sse("reconciled", {
+                    "task_id": task_id,
+                    "phase": TaskPhase.DONE.value,
+                    "reconciled": True,
+                    "message": "graph 已完成但 DB 状态未同步，已自动修正为 done。请刷新页面查看结果。",
+                })
+                # 用 phase=done 结束流 —— 让前端的现有终态处理逻辑自然 kick in，
+                # 避免前端因为没收到 done/error 而继续监听直到心跳超时
+                yield _sse("phase", {"phase": "done"})
+
+            return StreamingResponse(_reconcile_event_generator(), media_type="text/event-stream")
+        # DB 也已经是终态 → 真的不需要重启
         raise HTTPException(409, "任务已完成，无需重启")
 
     if rt_state == "paused":
@@ -1119,6 +1146,8 @@ async def delete_task(task_id: str):
 
         # 只有 node1/node2/node3 正在执行时才禁止删除；
         # HITL 等待（c1_confirm / c2_confirm）和终态（done / failed / needs_retry）都允许删
+        # 关键：后端重启后 DB phase 可能陈旧（还停在 input 但 checkpoint 已经 done/paused），
+        # 必须用 checkpoint 状态二次确认是否真在跑
         _ACTIVE_PHASES = {
             TaskPhase.INPUT.value,
             TaskPhase.RESEARCH.value,
@@ -1126,9 +1155,26 @@ async def delete_task(task_id: str):
             TaskPhase.DELIVERY.value,
         }
         if task.phase in _ACTIVE_PHASES:
-            raise HTTPException(
-                409,
-                f"任务正在执行中（phase='{task.phase}'），请等待执行完成或人工确认后再删除",
+            # DB phase 看起来 active → 再看 checkpoint 是不是真在执行
+            _actually_running = True  # 保守默认：读不到 checkpoint 就拦
+            try:
+                from wellflow.app.graph_context import check_graph_runtime_state as _check_rt
+                _, snapshot = await _aget_graph_state(task_id)
+                rt_state, _ = _check_rt(snapshot)
+                # running/stale = 真在跑；done/paused/none = 没有在执行的 graph
+                _actually_running = rt_state in ("running", "stale")
+            except Exception as _ckpt_err:
+                print(f"[delete_task] ⚠️ checkpoint 状态读不到，保守按 DB phase 拦截: {_ckpt_err}", flush=True)
+
+            if _actually_running:
+                raise HTTPException(
+                    409,
+                    f"任务正在执行中（phase='{task.phase}'），请等待执行完成或人工确认后再删除",
+                )
+            print(
+                f"[delete_task] 🛡️ DB phase={task.phase} 但 checkpoint 已停（rt_state={rt_state!r}），"
+                f"允许删除",
+                flush=True,
             )
 
         # 2. 删 DB（所有子表 + 主表）
