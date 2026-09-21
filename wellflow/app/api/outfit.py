@@ -32,11 +32,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from wellflow.app.api.utils import ok, to_cn_iso
 from wellflow.app.config import settings
-from wellflow.app.database import get_db, session_scope
+from wellflow.app.database import get_db, get_db_async, session_scope, AsyncSessionLocal
 from wellflow.app.llm.factory import get_llm_client
 from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.repositories.outfit_repo import OutfitRepo
@@ -101,8 +101,11 @@ _TASK_LOCK = threading.RLock()
 
 # 生成流水线并发闸:保护公司网关,排队不拒绝(技术主管要求可同时开多个,但限制同时在跑)
 GLOBAL_PIPELINE_CONCURRENCY = 3
-_PIPELINE_SEMAPHORE = threading.Semaphore(GLOBAL_PIPELINE_CONCURRENCY)
+_PIPELINE_ASYNC_SEMAPHORE = asyncio.Semaphore(GLOBAL_PIPELINE_CONCURRENCY)
 _PID = str(os.getpid())                 # 任务文件判死用:重启后 pid 变化即视为中断
+
+# 后台协程任务集合:持有引用防 GC(asyncio.create_task 无引用会被回收)
+_BG_TASKS: set = set()
 
 # 异步流程状态机(列表全程可见,用户任意时刻可离开、可从列表回来接上):
 #   extracting(拆解中)→ pending_select(待选件)→ generating(生成中)→ pending_confirm(待确认)→ active
@@ -195,6 +198,21 @@ def _mark_outfit_status(outfit_id: int, status: str) -> None:
                 return
             o.status = status
             db.commit()
+    except Exception:
+        pass
+
+
+async def _amark_outfit_status(outfit_id: int, status: str) -> None:
+    """协程任务里把穿搭行置为指定状态(语义同 _mark_outfit_status,async 会话版)。"""
+    try:
+        async with AsyncSessionLocal() as db:
+            o = await OutfitRepo(db).aget(outfit_id)
+            if o is None:
+                return
+            if status == "failed" and o.status == "active":
+                return
+            o.status = status
+            await db.commit()
     except Exception:
         pass
 
@@ -331,14 +349,14 @@ def _to_detail(o) -> OutfitDetailResponse:
 
 
 @router.get("/dimensions", summary="穿搭六组维度枚举(颜色含分组)")
-def get_dimensions():
+async def get_dimensions():
     return ok({"groups": OUTFIT_DIMENSION_GROUPS})
 
 
 @router.get("/ai-status", summary="轮询拆解/生成任务状态")
-def ai_status(task_id: str):
-    _sweep_stale_tasks()
-    t = _load_task(task_id)
+async def ai_status(task_id: str):
+    await run_in_threadpool(_sweep_stale_tasks)
+    t = await asyncio.to_thread(_load_task, task_id)
     if not t:
         raise HTTPException(404, "任务不存在")
     return ok(t)
@@ -365,15 +383,15 @@ def _layout_grid(n: int) -> tuple[int, int]:
 
 
 @router.get("", response_model=dict, summary="列出穿搭(scope/q/dims 筛选分页)")
-def list_outfits(
+async def list_outfits(
     scope: str | None = Query(default=None),
     q: str | None = Query(default=None),
     dims: str | None = Query(default=None, description='JSON:{"outfitStyle":["极简"]}'),
     page: int = Query(1),
     page_size: int = Query(20),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_db_async),
 ):
-    _sweep_stale_tasks()
+    await run_in_threadpool(_sweep_stale_tasks)
     if page < 1:
         page = 1
     if page_size < 1 or page_size > 100:
@@ -387,7 +405,7 @@ def list_outfits(
             raise HTTPException(400, "dims 参数必须是合法 JSON")
 
     repo = OutfitRepo(db)
-    items, total = repo.list(scope=scope, q=q, dims=parsed_dims, page=page, page_size=page_size)
+    items, total = await repo.alist(scope=scope, q=q, dims=parsed_dims, page=page, page_size=page_size)
     return ok(OutfitListResponse(
         items=[_to_list_item(o) for o in items],
         total=total, page=page, page_size=page_size,
@@ -395,21 +413,21 @@ def list_outfits(
 
 
 @router.get("/{outfit_id}", response_model=dict, summary="查询穿搭详情")
-def get_outfit(outfit_id: int, db: Session = Depends(get_db)):
-    _sweep_stale_tasks()
+async def get_outfit(outfit_id: int, db: AsyncSession = Depends(get_db_async)):
+    await run_in_threadpool(_sweep_stale_tasks)
     repo = OutfitRepo(db)
-    o = repo.get(outfit_id)
+    o = await repo.aget(outfit_id)
     if not o:
         raise HTTPException(404, "穿搭不存在")
     return ok(_to_detail(o).model_dump())
 
 
 @router.post("", response_model=dict, summary="确认入库(一次事务写 outfit 表)")
-def create_outfit(body: OutfitCreateRequest, db: Session = Depends(get_db)):
+async def create_outfit(body: OutfitCreateRequest, db: AsyncSession = Depends(get_db_async)):
     """穿搭最终入库:交互端点产物全部通过 storage_uri 引用,此处一次事务落库。"""
     repo = OutfitRepo(db)
     try:
-        o = repo.create(
+        o = await repo.acreate(
             name=body.name,
             desc=body.desc,
             tags=body.tags,
@@ -420,22 +438,22 @@ def create_outfit(body: OutfitCreateRequest, db: Session = Depends(get_db)):
             items=[it.model_dump() for it in body.items] if body.items else None,
             dims=body.dims.model_dump() if body.dims else None,
         )
-        db.commit()
+        await db.commit()
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         raise HTTPException(400, f"创建失败: {e}")
     return ok(_to_detail(o).model_dump())
 
 
 @router.put("/{outfit_id}", response_model=dict, summary="更新穿搭/确认入库/返回上一步(官方资产 403)")
-def update_outfit(outfit_id: int, body: OutfitUpdateRequest, db: Session = Depends(get_db)):
+async def update_outfit(outfit_id: int, body: OutfitUpdateRequest, db: AsyncSession = Depends(get_db_async)):
     """编辑穿搭;确认入库 = 待确认行提交 {name, desc, tags, dims, status:"active"};
 
     「返回上一步」= 待确认行提交 {status:"pending_select"}:清空生成产物
     (封面/标签/描述),保留 items/name,退回待选件重新勾选。
     """
     repo = OutfitRepo(db)
-    o = repo.get(outfit_id)
+    o = await repo.aget(outfit_id)
     if not o:
         raise HTTPException(404, "穿搭不存在")
     if o.scope == "official":
@@ -450,9 +468,9 @@ def update_outfit(outfit_id: int, body: OutfitUpdateRequest, db: Session = Depen
             o.desc = None
             o.tags = None
             o.status = "pending_select"
-            db.commit()
+            await db.commit()
         else:
-            o = repo.update(
+            o = await repo.aupdate(
                 outfit_id,
                 name=body.name,
                 desc=body.desc,
@@ -463,23 +481,23 @@ def update_outfit(outfit_id: int, body: OutfitUpdateRequest, db: Session = Depen
                 dims=body.dims.model_dump() if body.dims is not None else None,
                 status=body.status,
             )
-            db.commit()
+            await db.commit()
     except ValueError as e:
         raise HTTPException(404, str(e))
     return ok(_to_detail(o).model_dump())
 
 
 @router.delete("/{outfit_id}", response_model=dict, summary="删除穿搭(官方资产 403)")
-def delete_outfit(outfit_id: int, db: Session = Depends(get_db)):
+async def delete_outfit(outfit_id: int, db: AsyncSession = Depends(get_db_async)):
     repo = OutfitRepo(db)
-    o = repo.get(outfit_id)
+    o = await repo.aget(outfit_id)
     if not o:
         raise HTTPException(404, "穿搭不存在")
     if o.scope == "official":
         raise HTTPException(403, "官方资产为平台精选,禁止删除")
-    if not repo.delete(outfit_id):
+    if not await repo.adelete(outfit_id):
         raise HTTPException(404, "穿搭不存在")
-    db.commit()
+    await db.commit()
     return ok({"deleted": True, "outfit_id": outfit_id})
 
 
@@ -487,24 +505,24 @@ def delete_outfit(outfit_id: int, db: Session = Depends(get_db)):
 # 交互端点 1:AI 拆解(异步任务 + 轮询;真实识别 + 逐件抠图)
 # ---------------------------------------------------------------------------
 
-def _call_vlm_recognize(raw: bytes):
+async def _call_vlm_recognize(raw: bytes):
     """VLM(模型池)识别照片单品清单,≤ settings.outfit_max_items 件。
 
     模型池偶发返回空清单(同一张图重试即有结果)——空结果自动重试一次再判失败。
     """
-    import asyncio as _a
+    b64 = base64.b64encode(raw).decode()
+    prompt = (
+        "这是一张人物全身穿搭照片。请识别照片中人物身上穿/戴的每一件单品"
+        "(上衣、裤装、鞋、包、腰带、眼镜等),输出 JSON:\n"
+        '{"items":[{"name":"单品名(简洁,如 军绿衬衫外套)",'
+        '"category":"品类(衬衫/T恤/裤子/鞋/包/配饰 等通用词)",'
+        '"color":"颜色(简洁,如 军绿/米白/黑)"}]}\n'
+        "要求:\n1. 按从上到下、从外到内排列\n"
+        "2. 不要包含人物本身特征(发型、肤色、身材)\n3. 只输出 JSON,不要任何解释"
+    )
 
-    async def _go():
-        b64 = base64.b64encode(raw).decode()
-        prompt = (
-            "这是一张人物全身穿搭照片。请识别照片中人物身上穿/戴的每一件单品"
-            "(上衣、裤装、鞋、包、腰带、眼镜等),输出 JSON:\n"
-            '{"items":[{"name":"单品名(简洁,如 军绿衬衫外套)",'
-            '"category":"品类(衬衫/T恤/裤子/鞋/包/配饰 等通用词)",'
-            '"color":"颜色(简洁,如 军绿/米白/黑)"}]}\n'
-            "要求:\n1. 按从上到下、从外到内排列\n"
-            "2. 不要包含人物本身特征(发型、肤色、身材)\n3. 只输出 JSON,不要任何解释"
-        )
+    content = ""
+    for _attempt in range(2):
         pool = get_model_pool()
         resp, _used_model = await pool.chat_with_images(
             system="你是专业的电商服饰单品识别专家。",
@@ -513,11 +531,7 @@ def _call_vlm_recognize(raw: bytes):
             response_format={"type": "json_object"},
             reasoning_effort="close",
         )
-        return resp.content or ""
-
-    content = ""
-    for _attempt in range(2):
-        content = _a.run(_go())
+        content = resp.content or ""
         parsed = _extract_json(content)
         items = parsed.get("items")
         if not isinstance(items, list) or not items:
@@ -534,8 +548,6 @@ def _call_vlm_recognize(raw: bytes):
         if norm:
             return norm
     raise RuntimeError(f"VLM 未返回有效单品清单: {content[:200]}")
-
-
 def _download_image(url: str, model: str) -> str:
     """下载网关返回的生成图 url → b64(校验图片魔数,防拿到错误页)。"""
     import urllib.request as _ur
@@ -549,82 +561,75 @@ def _download_image(url: str, model: str) -> str:
     return base64.b64encode(data).decode()
 
 
-def _extract_item_image(raw: bytes, name: str):
+async def _extract_item_image(raw: bytes, name: str):
     """单件抠图:降级链依次尝试,成功返回 b64,全败抛 RuntimeError。
 
     网关可能只回 url 不回 b64(如 qwen-image-3.0):http url 下载校验后转 b64。
     """
-    import asyncio as _a
-
-    async def _go():
-        prompt = (
-            f"提取这张穿搭照片中的「{name}」,生成干净的专业白底商品图。"
-            "要求:只保留这一件单品,主体完整(被遮挡部分合理补全),"
-            "背景纯白,居中构图,无阴影、无文字"
-        )
-        errors = []
-        for model in settings.outfit_extract_models:
-            try:
-                client = get_llm_client("image", model_override=model)
-                r = await client.generate_image(
-                    prompt=prompt,
-                    image_uris=[f"data:image/png;base64,{base64.b64encode(raw).decode()}"],
-                    size="1024x1024",
-                    n=1,
-                    response_format="b64_json",
-                )
-                img = r.all_images[0]
-                b64 = img.b64_json or (img.url or "")
-                if not b64:
-                    raise RuntimeError(f"{model}: AI 未返回图片结果")
-                if b64.startswith("http"):
-                    b64 = await _a.to_thread(_download_image, b64, model)
-                return b64
-            except Exception as e:
-                errors.append(f"{model}: {str(e)[:100]}")
-        raise RuntimeError("；".join(errors))
-
-    return _a.run(_go())
-
-
-def _run_cutout(task: dict, raw: bytes, items: list[dict], session_id: str) -> tuple[int, dict]:
-    """并发抠图(settings.outfit_extract_concurrency 路),更新 task 的 items/failed_items/progress。
+    prompt = (
+        f"提取这张穿搭照片中的「{name}」,生成干净的专业白底商品图。"
+        "要求:只保留这一件单品,主体完整(被遮挡部分合理补全),"
+        "背景纯白,居中构图,无阴影、无文字"
+    )
+    errors = []
+    for model in settings.outfit_extract_models:
+        try:
+            client = get_llm_client("image", model_override=model)
+            r = await client.generate_image(
+                prompt=prompt,
+                image_uris=[f"data:image/png;base64,{base64.b64encode(raw).decode()}"],
+                size="1024x1024",
+                n=1,
+                response_format="b64_json",
+            )
+            img = r.all_images[0]
+            b64 = img.b64_json or (img.url or "")
+            if not b64:
+                raise RuntimeError(f"{model}: AI 未返回图片结果")
+            if b64.startswith("http"):
+                b64 = await asyncio.to_thread(_download_image, b64, model)
+            return b64
+        except Exception as e:
+            errors.append(f"{model}: {str(e)[:100]}")
+    raise RuntimeError("；".join(errors))
+async def _run_cutout(task: dict, raw: bytes, items: list[dict], session_id: str) -> tuple[int, dict]:
+    """并发抠图(settings.outfit_extract_concurrency 路,asyncio 协程并发)。
 
     items:任务清单元素(含 id/name/category/color,storage_uri 由本函数回填)。
     返回 (成功件数, 失败件 {idx: error})。每件完成即落盘任务文件。
     """
-    from concurrent.futures import ThreadPoolExecutor
-
+    sem = asyncio.Semaphore(min(settings.outfit_extract_concurrency, len(items)))
     results: dict = {}
     errors: dict = {}
 
-    def worker(idx: int):
+    async def worker(idx: int):
         b64 = None
         err = ""
         try:
-            b64 = _extract_item_image(raw, items[idx]["name"])
+            b64 = await _extract_item_image(raw, items[idx]["name"])
         except Exception as e:
             err = str(e)[:200]
         uri = ""
         if b64 is not None:
-            uri = _save_output(session_id, f"item-{idx:02d}", b64)
-        with _TASK_LOCK:
-            if b64 is not None:
-                results[idx] = b64
-                task["items"][idx]["storage_uri"] = uri
-            else:
-                errors[idx] = err
-                task["failed_items"].append({"name": items[idx]["name"], "error": err})
-            task["progress"] = {"done": len(results) + len(errors), "total": len(items)}
-            _save_task(task)
+            uri = await asyncio.to_thread(
+                _save_output, session_id, f"item-{idx:02d}", b64)
+        if b64 is not None:
+            results[idx] = b64
+            task["items"][idx]["storage_uri"] = uri
+        else:
+            errors[idx] = err
+            task["failed_items"].append({"name": items[idx]["name"], "error": err})
+        task["progress"] = {"done": len(results) + len(errors), "total": len(items)}
+        await asyncio.to_thread(_save_task, task)
 
-    with ThreadPoolExecutor(max_workers=min(settings.outfit_extract_concurrency, len(items))) as ex:
-        list(ex.map(worker, range(len(items))))
+    async def limited(idx: int):
+        async with sem:
+            await worker(idx)
+
+    await asyncio.gather(*(limited(i) for i in range(len(items))))
     return len(results), errors
-
-
-def _run_extract(task: dict, raw: bytes, mode: str):
-    """后台拆解任务:demo=预制示例;real=VLM 识别+并发抠图。
+async def _run_extract(task: dict, raw: bytes, mode: str):
+    """后台拆解任务(asyncio 协程):demo=预制示例;real=VLM 识别+并发抠图。
 
     完成 → 先 UPDATE 行(items + status=pending_select)再写任务文件 done(顺序钉死);
     失败 → 行 failed + 任务文件 failed。产物落 uploads/{sid}/outputs/。
@@ -632,19 +637,19 @@ def _run_extract(task: dict, raw: bytes, mode: str):
     sid = task.get("session_id") or "outfit"
     outfit_id = task.get("outfit_id")
 
-    def fail(err: str) -> None:
+    async def fail(err: str) -> None:
         task["status"] = "failed"
         task["error"] = err
-        _save_task(task)
+        await asyncio.to_thread(_save_task, task)
         if outfit_id:
-            _mark_outfit_status(int(outfit_id), "failed")
+            await _amark_outfit_status(int(outfit_id), "failed")
 
     try:
         if mode == "real":
             try:
-                recognized = _call_vlm_recognize(raw)
+                recognized = await _call_vlm_recognize(raw)
             except Exception as e:
-                fail(f"单品识别失败: {str(e)[:400]}")
+                await fail(f"单品识别失败: {str(e)[:400]}")
                 return
             norm_items = [
                 {"id": f"r{i + 1}", "name": it["name"], "category": it["category"],
@@ -654,11 +659,11 @@ def _run_extract(task: dict, raw: bytes, mode: str):
             task["items"] = norm_items
             task["progress"] = {"done": 0, "total": len(norm_items)}
             task["failed_items"] = []
-            _save_task(task)
+            await asyncio.to_thread(_save_task, task)
 
-            ok_n, cutout_errors = _run_cutout(task, raw, norm_items, sid)
+            ok_n, cutout_errors = await _run_cutout(task, raw, norm_items, sid)
             if ok_n == 0:
-                fail(f"全部 {len(norm_items)} 件单品抠图失败: " + "；".join(cutout_errors.values())[:400])
+                await fail(f"全部 {len(norm_items)} 件单品抠图失败: " + "；".join(cutout_errors.values())[:400])
                 return
             task["error"] = (f"{len(cutout_errors)} 件单品抠图失败(详见 failed_items)" if cutout_errors else "")
         else:
@@ -674,25 +679,23 @@ def _run_extract(task: dict, raw: bytes, mode: str):
         # 先 UPDATE 行(待选件)→ 再写任务文件 done
         items_db = [it for it in task["items"] if it.get("storage_uri")]
         try:
-            with session_scope() as db:
-                o = OutfitRepo(db).get(int(outfit_id)) if outfit_id else None
+            async with AsyncSessionLocal() as db:
+                o = await OutfitRepo(db).aget(int(outfit_id)) if outfit_id else None
                 if o is None:
                     raise RuntimeError(f"穿搭 {outfit_id} 已被删除")
                 o.items = items_db
                 o.status = "pending_select"
-                db.commit()
+                await db.commit()
         except Exception as e:
-            fail(f"拆解结果写入失败: {str(e)[:400]}")
+            await fail(f"拆解结果写入失败: {str(e)[:400]}")
             return
 
         task["status"] = "done"
-        _save_task(task)
+        await asyncio.to_thread(_save_task, task)
     except Exception as e:
-        fail(str(e)[:600])
-
-
+        await fail(str(e)[:600])
 @router.post("/ai-extract", response_model=dict, summary="AI 拆解(点击即入库 extracting,后台识别+抠图;demo/real)")
-async def ai_extract(body: OutfitExtractRequest, db: Session = Depends(get_db)):
+async def ai_extract(body: OutfitExtractRequest, db: AsyncSession = Depends(get_db_async)):
     """拆解也走「先入库」:立即写 outfit 行(status=extracting),后台识别+抠图。
 
     完成 → 行补 items、status=pending_select(待选件);失败 → 行 failed。
@@ -711,7 +714,7 @@ async def ai_extract(body: OutfitExtractRequest, db: Session = Depends(get_db)):
     if body.outfit_id is not None:
         # 重新拆解:对已有待选件行清单品、转 extracting,不新建;
         # 支持换图(原图字段同步更新为新上传的图)
-        obj = repo.get(body.outfit_id)
+        obj = await repo.aget(body.outfit_id)
         if obj is None:
             raise HTTPException(404, f"穿搭 {body.outfit_id} 不存在")
         if obj.scope == "official":
@@ -721,14 +724,14 @@ async def ai_extract(body: OutfitExtractRequest, db: Session = Depends(get_db)):
         obj.original_storage_uri = body.original_uri
         obj.items = None
         obj.status = "extracting"
-        db.commit()
+        await db.commit()
     else:
         # 新建行(点击即入库 extracting);批量并发撞 outfit_no 时回滚重试一次
         tmp_name = f"AI穿搭{datetime.now():%m%d-%H%M}"
         last_err: Exception | None = None
         for _attempt in range(2):
             try:
-                obj = repo.create(
+                obj = await repo.acreate(
                     name=tmp_name,
                     scope="mine",
                     origin="ai",
@@ -737,10 +740,10 @@ async def ai_extract(body: OutfitExtractRequest, db: Session = Depends(get_db)):
                     dims={},
                 )
                 obj.status = "extracting"  # DB 默认 active,必须显式覆盖
-                db.commit()
+                await db.commit()
                 break
             except IntegrityError:
-                db.rollback()
+                await db.rollback()
                 last_err = IntegrityError("outfit_no 冲突")
         if obj is None:
             raise HTTPException(400, f"创建失败: {last_err}")
@@ -754,8 +757,10 @@ async def ai_extract(body: OutfitExtractRequest, db: Session = Depends(get_db)):
         "outfit_id": obj.id,
         "items": [], "failed_items": [], "progress": {"done": 0, "total": 0}, "error": "",
     }
-    _save_task(task)
-    threading.Thread(target=_run_extract, args=(task, raw, mode), daemon=True).start()
+    await asyncio.to_thread(_save_task, task)
+    _bg = asyncio.create_task(_run_extract(task, raw, mode))
+    _BG_TASKS.add(_bg)
+    _bg.add_done_callback(_BG_TASKS.discard)
     return ok({
         "outfit_id": obj.id, "outfit_no": obj.outfit_no,
         "task_id": task_id, "status": "extracting",
@@ -922,33 +927,31 @@ async def auto_tag(body: OutfitAutoTagRequest):
 # 交互端点 4:一键异步生成(点击即入库 generating → 后台补全 → active/failed)
 # ---------------------------------------------------------------------------
 
-def _run_generate(task: dict, raw: bytes, body) -> None:
-    """后台补全流水线(并发闸内执行):平铺 → 打标 → UPDATE 行 → done。
+async def _run_generate(task: dict, raw: bytes, body) -> None:
+    """后台补全流水线(asyncio 协程,并发闸内执行):平铺 → 打标 → UPDATE 行 → done。
 
     auto 模式多跑识别+抠图。顺序钉死:DB 行 UPDATE 成功后才写任务文件 done;
     完成后行 status=pending_confirm(名称/标签/描述预填 VLM 值,等用户确认入库);
     关键步骤失败 → 任务文件 failed + 行 status=failed(error 详情在任务文件)。
     """
-    import asyncio as _a
-
     sid = task["session_id"]
     outfit_id = task["outfit_id"]
 
-    def fail(step_label: str, e: Exception) -> None:
+    async def fail(step_label: str, e: Exception) -> None:
         task["status"] = "failed"
         task["error"] = f"{step_label}失败: {str(e)[:400]}"
-        _save_task(task)
-        _mark_outfit_status(outfit_id, "failed")
+        await asyncio.to_thread(_save_task, task)
+        await _amark_outfit_status(outfit_id, "failed")
 
-    with _PIPELINE_SEMAPHORE:
+    async with _PIPELINE_ASYNC_SEMAPHORE:
         try:
             # ── 1. 识别(auto 模式;items 模式清单已入库) ──
             if body.mode == "auto":
                 task["step"] = "extract"
                 try:
-                    recognized = _call_vlm_recognize(raw)
+                    recognized = await _call_vlm_recognize(raw)
                 except Exception as e:
-                    fail("extract", e)
+                    await fail("extract", e)
                     return
                 norm_items = [
                     {"id": f"r{i + 1}", "name": it["name"], "category": it["category"],
@@ -958,13 +961,13 @@ def _run_generate(task: dict, raw: bytes, body) -> None:
                 task["items"] = norm_items
                 task["progress"] = {"done": 0, "total": len(norm_items)}
                 task["failed_items"] = []
-                _save_task(task)
+                await asyncio.to_thread(_save_task, task)
 
                 # ── 2. 抠图(auto 模式) ──
                 task["step"] = "cutout"
-                ok_n, _ = _run_cutout(task, raw, norm_items, sid)
+                ok_n, _ = await _run_cutout(task, raw, norm_items, sid)
                 if ok_n == 0 and task.get("failed_items"):
-                    fail("cutout", RuntimeError(f"全部 {len(norm_items)} 件单品抠图失败"))
+                    await fail("cutout", RuntimeError(f"全部 {len(norm_items)} 件单品抠图失败"))
                     return
             else:
                 norm_items = task["items"]
@@ -973,22 +976,22 @@ def _run_generate(task: dict, raw: bytes, body) -> None:
             task["step"] = "flatlay"
             try:
                 item_uris = [it.get("storage_uri") for it in norm_items if it.get("storage_uri")]
-                png_bytes = _compose_flatlay(item_uris)
-                flatlay_uri = _save_output(
-                    sid, f"flatlay-{int(time.time() * 1000)}",
+                png_bytes = await asyncio.to_thread(_compose_flatlay, item_uris)
+                flatlay_uri = await asyncio.to_thread(
+                    _save_output, sid, f"flatlay-{int(time.time() * 1000)}",
                     base64.b64encode(png_bytes).decode())
             except Exception as e:
-                fail("flatlay", e)
+                await fail("flatlay", e)
                 return
             task["flatlay_storage_uri"] = flatlay_uri
 
             # ── 4. 打标+描述 ──
             task["step"] = "tagging"
             try:
-                dims, description, suggested, used_model = _a.run(
-                    _do_auto_tag(_to_data_uris([flatlay_uri]), body.extra_context))
+                dims, description, suggested, used_model = await _do_auto_tag(
+                    await asyncio.to_thread(_to_data_uris, [flatlay_uri]), body.extra_context)
             except Exception as e:
-                fail("tagging", e)
+                await fail("tagging", e)
                 return
             task["dims"] = dims
             task["description"] = description
@@ -1001,8 +1004,8 @@ def _run_generate(task: dict, raw: bytes, body) -> None:
             tags = ",".join(dict.fromkeys(v for vals in dims.values() for v in vals))[:512]
             items_db = [it for it in norm_items if it.get("storage_uri")]
             try:
-                with session_scope() as db:
-                    o = OutfitRepo(db).get(outfit_id)
+                async with AsyncSessionLocal() as db:
+                    o = await OutfitRepo(db).aget(outfit_id)
                     if o is None:
                         raise RuntimeError(f"穿搭 {outfit_id} 已被删除")
                     o.name = final_name
@@ -1012,23 +1015,21 @@ def _run_generate(task: dict, raw: bytes, body) -> None:
                     o.items = items_db
                     o.dims = dims
                     o.status = "pending_confirm"
-                    db.commit()
+                    await db.commit()
             except Exception as e:
-                fail("saving", e)
+                await fail("saving", e)
                 return
 
             task["status"] = "done"
             task["error"] = ""
-            _save_task(task)
+            await asyncio.to_thread(_save_task, task)
         except Exception as e:
             task["status"] = "failed"
             task["error"] = f"流水线异常: {str(e)[:400]}"
-            _save_task(task)
-            _mark_outfit_status(outfit_id, "failed")
-
-
+            await asyncio.to_thread(_save_task, task)
+            await _amark_outfit_status(outfit_id, "failed")
 @router.post("/generate", response_model=dict, summary="生成穿搭图(选件后:更新已有行;auto:新建行。后台平铺+打标)")
-async def generate(body: OutfitGenerateRequest, db: Session = Depends(get_db)):
+async def generate(body: OutfitGenerateRequest, db: AsyncSession = Depends(get_db_async)):
     """异步生成:行进入 generating,后台平铺+打标,完成后行 status=pending_confirm
     (预填 VLM 名称/标签/描述,等用户确认入库),失败 → 行 failed。
 
@@ -1047,7 +1048,7 @@ async def generate(body: OutfitGenerateRequest, db: Session = Depends(get_db)):
 
     if body.outfit_id is not None:
         # 选件后生成:更新已有拆解行,不新建
-        obj = repo.get(body.outfit_id)
+        obj = await repo.aget(body.outfit_id)
         if obj is None:
             raise HTTPException(404, f"穿搭 {body.outfit_id} 不存在")
         if obj.scope == "official":
@@ -1056,14 +1057,14 @@ async def generate(body: OutfitGenerateRequest, db: Session = Depends(get_db)):
             raise HTTPException(400, f"当前状态 {obj.status} 不允许生成,请刷新列表")
         obj.items = items_db
         obj.status = "generating"
-        db.commit()
+        await db.commit()
     else:
         # 一键新建(auto 模式;前端不挂入口)
         tmp_name = (body.name or f"AI穿搭{datetime.now():%m%d-%H%M}").strip()
         last_err: Exception | None = None
         for _attempt in range(2):
             try:
-                obj = repo.create(
+                obj = await repo.acreate(
                     name=tmp_name,
                     scope=body.scope,
                     origin="ai",
@@ -1072,10 +1073,10 @@ async def generate(body: OutfitGenerateRequest, db: Session = Depends(get_db)):
                     dims={},
                 )
                 obj.status = "generating"  # DB 默认 active,必须显式覆盖
-                db.commit()
+                await db.commit()
                 break
             except IntegrityError:
-                db.rollback()
+                await db.rollback()
                 last_err = IntegrityError("outfit_no 冲突")
         if obj is None:
             raise HTTPException(400, f"创建失败: {last_err}")
@@ -1089,8 +1090,10 @@ async def generate(body: OutfitGenerateRequest, db: Session = Depends(get_db)):
         "items": items_db, "failed_items": [], "progress": {"done": 0, "total": 0},
         "error": "", "requested_name": body.name,
     }
-    _save_task(task)
-    threading.Thread(target=_run_generate, args=(task, raw, body), daemon=True).start()
+    await asyncio.to_thread(_save_task, task)
+    _bg = asyncio.create_task(_run_generate(task, raw, body))
+    _BG_TASKS.add(_bg)
+    _bg.add_done_callback(_BG_TASKS.discard)
     return ok({
         "outfit_id": obj.id, "outfit_no": obj.outfit_no,
         "task_id": task_id, "status": "generating",

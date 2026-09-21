@@ -62,3 +62,31 @@ def session_scope():
         raise
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# 异步会话（方案 B：async 端点内的「立即入库」走 AsyncSession；
+# 后台 daemon 线程与其余同步模块继续用上面的同步链路，互不影响）
+# ---------------------------------------------------------------------------
+from sqlalchemy.ext.asyncio import (  # noqa: E402
+    AsyncSession, async_sessionmaker, create_async_engine,
+)
+
+# URL 兜底:未配置 database_url_async 时,自动从同步 URL 派生(psycopg2 → asyncpg),
+# 保证任何环境(含同事本地)零配置可用
+_async_url = settings.database_url_async or settings.database_url.replace(
+    "postgresql+psycopg2://", "postgresql+asyncpg://", 1)
+async_engine = create_async_engine(
+    _async_url,
+    pool_pre_ping=True,
+    pool_size=10,
+    max_overflow=20,
+)
+
+AsyncSessionLocal = async_sessionmaker(bind=async_engine, expire_on_commit=False)
+
+
+async def get_db_async():
+    """FastAPI 依赖注入：async 端点用（每次请求独立异步会话）。"""
+    async with AsyncSessionLocal() as db:
+        yield db
