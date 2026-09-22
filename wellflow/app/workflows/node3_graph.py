@@ -191,10 +191,24 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
             detail = _pg._extract_json(raw_content)
             prompt_text, negative_prompt = _pg._json_to_natural_prompt(detail)
 
+            # 从原始输出里抽 #NAME: xxx，拼成 "方案名 · xxx"
+            subtitle = _pg._extract_prompt_subtitle(raw_content)
+            if subtitle:
+                prompt_name = f"{scheme_name} · {subtitle}"
+            else:
+                # LLM 没按格式输出时的兜底：用 "方案名 · 变体N"
+                prompt_name = (
+                    f"{scheme_name} · 变体{vi + 1}"
+                    if n_variants > 1
+                    else scheme_name
+                )
+
             if task_id:
                 publish(task_id, "prompt_chunk_done", {
                     "scheme_index": scheme_index,
                     "scheme_name": scheme_name,
+                    "prompt_name": prompt_name,
+                    "prompt_subtitle": subtitle,
                     "variant_index": vi,
                     "variant_total": n_variants,
                     "total_chunks": chunk_index,
@@ -211,6 +225,8 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
             all_details.append({
                 "scheme_index": scheme_index,
                 "scheme_name": scheme_name,
+                "prompt_name": prompt_name,
+                "prompt_subtitle": subtitle,
                 "variant_index": vi,
                 "variant_total": n_variants,
                 "prompt": prompt_text,

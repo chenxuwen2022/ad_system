@@ -67,6 +67,28 @@ def _extract_json(text: str) -> dict[str, Any]:
     return {}
 
 
+def _extract_prompt_subtitle(raw_text: str, max_chars: int = 6) -> str:
+    """从 LLM 原始输出里抽 `#NAME: xxx` 那一行，清理后返回 ≤max_chars 字的 subtitle。
+
+    LLM 按 prompt 约定会在 JSON 之后另起一行输出 `#NAME: 天台逆光剪影` 之类。
+    万一没按格式来，就返回空字符串，调用方负责 fallback。
+    """
+    if not raw_text:
+        return ""
+    m = re.search(r"(?:^|\n)\s*#NAME\s*[:：]\s*(.+?)\s*$", raw_text, flags=re.MULTILINE)
+    if not m:
+        return ""
+    subtitle = m.group(1).strip()
+    # 去掉可能的 markdown / 引号 / 代码块包裹
+    subtitle = subtitle.strip("`\"'，。,.；;!！?？、· \t")
+    if not subtitle:
+        return ""
+    # 截断到 max_chars（按字符数，中文=1）
+    if len(subtitle) > max_chars:
+        subtitle = subtitle[:max_chars]
+    return subtitle
+
+
 # ---------------------------------------------------------------------------
 # 把 GENERATE_IMAGE_PROMPT 的 14 维 JSON schema 一字不差拼成自然语言 prompt
 #
@@ -402,9 +424,11 @@ async def generate_prompt_for_scheme(
 
     detail = _extract_json(raw)
     prompt, negative_prompt = _json_to_natural_prompt(detail)
+    subtitle = _extract_prompt_subtitle(raw)
 
     print(f"[prompt_generation] ✅ scheme #{scheme_index}{_variant_label}: prompt len={len(prompt)}, "
-          f"negative_prompt={'有' if negative_prompt else '无'}", flush=True)
+          f"negative_prompt={'有' if negative_prompt else '无'}, "
+          f"subtitle={subtitle!r}", flush=True)
 
     return {
         "prompt": prompt,
@@ -414,4 +438,5 @@ async def generate_prompt_for_scheme(
         "thinking_text": thinking_text,
         "scheme_index": scheme_index,
         "scheme_name": scheme_name,
+        "prompt_subtitle": subtitle,
     }
