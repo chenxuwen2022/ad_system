@@ -112,7 +112,7 @@ def update_prompt(key: str, body: PromptUpdate, db: Session = Depends(get_db)):
     current = db.get(PromptRevision, template.draft_revision_id)
     if current.content == body.content and template.name == body.name:
         raise HTTPException(409, "没有修改内容")
-    number = current.number + 1
+    number = (db.scalar(select(func.max(PromptRevision.number)).where(PromptRevision.template_key == key)) or 0) + 1
     revision = PromptRevision(template_key=key, number=number, content=body.content, note=body.note)
     db.add(revision)
     db.flush()
@@ -126,16 +126,54 @@ def update_prompt(key: str, body: PromptUpdate, db: Session = Depends(get_db)):
 def delete_prompt(key: str, db: Session = Depends(get_db)):
     seed_prompts(db)
     template = _template(db, key)
-    template.is_archived = True
+    return _delete_revision(db, template, template.draft_revision_id)
+
+
+def _delete_revision(db: Session, template: PromptTemplate, revision_id: int):
+    revision = db.get(PromptRevision, revision_id)
+    if not revision or revision.template_key != template.key or revision.is_deleted:
+        raise HTTPException(404, "修订版本不存在")
+    remaining = db.scalars(select(PromptRevision).where(
+        PromptRevision.template_key == template.key,
+        PromptRevision.is_deleted.is_(False),
+        PromptRevision.id != revision_id,
+    ).order_by(PromptRevision.number.desc())).all()
+    if not remaining:
+        raise HTTPException(409, "每个提示词必须至少保留一个可用版本")
+    current = _release(db, template.category)
+    published_item = db.get(PromptReleaseItem, (current.id, template.key)) if current else None
+    was_published = published_item is not None and published_item.revision_id == revision_id
+    fallback = next((item for item in remaining if item.number < revision.number), remaining[-1])
+    revision.is_deleted = True
+    if template.draft_revision_id == revision_id:
+        template.draft_revision_id = remaining[0].id
+    new_version = None
+    if was_published:
+        release = PromptRelease(category=template.category, number=current.number + 1, note=f"删除 {template.name} 修订 #{revision.number}，自动切换到修订 #{fallback.number}")
+        db.add(release)
+        db.flush()
+        previous = db.scalars(select(PromptReleaseItem).where(PromptReleaseItem.release_id == current.id)).all()
+        for item in previous:
+            db.add(PromptReleaseItem(release_id=release.id, template_key=item.template_key,
+                revision_id=fallback.id if item.template_key == template.key else item.revision_id))
+        new_version = release.number
     db.commit()
-    return {"key": key, "archived": True, "publish_required": True}
+    return {"key": template.key, "deleted_revision_id": revision_id,
+        "active_revision_id": fallback.id if was_published else None,
+        "release_version": new_version}
+
+
+@router.delete("/{key}/revisions/{revision_id}")
+def delete_revision(key: str, revision_id: int, db: Session = Depends(get_db)):
+    seed_prompts(db)
+    return _delete_revision(db, _template(db, key), revision_id)
 
 
 @router.get("/{key}/revisions")
 def revisions(key: str, db: Session = Depends(get_db)):
     seed_prompts(db)
     _template(db, key)
-    rows = db.scalars(select(PromptRevision).where(PromptRevision.template_key == key).order_by(PromptRevision.number.desc())).all()
+    rows = db.scalars(select(PromptRevision).where(PromptRevision.template_key == key, PromptRevision.is_deleted.is_(False)).order_by(PromptRevision.number.desc())).all()
     return [{"id": row.id, "number": row.number, "content": row.content, "note": row.note, "created_at": row.created_at.isoformat()} for row in rows]
 
 

@@ -55,7 +55,10 @@ def active_prompt(db: Session, key: str) -> str:
         return DEFAULTS[key]
     item = db.get(PromptReleaseItem, (release.id, key))
     revision = db.get(PromptRevision, item.revision_id) if item else None
-    return revision.content if revision else DEFAULTS[key]
+    if revision and not revision.is_deleted:
+        return revision.content
+    fallback = db.scalar(select(PromptRevision).where(PromptRevision.template_key == key, PromptRevision.is_deleted.is_(False)).order_by(PromptRevision.number.desc()).limit(1))
+    return fallback.content if fallback else DEFAULTS[key]
 
 
 def get_active_prompt(key: str) -> str:

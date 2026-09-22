@@ -28,6 +28,7 @@ class PromptRevision(Base):
     number: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     note: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     __table_args__ = (UniqueConstraint("template_key", "number"),)
 
