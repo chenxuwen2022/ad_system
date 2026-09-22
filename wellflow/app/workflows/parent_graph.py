@@ -308,7 +308,7 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     )
 
     # —— 参考图：C1 也可以上传 mannequin 图（可选），scene/outfit 留到 C2 ——
-    new_refs = dict(node3.get("reference_images") or {"mannequin": [], "scene": [], "outfit": []})
+    new_refs = dict(new_node3.get("reference_images") or {"mannequin": [], "scene": [], "outfit": []})
     incoming_refs = interrupt_value.get("reference_images") or {}
     if "mannequin" in incoming_refs:
         new_refs["mannequin"] = list(incoming_refs["mannequin"])
