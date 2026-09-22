@@ -39,7 +39,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     """
     from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
-    from wellflow.app.prompt.constant import REFINE_NODE1_REPORT_SYSTEM_PROMPT
+    from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
     from wellflow.app.workflows.report_progress import ReportProgressStream, split_report_progress
 
@@ -110,7 +110,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     report_stream = ReportProgressStream()
 
     async for item in client.stream_chat(
-        system=REFINE_NODE1_REPORT_SYSTEM_PROMPT,
+        system=get_active_prompt("refine_report"),
         user=user_message,
         reasoning_effort=settings.text_reasoning_effort,
     ):
@@ -187,7 +187,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     """根据用户指令修改完整商拍报告正文。"""
     from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
-    from wellflow.app.prompt.constant import REFINE_NODE2_SCHEMES_SYSTEM_PROMPT
+    from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
     from wellflow.app.nodes.planning_scheme import split_scheme_reports
 
@@ -208,7 +208,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
         for i, report in enumerate(reports)
     )
     async for item in client.stream_chat(
-        system=REFINE_NODE2_SCHEMES_SYSTEM_PROMPT,
+        system=get_active_prompt("refine_plan"),
         user=(f"【原商拍策划方案列表】\n{previous}\n\n"
               f"【本轮修改指令】\n{instruction}"),
         reasoning_effort=settings.text_reasoning_effort,
@@ -248,7 +248,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     """
     from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
-    from wellflow.app.prompt.constant import REFINE_NODE3_PROMPTS_SYSTEM_PROMPT
+    from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
 
     task_id = state.get("task_id", "")
@@ -305,7 +305,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     content_chunk_index = 0
 
     async for item in client.stream_chat(
-        system=REFINE_NODE3_PROMPTS_SYSTEM_PROMPT,
+        system=get_active_prompt("refine_image_prompt"),
         user=user_message,
         reasoning_effort=settings.text_reasoning_effort,
     ):

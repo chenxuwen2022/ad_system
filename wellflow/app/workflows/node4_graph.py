@@ -24,7 +24,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from wellflow.app.llm.image_gen_service import get_image_models, generate_single_image
+from wellflow.app.llm.image_gen_service import (
+    generate_single_image,
+    get_image_channel_candidates,
+    get_image_models,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -196,8 +200,10 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
     try:
         _plan_models = await get_image_models()
         _plan_first = _plan_models[0] if _plan_models else "(未指定)"
+        _channel_candidates = await get_image_channel_candidates(_plan_models)
     except Exception:
         _plan_first = "(未指定)"
+        _channel_candidates = {}
 
     print(f"[node4] 🏃 run_gen 启动 task={task_id[:8]}: "
           f"入队 {len(pending_items)} 张, worker={WORKERS}, "
@@ -219,6 +225,7 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
         try:
             result = await generate_single_image(
                 prompt=prompt, size=size, ref_data_uris=refs, log_id=wid,
+                channel_candidates=_channel_candidates,
             )
             dt = time.time() - t0
             url = result.data_uri or result.url

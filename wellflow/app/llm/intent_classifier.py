@@ -16,7 +16,7 @@ import re
 
 from wellflow.app.config import settings
 from typing import Any, Literal
-from wellflow.app.prompt.constant import CLASSIFIER_SYSTEM
+from wellflow.app.prompt.registry import get_active_prompt
 
 # 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
 # （Node1/2/3 的 refine 纯文本微调也复用同一模型，见 workflows/refine_nodes.py）
@@ -342,7 +342,7 @@ async def _classify_via_llm(
 
     client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
     resp = await client.chat(
-        system=CLASSIFIER_SYSTEM,
+        system=get_active_prompt("intent_classifier"),
         user=user_prompt,
         response_format={"type": "json_object"},
         temperature=0.2,

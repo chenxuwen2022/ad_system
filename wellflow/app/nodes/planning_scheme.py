@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from wellflow.app.llm.model_pool import get_model_pool
-from wellflow.app.prompt.constant import PLANNING_AGENT_SYSTEM_PROMPT
+from wellflow.app.prompt.registry import get_active_prompt
 
 
 SCHEME_HEADER = re.compile(r"^===SCHEME ([1-9]\d*): (.+?)===$", re.MULTILINE)
@@ -44,7 +44,7 @@ def split_scheme_reports(raw: str, expected_count: int | None = None) -> list[di
 
 def planning_system_prompt(scheme_count: int) -> str:
     return (
-        PLANNING_AGENT_SYSTEM_PROMPT
+        get_active_prompt("shoot_plan")
         + f"\n\n【本次首次生成要求】一次生成 {scheme_count} 套互不相同、风格迥异的候选商拍策划方案。"
           "每套均须独立覆盖上述全部要求；方案之间在视觉主题、使用与拍摄场景、"
           "模特气质、穿搭、镜头语言和光影表达上形成明显区别，同时都必须忠于产品报告。"

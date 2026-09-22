@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 from wellflow.app.config import settings
 from wellflow.app.llm.base import ImageGenResult, InsufficientCreditsError
 
@@ -49,6 +51,48 @@ def _short_model_name(model: str) -> str:
     return model.split("/", 1)[1] if "/" in model else model
 
 
+async def get_image_channel_candidates(models: list[str]) -> dict[str, list[str]]:
+    """读取 New API 渠道配置，供日志展示候选渠道；不将其当成实际路由结果。"""
+    if not settings.newapi_admin_access_token:
+        return {}
+
+    candidates: dict[str, list[str]] = {model: [] for model in models}
+    try:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
+            page = 1
+            while True:
+                response = await client.get(
+                    f"{settings.newapi_admin_base_url.rstrip('/')}/api/channel/",
+                    params={"p": page, "page_size": 100},
+                    headers={"Authorization": f"Bearer {settings.newapi_admin_access_token}"},
+                )
+                response.raise_for_status()
+                body = response.json()
+                if body.get("success") is not True or not isinstance(body.get("data"), dict):
+                    raise ValueError("渠道列表响应格式错误")
+                data = body["data"]
+                items = data.get("items", [])
+                if not isinstance(items, list):
+                    raise ValueError("渠道列表缺少 items")
+                for channel in items:
+                    if not isinstance(channel, dict):
+                        continue
+                    if channel.get("status") != 1:
+                        continue
+                    configured = {_short_model_name(name.strip()) for name in (channel.get("models") or "").split(",")}
+                    label = f"{channel.get('id')}:{channel.get('name') or '未命名'}"
+                    for model in models:
+                        if model in configured:
+                            candidates[model].append(label)
+                if page * 100 >= data.get("total", 0) or not items:
+                    break
+                page += 1
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        print(f"[image-gen-service] ⚠️ 读取候选渠道失败: {type(exc).__name__}: {exc}", flush=True)
+        return {}
+    return candidates
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 公共函数 2：单次生图
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +103,7 @@ async def generate_single_image(
     size: str,
     ref_data_uris: list[str] | None = None,
     log_id: str = "image-gen",
+    channel_candidates: dict[str, list[str]] | None = None,
 ) -> ImageGenResult:
     """单次生图 —— 永远 n=1，动态拉取 image 模型列表逐个尝试。
 
@@ -81,7 +126,9 @@ async def generate_single_image(
     credits_exc: InsufficientCreditsError | None = None
 
     for index, model in enumerate(chain):
-        print(f"[{log_id}] 🎨 开始生图 model={model} ({index + 1}/{len(chain)})", flush=True)
+        candidates = (channel_candidates or {}).get(model, [])
+        channel_info = f" 候选渠道={','.join(candidates)}" if candidates else " 候选渠道=未知"
+        print(f"[{log_id}] 🎨 开始生图 model={model} ({index + 1}/{len(chain)}){channel_info}", flush=True)
         try:
             client = get_llm_client("image", model_override=model)
             result = await client.generate_image(
@@ -103,9 +150,9 @@ async def generate_single_image(
             reason = f"{type(exc).__name__}: {str(exc)[:200]}"
 
         if index + 1 < len(chain):
-            print(f"[{log_id}] 🔄 模型切换 {model} → {chain[index + 1]}，原因: {reason}", flush=True)
+            print(f"[{log_id}] 🔄 模型切换 {model} → {chain[index + 1]}，{channel_info.strip()}，原因: {reason}", flush=True)
         else:
-            print(f"[{log_id}] ❌ 模型链已耗尽，最后模型={model}，原因: {reason}", flush=True)
+            print(f"[{log_id}] ❌ 模型链已耗尽，最后模型={model}，{channel_info.strip()}，原因: {reason}", flush=True)
 
     # 全链失败
     if credits_exc is not None:

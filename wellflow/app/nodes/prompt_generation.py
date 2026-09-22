@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from wellflow.app.llm.model_pool import get_model_pool
-from wellflow.app.prompt.constant import GENERATE_PROMPT_FOR_IMAGE
+from wellflow.app.prompt.registry import get_active_prompt
 
 _PROMPT_HEADER = re.compile(r"^===PROMPT ([1-9]\d*): (.+?)===$", re.MULTILINE)
 
@@ -73,7 +73,7 @@ def _build_request(
             image_lines.append(f"第 {index} 张：{label}；优先参考 {role}；不参考 {ignore}。")
             index += 1
     system = (
-        GENERATE_PROMPT_FOR_IMAGE
+        get_active_prompt("image_prompt")
         + ("\n\n【本次参考图编号与职责】\n" + "\n".join(image_lines) if image_lines else "")
         + f"\n\n【本次输出要求】针对上述同一套商拍方案，一次生成 {prompt_count} 份风格与镜头表达不同的完整中文生图提示词。"
           "各份均须遵守上面18条要求，并严格锁定同一产品与指定参考图。不要输出 JSON。"

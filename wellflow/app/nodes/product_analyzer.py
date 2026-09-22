@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from wellflow.app.config import settings
 from wellflow.app.llm.model_pool import get_model_pool
-from wellflow.app.prompt.constant import PRODUCT_ANALYZER_SYSTEM_PROMPT
+from wellflow.app.prompt.registry import get_active_prompt
 
 
 async def analyze_product(
@@ -32,7 +32,7 @@ async def analyze_product(
     user_text = "\n\n".join(user_text_parts)
 
     resp, used_model = await pool.chat_with_images(
-        system=PRODUCT_ANALYZER_SYSTEM_PROMPT,
+        system=get_active_prompt("product_report"),
         user=user_text,
         image_uris=images,
         reasoning_effort=effort,
@@ -61,7 +61,7 @@ async def stream_analyze_product(
     user_message = "\n\n".join(user_message_parts)
 
     async for delta in pool.stream_chat_with_images(
-        system=PRODUCT_ANALYZER_SYSTEM_PROMPT,
+        system=get_active_prompt("product_report"),
         user=user_message,
         image_uris=images,
         reasoning_effort=effort,
