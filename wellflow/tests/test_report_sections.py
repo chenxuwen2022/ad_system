@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 import unittest
+import json
+from pathlib import Path
 
-from wellflow.app.prompt.constant import PRODUCT_ANALYZER_SYSTEM_PROMPT
 from wellflow.app.prompt.report_sections import (
     SECTION_FIELDS,
     SECTION_IGNORED_FIELDS,
@@ -24,6 +25,10 @@ SAMPLE_REPORT = """## 服饰类产品信息识别报告
 **设计风格**：现代通勤风
 **场景推荐**：咖啡厅-慵懒午后
 **补充说明**：克重需补充"""
+
+PRODUCT_ANALYZER_SYSTEM_PROMPT = json.loads(
+    (Path(__file__).resolve().parents[1] / "migration/prompt_seed_v1.json").read_text(encoding="utf-8")
+)["product_report"]
 
 
 class ParseReportFieldsTest(unittest.TestCase):
@@ -93,7 +98,10 @@ class BuildReportSectionsTest(unittest.TestCase):
         )
         self.assertEqual(
             sections["audience"],
-            [{"label": "目标受众", "value": "25-35 岁都市女性"}],
+            [
+                {"label": "目标受众", "value": "25-35 岁都市女性"},
+                {"label": "场景推荐", "value": "咖啡厅-慵懒午后"},
+            ],
         )
 
     def test_missing_fields_are_skipped(self):
@@ -111,7 +119,7 @@ class PromptCoverageTest(unittest.TestCase):
     """
 
     def test_template_fields_are_all_registered(self):
-        template_fields = set(re.findall(r"\*\*([^*\n]+)\*\*：", PRODUCT_ANALYZER_SYSTEM_PROMPT))
+        template_fields = set(re.findall(r"(?m)^\*\*([^*\n]+)\*\*：", PRODUCT_ANALYZER_SYSTEM_PROMPT))
         registered = {name for names in SECTION_FIELDS.values() for name in names}
         registered.update(SECTION_IGNORED_FIELDS)
         missing = template_fields - registered

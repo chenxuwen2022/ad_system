@@ -1,7 +1,7 @@
 """Node1 商品报告 → 前端"重点洞察"四块的结构化归一化。
 
 前端四块只消费本模块输出的稳定 key（positioning / details / selling_points / audience），
-不直接匹配 prompt 里的中文字段名。修改 constant.py 的 Node1 输出模板
+不直接匹配 prompt 里的中文字段名。修改数据库中的 Node1 输出模板
 （改字段名、增删字段）时必须同步更新 SECTION_FIELDS / SECTION_IGNORED_FIELDS；
 wellflow/tests/test_report_sections.py 会断言模板字段名全部被登记。
 """

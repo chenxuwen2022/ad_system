@@ -3,14 +3,71 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
+import json
+import importlib.util
+from pathlib import Path
+from unittest.mock import patch
 
 from wellflow.app.database import Base
 from wellflow.app.models.prompt_models import PromptRelease, PromptReleaseItem, PromptRevision, PromptTemplate
-from wellflow.app.prompt.registry import active_prompt, seed_prompts, DEFAULTS
+from wellflow.app.prompt.registry import active_prompt, CATALOG, PromptUnavailableError
 from wellflow.app.api.prompts import (
     PromptCreate, PromptUpdate, RevisionInput, ReleaseInput, create_prompt,
     delete_prompt, delete_revision, get_prompt, list_prompts, publish, save_revision, update_prompt,
 )
+
+DEFAULTS = json.loads((Path(__file__).resolve().parents[1] / "migration/prompt_seed_v1.json").read_text(encoding="utf-8"))
+
+
+def seed_prompts(db: Session):
+    for category in ("commerce", "refine", "intent"):
+        release = PromptRelease(category=category, number=1, note="test")
+        db.add(release)
+        db.flush()
+        for key, item_category, name in CATALOG:
+            if category != item_category:
+                continue
+            template = PromptTemplate(key=key, category=category, name=name)
+            db.add(template)
+            db.flush()
+            revision = PromptRevision(template_key=key, number=1, content=DEFAULTS[key], note="test")
+            db.add(revision)
+            db.flush()
+            template.draft_revision_id = revision.id
+            db.add(PromptReleaseItem(release_id=release.id, template_key=key, revision_id=revision.id))
+    db.commit()
+
+
+def test_migration_seeds_database_without_runtime_constants():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[
+        PromptTemplate.__table__, PromptRevision.__table__, PromptRelease.__table__, PromptReleaseItem.__table__,
+    ])
+    path = Path(__file__).resolve().parents[1] / "migration/versions/e8b5f3c1a6d2_seed_system_prompts.py"
+    spec = importlib.util.spec_from_file_location("seed_system_prompts_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    with engine.begin() as connection:
+        with patch.object(migration.op, "get_bind", return_value=connection):
+            migration.upgrade()
+            migration.upgrade()  # already initialized data must remain untouched
+    with Session(engine) as db:
+        assert db.query(PromptTemplate).count() == 7
+        for key, _, _ in CATALOG:
+            assert active_prompt(db, key) == DEFAULTS[key]
+
+
+def test_missing_database_prompt_does_not_fall_back_to_code():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine, tables=[
+        PromptTemplate.__table__, PromptRevision.__table__, PromptRelease.__table__, PromptReleaseItem.__table__,
+    ])
+    with Session(engine) as db:
+        try:
+            active_prompt(db, "intent_classifier")
+            assert False, "missing prompt must fail"
+        except PromptUnavailableError:
+            pass
 
 
 def test_category_release_keeps_all_three_prompts_in_one_version():

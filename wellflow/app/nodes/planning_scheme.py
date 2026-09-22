@@ -8,7 +8,7 @@
    让 Node3 在最终生图提示词里严格对齐模特的人脸/体型/气质。
    Node2 只负责基于商品和用户需求产出最终商拍方案。
 
-使用 PLANNING_AGENT_SYSTEM_PROMPT，不约束模型返回 JSON。
+使用数据库中已发布的商拍策划提示词，不约束模型返回 JSON。
 """
 
 from __future__ import annotations
