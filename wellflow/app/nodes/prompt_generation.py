@@ -1,7 +1,7 @@
 """Node 3：PromptGeneration — 为每套选中方案生成最终生图 prompt。
 
 输入：
-  - scheme: 单个 12 维商拍方案 JSON（来自 Node2 PlanningScheme）
+  - scheme: 包含 report_text 的商拍报告载体（来自 Node2 PlanningScheme）
   - product_insight: Node1 的 Markdown 识别报告（可选，补充上下文）
   - product_images: 商品图 data URI 列表
   - reference_images: 三类参考图 {"mannequin": [...], "scene": [...], "outfit": [...]}（可选，data URI）
@@ -261,14 +261,14 @@ async def stream_generate_prompt(
 
     system_prompt = GENERATE_IMAGE_PROMPT
 
-    # user message：把 12 维方案 + 识别报告 + 用户需求 喂给 VLM
-    import json as _json
+    # user message：把商拍报告正文 + 识别报告 + 用户需求喂给 VLM
     scheme_index = scheme.get("scheme_index", "?")
     scheme_name = scheme.get("scheme_name", f"方案{scheme_index}")
-    user_text_parts = [
-        f"【目标方案】方案 #{scheme_index} · {scheme_name}",
-        f"方案完整 JSON：\n{_json.dumps(scheme, ensure_ascii=False, indent=2)}",
-    ]
+    scheme_report = scheme.get("report_text")
+    user_text_parts = [f"【目标方案】方案 #{scheme_index} · {scheme_name}"]
+    if not isinstance(scheme_report, str) or not scheme_report.strip():
+        raise ValueError("Node2 商拍策划报告正文为空")
+    user_text_parts.append(f"【完整商拍策划报告】\n{scheme_report}")
     if product_insight:
         user_text_parts.append(f"【商品识别报告】\n{product_insight}")
     if user_requirement:
@@ -386,13 +386,13 @@ async def generate_prompt_for_scheme(
 
     system_prompt = GENERATE_IMAGE_PROMPT
 
-    import json as _json
     scheme_index = scheme.get("scheme_index")
     scheme_name = scheme.get("scheme_name", f"方案{scheme_index}")
-    user_text_parts = [
-        f"【目标方案】方案 #{scheme_index} · {scheme_name}",
-        f"方案完整 JSON：\n{_json.dumps(scheme, ensure_ascii=False, indent=2)}",
-    ]
+    scheme_report = scheme.get("report_text")
+    user_text_parts = [f"【目标方案】方案 #{scheme_index} · {scheme_name}"]
+    if not isinstance(scheme_report, str) or not scheme_report.strip():
+        raise ValueError("Node2 商拍策划报告正文为空")
+    user_text_parts.append(f"【完整商拍策划报告】\n{scheme_report}")
     if product_insight:
         user_text_parts.append(f"【商品识别报告】\n{product_insight}")
     if user_requirement:

@@ -2,7 +2,7 @@
 
 子图概览：
   Node1 (子图)  — do_analyze: VLM 多模态流式识别 → Markdown 报告
-  Node2 (子图)  — planning_scheme: VLM 产出 N 套 12 维商拍方案 JSON
+  Node2 (子图)  — planning_scheme: VLM 产出完整商拍策划报告正文
   Node3 (子图)  — prompt_generation: 按选中方案循环调 VLM → N 条最终生图 prompt
   Node4 (子图)  — prepare → run_generation → archive: 并发调 LLM 生图 + 归档
 
@@ -347,7 +347,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c2",
         "phase": "c2_select",
-        "hint": f"请查看商拍方案，明确选择 1 套后确认。将基于所选方案生成 {n_variants} 份差异化生图提示词",
+        "hint": f"请从商拍策划方案列表中选定一套。确认后将生成 {n_variants} 份差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
         "reference_images": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),

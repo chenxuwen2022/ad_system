@@ -151,20 +151,16 @@ class Node1State(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------
-# Node2：PlanningScheme — VLM 生成 3 套候选商拍方案（12 维 JSON，C2 让用户选定 1 套）
+# Node2：PlanningScheme — VLM 生成多套自由文本商拍方案，C2 选定一套
 # ---------------------------------------------------------------------------
 
 
 class SchemeState(TypedDict, total=False):
-    schemes: list[dict[str, Any]]          # N 套完整 12 维 JSON（由 PLANNING_AGENT_SYSTEM_PROMPT 输出）
-    scheme_raw: str                         # VLM 原始 JSON 文本（前端展示/调试）
+    schemes: list[dict[str, Any]]          # 多套方案载体，每套包含 report_text
+    scheme_raw: str                         # VLM 原始报告文本
     selected_scheme_indices: list[int]      # C2 用户选定的方案索引（新链路通常只有 1 套被锁）
     per_scheme_count: list[int]             # C2 每套选中方案要生成几份 prompt，默认 [5]
     thinking_text: str                      # VLM 深度思考过程文本
-    # —— 诊断锚点：Node2 正向产出时写入，表示"本次任务原始应该有几套方案"——
-    # 防止 LangGraph checkpoint 异常合并或中间步骤脏写导致 schemes 数量被污染
-    # （例如 Node3 的 prompt_detail 被错误混入，出现 3×4=12 条脏方案）
-    base_scheme_count: int
 
 
 # ---------------------------------------------------------------------------

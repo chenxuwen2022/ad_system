@@ -40,8 +40,7 @@ class Settings(BaseSettings):
     text_reasoning_effort: str = "close"
 
     # ====== Node2 ======
-    # Node2 默认生成 3 套风格迥异的候选方案，供 C2 阶段让用户挑选 1 套确认。
-    # 最终进入 Node3 时只保留用户选中的那 1 套，围绕它生成 5 份差异化 prompt。
+    # 首次生成的候选商拍方案数量；微调时不据此增删方案。
     node2_scheme_count_default: int = 3
 
     # ====== Node3 ======
