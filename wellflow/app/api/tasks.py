@@ -680,6 +680,18 @@ async def resume_task(
             elif node == "c4":
                 resume_values["decision"] = "confirm"
 
+    # 多套方案必须明确选中；只有一套时可直接确认唯一方案。
+    if node == "c2" and resume_values.get("decision", "confirm") == "confirm":
+        selected = resume_values.get("selected_scheme_indices")
+        if selected is None:
+            schemes = (graph_state.get("node2") or {}).get("schemes") or []
+            if len(schemes) == 1:
+                selected = resume_values["selected_scheme_indices"] = [0]
+        if (not isinstance(selected, list) or len(selected) != 1
+                or type(selected[0]) is not int
+                or not 0 <= selected[0] < len((graph_state.get("node2") or {}).get("schemes") or [])):
+            raise HTTPException(400, "请先查看商拍方案卡片，选 1 套您满意的方案后再点击确认。")
+
     # fire-and-forget DB: 清 interrupt + 写事件
     def _sync_prepare():
         try:

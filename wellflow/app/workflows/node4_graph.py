@@ -134,7 +134,7 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
     if not prompts:
         print("[node4] ⚠️ generate_prompts 为空，无法生成 work_items", flush=True)
         node4["work_items"] = []
-        node4["reference_images"] = model_paths  # 仅模特图路径（参考图路径已转 URI）
+        node4["reference_images"] = all_ref_uris
         return {"phase": "node4_prepare", "node4": node4}
 
     # ---- 组装 work_items —— 一 prompt 一 work_item ----
@@ -155,7 +155,7 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
         })
 
     node4["work_items"] = work_items
-    node4["reference_images"] = [*product_uris, *model_paths]  # 保留文件路径/URI 混合，run_gen 只用 data URI
+    node4["reference_images"] = all_ref_uris  # data URI 列表，供 run_gen 备用
     print(f"[node4] 📥 入队 {len(work_items)} 张（按 prompt_index 顺序）: "
           f"{', '.join(shot_names)}", flush=True)
     return {"phase": "node4_prepare", "node4": node4}

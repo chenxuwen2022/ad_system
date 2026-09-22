@@ -911,7 +911,6 @@ async def chat(
         if has_task and t_id and _dispatch_intent != "start_task" and is_running(t_id):
             print(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={_dispatch_intent}", flush=True)
             chunk = _sse("message", {"text": "任务正在执行中，请等待当前操作完成后再试。"})
-            await _persist_sse_text(chunk, known_task_id=t_id)
             yield chunk
             yield _sse("done", {"phase": "done"})
             return
@@ -1547,11 +1546,9 @@ async def _handle_resume(
             #   1) 前端 checkbox 显式传的 selected_scheme_indices（resume 表单）
             #   2) 意图分类器从消息文本解析的 intent_result.selected_indices（"选第1套"/"全选"）
             #
-            # 🔴 C2 阶段**严禁兜底全选**：3 套方案是风格迥异、场景互补、互斥的，
-            #    用户必须显式选 1 套才能进入 Node3。没收到任何选值 → 拦截，
-            #    提示用户先在方案卡片里选 1 套。
-            #    正常 C2 确认流程走 /api/tasks/{id}/resume（带 selected_scheme_indices），
-            #    confirm_current 走到这里只会是 stale 恢复 + 用户手动发消息的异常场景。
+            # 多套方案必须明确选中一套；微调/融合后仅剩一套时，
+            # "继续" 可以直接确认唯一的最终方案。
+            #    卡片确认走 /api/tasks/{id}/resume，输入框确认走这里。
             indices: list[int] = []
             if selected_scheme_indices:
                 for part in selected_scheme_indices.split(","):
@@ -1570,9 +1567,11 @@ async def _handle_resume(
                                 indices.append(idx)
                         except (ValueError, TypeError):
                             pass
-            if not indices:
+            if not indices and len(existing_schemes) == 1:
+                indices = [0]
+            if len(indices) != 1:
                 print(
-                    f"[chat] 🛑 c2 阶段 confirm_current 未收到任何方案选中 → 拦截, "
+                    f"[chat] 🛑 c2 阶段必须明确选中一套方案 → 拦截, "
                     f"existing_schemes={len(existing_schemes)}",
                     flush=True,
                 )

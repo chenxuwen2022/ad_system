@@ -327,14 +327,10 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
-    """C2：用户确认这唯一一份商拍方案（可微调）。
-
-    新链路：Node2 固定只产出 1 套最终方案，C2 的角色变成"确认/微调方案"，
-    确认后自动选中这一套方案并让 Node3 围绕它生成 5 份差异化 prompt。
+    """C2：用户明确选定一套商拍方案，或继续微调方案。
 
     决策模式：
-      decision="confirm"  → 写入 selected_scheme_indices=[0], per_scheme_count=[5]
-                            然后流转到 Node3 生成 5 份 prompt
+      decision="confirm"  → 校验选中索引，写入每套提示词数量后流转到 Node3
       decision="refine"   → 纯 text LLM 增量修改商拍方案（不走 VLM 重跑）
     """
     from langgraph.types import interrupt
@@ -351,7 +347,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c2",
         "phase": "c2_select",
-        "hint": f"请查看并微调这套最终商拍方案。确认后会基于它生成 {{_settings.node3_variants_per_scheme_default}} 份差异化生图提示词",
+        "hint": f"请查看商拍方案，明确选择 1 套后确认。将基于所选方案生成 {n_variants} 份差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
         "reference_images": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
@@ -385,17 +381,21 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
             "_redo_target": None,
         }
 
-    # ---- confirm：自动选中唯一方案 + 固定 per_scheme_count=[5] ----
+    # ---- confirm：多套时必须明确选中；单套时可直接确认 ----
     node2 = state.get("node2", {})
     selected = interrupt_value.get("selected_scheme_indices")
     new_node2 = dict(node2)
     all_schemes = node2.get("schemes", [])
 
-    # 默认选中 [0]；前端 intent_classifier 选了别的也尊重
-    if selected is not None:
-        new_node2["selected_scheme_indices"] = list(selected) if selected else [0]
-    else:
-        new_node2["selected_scheme_indices"] = [0] if all_schemes else []
+    # 单套方案可直接确认；多套方案仍须明确选中。
+    if selected is None and len(all_schemes) == 1:
+        selected = [0]
+    if (not isinstance(selected, list) or len(selected) != 1
+            or type(selected[0]) is not int
+            or not 0 <= selected[0] < len(all_schemes)):
+        print(f"[c2_select] ⚠️ 无效方案选择: {selected!r}", flush=True)
+        return {"phase": "c2_select"}
+    new_node2["selected_scheme_indices"] = selected
 
     # per_scheme_count 固定默认 [n_variants]，允许前端覆盖
     counts = interrupt_value.get("per_scheme_count")
