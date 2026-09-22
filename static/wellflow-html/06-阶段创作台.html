@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>阶段创作台 · WellFlow</title>
+<style>
+:root{
+  --brand-green:#CCFF00;--brand-green-deep:#A8D400;--brand-green-soft:#1A2E0A;
+  --ink-900:#FFFFFF;--ink-700:#B8B8B8;--ink-500:#8A8A8A;--ink-400:#6A6A6A;--ink-300:#5A5A5A;--ink-200:#3A3A3A;--ink-100:#2A2A2A;
+  --pearl:#0F0F0F;--pearl-2:#1A1A1A;--border:#2A2A2A;
+  --radius-md:10px;--radius-lg:16px;--shadow-md:0 4px 12px rgba(10,10,10,.08);
+  --font:'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);font-size:14px;color:var(--ink-900);background:var(--pearl-2);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+img{display:block;max-width:100%}
+.top-nav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:16px;height:60px;padding:0 20px;background:#1A1A1A;border-bottom:1px solid var(--border)}
+.nav-back{font-size:14px;color:var(--ink-500);padding:6px 12px;border-radius:8px}
+.nav-back:hover{background:var(--pearl-2)}
+.nav-title{font-weight:600;font-size:15px}
+.nav-sub{font-size:12px;color:var(--ink-400)}
+.nav-right{margin-left:auto;display:flex;gap:8px;align-items:center}
+.btn{padding:8px 16px;border-radius:999px;font-size:13px;font-weight:600}
+.btn-primary{background:var(--brand-green);color:#0A0A0A}
+.btn-ghost{border:1.5px solid var(--border);color:var(--ink-700);background:#1A1A1A}
+
+.stage{display:grid;grid-template-columns:260px 1fr 280px;height:calc(100vh - 60px)}
+@media(max-width:1080px){.stage{grid-template-columns:1fr;height:auto}}
+.col{overflow-y:auto;padding:18px}
+.col-left{border-right:1px solid var(--border);background:#0F0F0F}
+.col-right{border-left:1px solid var(--border);background:#0F0F0F}
+
+.step{display:flex;gap:12px;margin-bottom:16px}
+.step .dot{width:24px;height:24px;border-radius:50%;background:var(--pearl-2);color:var(--ink-400);display:grid;place-items:center;font-size:12px;font-weight:700;flex-shrink:0}
+.step.done .dot{background:var(--brand-green);color:#000}
+.step.active .dot{background:var(--brand-green);color:#0A0A0A}
+.step .st-t{font-size:13.5px;font-weight:600}
+.step .st-d{font-size:12px;color:var(--ink-400);margin-top:2px;line-height:1.5}
+
+.chat{margin-top:20px;border-top:1px solid var(--border);padding-top:16px}
+.bubble{background:var(--pearl-2);border-radius:12px;padding:10px 12px;font-size:13px;margin-bottom:8px;line-height:1.5}
+.bubble.ai{background:var(--brand-green-soft)}
+.bubble.user{background:#1A1A1A;border:1px solid var(--border)}
+
+.canvas-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.canvas-head h2{font-size:16px;font-weight:600}
+.ratio-tabs{display:flex;gap:4px;background:var(--pearl-2);padding:3px;border-radius:99px}
+.rtab{padding:5px 12px;font-size:12px;border-radius:99px;color:var(--ink-500)}
+.rtab.active{background:#1A1A1A;font-weight:600;box-shadow:var(--shadow-md)}
+
+.result-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:14px}
+.result{border:2px solid var(--border);border-radius:var(--radius-md);overflow:hidden;cursor:pointer;position:relative;background:#1A1A1A}
+.result.sel{border-color:var(--brand-green-deep)}
+.result .pic{aspect-ratio:3/4;background:var(--pearl-2)}
+.result .pic img{width:100%;height:100%;object-fit:cover}
+.result .foot{padding:8px 10px;font-size:12px;display:flex;justify-content:space-between;align-items:center}
+.result .check{position:absolute;top:8px;right:8px;width:22px;height:22px;border-radius:50%;background:var(--brand-green);color:#000;display:none;place-items:center;font-size:12px;font-weight:800}
+.result.sel .check{display:grid}
+
+.loader{display:grid;place-items:center;aspect-ratio:3/4;background:var(--pearl-2);border-radius:var(--radius-md);color:var(--ink-400);font-size:13px}
+.spin{width:28px;height:28px;border:3px solid var(--ink-200);border-top-color:var(--brand-green-deep);border-radius:50%;animation:sp 1s linear infinite;margin-bottom:10px}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+.sec{margin-bottom:20px}
+.sec h4{font-size:12px;color:var(--ink-400);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px}
+.ref-list{display:flex;flex-direction:column;gap:8px}
+.ref{display:flex;gap:10px;align-items:center;border:1px solid var(--border);border-radius:var(--radius-md);padding:8px}
+.ref img{width:44px;height:44px;border-radius:6px;object-fit:cover}
+.ref .rn{font-size:12.5px}
+.ref .rt{font-size:11px;color:var(--ink-400)}
+.prompt-box{background:var(--pearl-2);border-radius:var(--radius-md);padding:12px;font-size:13px;line-height:1.6}
+.tag-row{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:11.5px;padding:4px 10px;border-radius:99px;background:var(--pearl-2);border:1px solid var(--border);color:var(--ink-700)}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <button class="nav-back" onclick="location.href='05-任务工作台.html'">← 返回</button>
+  <div><div class="nav-title">儿童衬衫 · 投流图生成</div><div class="nav-sub">SKU BC-BABY-001 · 巨量千川 · 拉新</div></div>
+  <div class="nav-right">
+    <button class="btn btn-ghost">放入画布</button>
+    <button class="btn btn-primary">确认入库 →</button>
+  </div>
+</nav>
+
+<div class="stage">
+  <!-- 左：步骤 + 对话 -->
+  <div class="col col-left">
+    <div class="step done"><div class="dot">✓</div><div><div class="st-t">整理创作要求</div><div class="st-d">已识别商品、目标与参考素材</div></div></div>
+    <div class="step active"><div class="dot">2</div><div><div class="st-t">AI 生成投流图</div><div class="st-d">正在生成 4 张方案，预计 40 秒</div></div></div>
+    <div class="step"><div class="dot">3</div><div><div class="st-t">选择与微调</div><div class="st-d">选择方案，二次微调</div></div></div>
+    <div class="step"><div class="dot">4</div><div><div class="st-t">入库 / 投放</div><div class="st-d">保存到素材库或直接投放</div></div></div>
+
+    <div class="chat">
+      <div class="bubble user">请为我的儿童纯棉长袖衬衫生成一张用于拉新的投流图。</div>
+      <div class="bubble ai">已读取商品素材 4 张、品牌规范 1 份。我将生成 4 张不同构图的投流图，请稍候…</div>
+    </div>
+  </div>
+
+  <!-- 中：结果 -->
+  <div class="col">
+    <div class="canvas-head">
+      <h2>生成结果 · 4 张方案</h2>
+      <div class="ratio-tabs">
+        <button class="rtab">1:1</button>
+        <button class="rtab active">3:4</button>
+        <button class="rtab">9:16</button>
+      </div>
+    </div>
+    <div class="result-grid">
+      <div class="result sel">
+        <div class="pic"><img src="assets/result-1.jpg" onerror="this.style.display='none'"></div>
+        <span class="check">✓</span>
+        <div class="foot"><span>方案 A</span><span style="color:var(--brand-green-deep);font-weight:600">AI 推荐</span></div>
+      </div>
+      <div class="result">
+        <div class="pic"><img src="assets/result-2.jpg" onerror="this.style.display='none'"></div>
+        <span class="check">✓</span>
+        <div class="foot"><span>方案 B</span><span style="color:var(--ink-400)">自然场景</span></div>
+      </div>
+      <div class="result">
+        <div class="pic"><img src="assets/shirt-front.jpg"></div>
+        <span class="check">✓</span>
+        <div class="foot"><span>方案 C</span><span style="color:var(--ink-400)">棚拍白底</span></div>
+      </div>
+      <div class="result"><div class="loader"><div><div class="spin"></div>方案 D 生成中…</div></div></div>
+    </div>
+  </div>
+
+  <!-- 右：参数 -->
+  <div class="col col-right">
+    <div class="sec">
+      <h4>创作指令</h4>
+      <div class="prompt-box">请为我的儿童纯棉长袖衬衫 浅灰条纹 生成一张用于拉新的投流图。突出柔软透气、儿童亲肤。</div>
+    </div>
+    <div class="sec">
+      <h4>参考素材</h4>
+      <div class="ref-list">
+        <div class="ref"><img src="assets/shirt-front.jpg"><div><div class="rn">商品正面图</div><div class="rt">本地上传</div></div></div>
+        <div class="ref"><img src="assets/ref-model-card-woman-eastasian-white.png"><div><div class="rn">东亚女模</div><div class="rt">模特库 WF-M001</div></div></div>
+        <div class="ref"><img src="assets/ref-background-city.png"><div><div class="rn">都市街景</div><div class="rt">场景库 WF-S002</div></div></div>
+      </div>
+    </div>
+    <div class="sec">
+      <h4>风格标签</h4>
+      <div class="tag-row">
+        <span class="tag">清新</span><span class="tag">亲子</span><span class="tag">自然光</span>
+        <span class="tag">日系</span><span class="tag">柔和色调</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.querySelectorAll('.result').forEach(r=>r.addEventListener('click',()=>{
+  document.querySelectorAll('.result').forEach(x=>x.classList.remove('sel'));
+  r.classList.add('sel');
+}));
+document.querySelectorAll('.rtab').forEach(t=>t.addEventListener('click',()=>{document.querySelectorAll('.rtab').forEach(i=>i.classList.remove('active'));t.classList.add('active');}));
+</script>
+</body>
+</html>

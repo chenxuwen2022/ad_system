@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WellFlow · 页面导航</title>
+<style>
+:root{--brand-green:#CCFF00;--brand-green-deep:#A8D400;--brand-green-soft:#1A2E0A;--ink-900:#FFFFFF;--ink-500:#8A8A8A;--ink-400:#6A6A6A;--ink-200:#3A3A3A;--pearl:#0F0F0F;--pearl-2:#1A1A1A;--border:#2A2A2A;--radius-lg:16px;--font:'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--pearl-2);color:var(--ink-900);min-height:100vh;padding:48px 24px}
+.wrap{max-width:1000px;margin:0 auto}
+.head{display:flex;align-items:center;gap:14px;margin-bottom:8px}
+.mark{width:44px;height:44px;border-radius:12px;background:var(--brand-green);display:grid;place-items:center;font-weight:800;font-size:20px}
+h1{font-size:28px;letter-spacing:-.5px}
+.sub{color:var(--ink-500);margin-bottom:36px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:18px}
+a.card{display:block;background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-lg);padding:24px;text-decoration:none;color:var(--ink-900);transition:.15s}
+a.card:hover{box-shadow:0 12px 32px rgba(0,0,0,.1);transform:translateY(-3px);border-color:var(--brand-green-deep)}
+.num{font-size:12px;font-weight:700;color:var(--brand-green-deep);letter-spacing:1px}
+.name{font-size:18px;font-weight:700;margin:8px 0 6px}
+.desc{font-size:13.5px;color:var(--ink-500);line-height:1.5}
+.tag{display:inline-block;margin-top:12px;font-size:11px;background:var(--pearl-2);padding:3px 10px;border-radius:99px;color:var(--ink-400)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head"><div class="mark">W</div><h1>WellFlow 页面导航</h1></div>
+  <p class="sub">根据 my-charming-space-34-main 源码重新生成的一套独立 HTML 页面，点击进入。</p>
+  <div class="grid">
+    <a class="card" href="01-首页.html"><div class="num">01</div><div class="name">首页</div><div class="desc">上传商品素材、SKU 归属、选择图片类型/目标/平台，填写 AI 创作指令。</div><span class="tag">创作入口</span></a>
+    <a class="card" href="02-资产库.html"><div class="num">02</div><div class="name">资产库</div><div class="desc">商品 SKU、模特库、穿搭库、场景库、元素库，分类筛选与搜索。</div><span class="tag">素材管理</span></a>
+    <a class="card" href="03-知识库.html"><div class="num">03</div><div class="name">知识库</div><div class="desc">按品牌分类沉淀产品资料、创作参考与投放经验文档。</div><span class="tag">资料沉淀</span></a>
+    <a class="card" href="04-投放台.html"><div class="num">04</div><div class="name">投放台</div><div class="desc">素材管理、KPI 指标、消耗成交趋势图、素材效果榜单。</div><span class="tag">BI 看板</span></a>
+    <a class="card" href="05-任务工作台.html"><div class="num">05</div><div class="name">任务工作台</div><div class="desc">所有 AI 创作任务列表，实时查看进度、状态与结果。</div><span class="tag">任务中心</span></a>
+    <a class="card" href="06-阶段创作台.html"><div class="num">06</div><div class="name">阶段创作台</div><div class="desc">四步创作流程：整理要求 → AI 生成 → 选择微调 → 入库投放。</div><span class="tag">AI 创作</span></a>
+    <a class="card" href="07-无限画布.html"><div class="num">07</div><div class="name">无限画布</div><div class="desc">节点式自由画布，商品原图、参考素材与生成结果连线编排。</div><span class="tag">可视化编排</span></a>
+    <a class="card" href="08-模特创建向导.html"><div class="num">08</div><div class="name">模特创建向导</div><div class="desc">上传参考图、填写信息、AI 生成多套方案、确认入库。</div><span class="tag">向导</span></a>
+  </div>
+</div>
+</body>
+</html>

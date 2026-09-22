@@ -22,6 +22,8 @@ import json as json_mod
 import time
 from typing import Any
 
+from wellflow.app.config import settings
+
 
 # ---------------------------------------------------------------------------
 # Node1 refine：商品识别报告 增量修改（Markdown 文本）
@@ -71,7 +73,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
         return {"phase": "c1_confirm"}
 
     if task_id:
-        publish(task_id, "phase", {"phase": "node1_refining"})
+        publish(task_id, "phase", {"phase": "node1_refining", "reset_text": True})
 
     client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
 
@@ -97,17 +99,40 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
         f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整报告。"
     )
 
-    print(f"[refine_node1] 📤 chat → refine report (instruction_len={len(refine_instruction)})", flush=True)
+    print(f"[refine_node1] 📤 stream_chat → refine report (instruction_len={len(refine_instruction)})", flush=True)
     t0 = time.time()
 
-    resp = await client.chat(
+    # --- 流式消费（reasoning_effort="close" → 不会有 thinking 通道） ---
+    full_report_parts: list[str] = []
+    content_chunk_index = 0
+
+    async for item in client.stream_chat(
         system=REFINE_NODE1_REPORT_SYSTEM_PROMPT,
         user=user_message,
-        temperature=0.3,
-        reasoning_effort="close",
-    )
+        reasoning_effort=settings.text_reasoning_effort,
+    ):
+        if not item:
+            continue
+        if isinstance(item, dict):
+            item_type = item.get("type", "content")
+            text = item.get("text", "")
+        else:
+            item_type = "content"
+            text = item
+
+        if not text:
+            continue
+
+        if item_type == "thinking":
+            # close 模式下不应该有 thinking，但防御性跳过
+            continue
+
+        full_report_parts.append(text)
+        content_chunk_index += 1
+        publish(task_id, "report_chunk", {"chunk": text, "index": content_chunk_index, "node": "node1"})
+
+    raw_report = "".join(full_report_parts)
     used_model = CLASSIFIER_MODEL
-    raw_report: str = resp.content or ""
 
     # 去除可能存在的 ```markdown / ``` 包裹
     raw_report = _strip_code_fence(raw_report)
@@ -132,10 +157,12 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
             "product_insight": new_report,
             "report_sections": new_sections,
             "next_actions": next_actions,
-            # 保留 VLM 缓存图、thinking 等，refine 只改文本
+            # 保留 VLM 缓存图、input_analysis；refine 只改文本
             "compressed_images": state.get("node1", {}).get("compressed_images", []),
             "input_analysis": state.get("node1", {}).get("input_analysis"),
-            "thinking_text": state.get("node1", {}).get("thinking_text", ""),
+            # refine 阶段走 deepseek-v4-flash + reasoning_effort="close"，
+            # 不产生 thinking；旧的 VLM 思考文本已失效，清空避免前端误展示
+            "thinking_text": "",
         },
         "_refine_target": None,
         "_refine_instruction": None,
@@ -261,7 +288,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
         print(f"[refine_node2] ℹ️ selected_indices={_sel_raw} → 全部 {len(old_schemes)} 套都传", flush=True)
 
     if task_id:
-        publish(task_id, "phase", {"phase": "node2_refining"})
+        publish(task_id, "phase", {"phase": "node2_refining", "reset_text": True})
 
     client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
     # —— 喂 LLM 前先剥掉内部标记字段，只保留完整商拍方案（12 维）——
@@ -292,17 +319,39 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
         f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整 JSON。"
     )
 
-    print(f"[refine_node2] 📤 chat → refine schemes (instruction_len={len(refine_instruction)})", flush=True)
+    print(f"[refine_node2] 📤 stream_chat → refine schemes (instruction_len={len(refine_instruction)})", flush=True)
     t0 = time.time()
 
-    resp = await client.chat(
+    # --- 流式消费（reasoning_effort="close" → 不会有 thinking 通道） ---
+    raw_parts: list[str] = []
+    content_chunk_index = 0
+
+    async for item in client.stream_chat(
         system=REFINE_NODE2_SCHEMES_SYSTEM_PROMPT,
         user=user_message,
-        temperature=0.3,
-        reasoning_effort="close",
-    )
+        reasoning_effort=settings.text_reasoning_effort,
+    ):
+        if not item:
+            continue
+        if isinstance(item, dict):
+            item_type = item.get("type", "content")
+            text = item.get("text", "")
+        else:
+            item_type = "content"
+            text = item
+
+        if not text:
+            continue
+
+        if item_type == "thinking":
+            continue
+
+        raw_parts.append(text)
+        content_chunk_index += 1
+        publish(task_id, "scheme_chunk", {"chunk": text, "index": content_chunk_index, "node": "node2"})
+
+    raw_text = "".join(raw_parts)
     used_model = CLASSIFIER_MODEL
-    raw_text: str = resp.content or ""
     raw_text = _strip_code_fence(raw_text)
 
     print(f"[refine_node2] 📥 LLM raw_text=\n{raw_text[:2000]}", flush=True)
@@ -525,7 +574,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         return {"phase": "c3_confirm"}
 
     if task_id:
-        publish(task_id, "phase", {"phase": "node3_refining"})
+        publish(task_id, "phase", {"phase": "node3_refining", "reset_text": True})
 
     client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
     # 给每条旧 prompt 加 [i] 序号前缀，让 LLM 清楚知道边界和总数
@@ -558,17 +607,43 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         f"🔴 未被指令提及的那条必须原封不动复制返回，一字不改。"
     )
 
-    print(f"[refine_node3] 📤 chat → refine prompts (instruction_len={len(refine_instruction)})", flush=True)
+    print(f"[refine_node3] 📤 stream_chat → refine prompts (instruction_len={len(refine_instruction)})", flush=True)
     t0 = time.time()
 
-    resp = await client.chat(
+    # --- 流式消费（reasoning_effort="close" → 不会有 thinking 通道） ---
+    raw_parts: list[str] = []
+    content_chunk_index = 0
+
+    async for item in client.stream_chat(
         system=REFINE_NODE3_PROMPTS_SYSTEM_PROMPT,
         user=user_message,
-        temperature=0.3,
-        reasoning_effort="close",
-    )
+        reasoning_effort=settings.text_reasoning_effort,
+    ):
+        if not item:
+            continue
+        if isinstance(item, dict):
+            item_type = item.get("type", "content")
+            text = item.get("text", "")
+        else:
+            item_type = "content"
+            text = item
+
+        if not text:
+            continue
+
+        if item_type == "thinking":
+            continue
+
+        raw_parts.append(text)
+        content_chunk_index += 1
+        publish(task_id, "prompt_chunk", {
+            "chunk": text, "index": content_chunk_index,
+            "scheme_index": -1, "scheme_name": "refine",
+            "variant_index": 0, "node": "node3",
+        })
+
+    raw_text = "".join(raw_parts)
     used_model = CLASSIFIER_MODEL
-    raw_text: str = resp.content or ""
     raw_text = _strip_code_fence(raw_text)
 
     # 按 "---PROMPT_SEP---" 切分 → 去空 → 清洗
@@ -621,9 +696,8 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "phase": "c3_confirm",
         "node3": {
-            "model_images": node3_state.get("model_images", []),
-            "ratio": node3_state.get("ratio"),
-            "image_model": node3_state.get("image_model"),
+            # reference_images / ratio / image_model 等会被 LangGraph reducer 自动从 state 里保留，
+            # 这里只写 refine 要改动的字段（prompt 文本 + 详情 + 清空 thinking）
             "generate_prompts": new_prompts,
             "prompts_detail": new_details,
             "prompt_raw": "\n---\n".join(new_prompts),

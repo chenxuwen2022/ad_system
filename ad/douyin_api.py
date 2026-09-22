@@ -2364,6 +2364,8 @@ class DouYinAdService:
             except OSError: pass
 
         # 4. 全量更新全域计划（用全域编辑接口 uni_aweme/ad/update）
+        # 上传视频/图片后，千川素材库异步处理，需等待几秒再提交，否则报"素材不在素材库中"
+        import time
         url = f"{self.base_url}/open_api/v1.0/qianchuan/uni_aweme/ad/update/"
         payload = {
             "advertiser_id": int(self.advertiser_id),
@@ -2381,11 +2383,20 @@ class DouYinAdService:
             },
             "multi_product_creative_list": creatives_out,
         }
-        resp = requests.post(url, headers=self.headers, json=payload, timeout=60)
-        resp_json = resp.json()
-        if resp_json.get("code") != 0:
-            raise Exception(self._friendly_error("追加素材失败", resp_json))
-        return str(resp_json.get("data", {}).get("ad_id", ad_id))
+        # 最多重试 3 次：每次间隔 8 秒，等素材入库
+        last_err = None
+        for attempt in range(3):
+            if attempt > 0:
+                time.sleep(8)
+            resp = requests.post(url, headers=self.headers, json=payload, timeout=60)
+            resp_json = resp.json()
+            if resp_json.get("code") == 0:
+                return str(resp_json.get("data", {}).get("ad_id", ad_id))
+            last_err = Exception(self._friendly_error("追加素材失败", resp_json))
+            msg = str(resp_json.get("msg", ""))
+            if "不在素材库" not in msg:
+                break
+        raise last_err
 
     # ---------------------------------------------------------------
     # 直播数据（千川侧已授权权限：全域投放数据 22100600 + 今日直播数据 22100400）

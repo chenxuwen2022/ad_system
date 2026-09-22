@@ -1,4 +1,4 @@
-import os
+﻿import os
 from datetime import datetime
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -8,7 +8,7 @@ from ad.douyin_api import DouYinAdService
 from ad.file_service import delete_media_file
 from ad.token_manager import get_token_mgr
 from ad.config import DOUYIN_CONFIG
-from ad.db import SessionLocal, AdvertiserDB, MaterialTagDB, MaterialMarkDB, MaterialLaunchDB
+from ad.db import SessionLocal, AdvertiserDB, MaterialTagDB, MaterialMarkDB, MaterialLaunchDB, MaterialCategoryDB, MaterialBizStatusDB, SkuDB, MATERIAL_BIZ_STATUSES
 
 router = APIRouter()
 
@@ -27,6 +27,7 @@ class MaterialTagBody(BaseModel):
     name: str
     color: str = "#1f6feb"
     id: Optional[int] = None  # 编辑时传数据库主键，用于精确更新
+    tag_type: str = "public"  # public=公共标签 / personal=个人标签
 
 
 class AiContextBody(BaseModel):
@@ -238,14 +239,14 @@ async def ad_launch(req: AdLaunchRequest):
         if result.success:
             _save_material_marks(req.local_file_path, req.tags)
             _save_launch_record(req.local_file_path, "success", "real",
-                                plan_id=req.plan_id, product_id=",".join(req.product_ids or []),
+                                plan_id=req.plan_id, plan_name=req.plan_name or req.plan_id or "", product_id=",".join(req.product_ids or []),
                                 detail="已追加到投放计划",
                                 advertiser_id=advertiser_id or "", budget=req.budget or 0,
                                 biz_status="待审核")
             delete_media_file(req.local_file_path)
         else:
             _save_launch_record(req.local_file_path, "fail", "real",
-                                plan_id=req.plan_id or "", product_id=",".join(req.product_ids or []),
+                                plan_id=req.plan_id or "", plan_name=req.plan_name or req.plan_id or "", product_id=",".join(req.product_ids or []),
                                 detail=result.error_msg or "投放失败",
                                 advertiser_id=advertiser_id or "", budget=req.budget or 0)
         return result
@@ -686,12 +687,15 @@ async def delete_advertiser_account(row_id: int):
 
 # ---------------- 标签设置：素材标签增删改查 ----------------
 @router.get("/api/tags")
-async def list_material_tags():
+async def list_material_tags(tag_type: str = ""):
     db = SessionLocal()
     try:
-        rows = db.query(MaterialTagDB).order_by(MaterialTagDB.id).all()
+        q = db.query(MaterialTagDB).order_by(MaterialTagDB.id)
+        if tag_type:
+            q = q.filter(MaterialTagDB.tag_type == tag_type)
+        rows = q.all()
         return {"success": True, "data": [
-            {"id": r.id, "name": r.name, "color": r.color} for r in rows
+            {"id": r.id, "name": r.name, "color": r.color, "tag_type": r.tag_type} for r in rows
         ]}
     finally:
         db.close()
@@ -719,6 +723,7 @@ async def save_material_tag(body: MaterialTagBody):
                     return {"success": False, "error": f"标签「{name}」已存在，请使用其它名称"}
                 row.name = name
                 row.color = color
+                row.tag_type = body.tag_type or "public"
                 row.update_time = datetime.now()
                 db.commit()
                 return {"success": True, "data": {"id": row.id, "name": name, "color": color}}
@@ -726,9 +731,10 @@ async def save_material_tag(body: MaterialTagBody):
         row = db.query(MaterialTagDB).filter(MaterialTagDB.name == name).first()
         if row:
             row.color = color
+            row.tag_type = body.tag_type or "public"
             row.update_time = datetime.now()
         else:
-            row = MaterialTagDB(name=name, color=color)
+            row = MaterialTagDB(name=name, color=color, tag_type=body.tag_type or "public")
             db.add(row)
         db.commit()
         return {"success": True, "data": {"id": row.id, "name": name, "color": color}}
@@ -766,6 +772,191 @@ async def get_material_marks(file_path: str = ""):
     finally:
         db.close()
 
+
+class MaterialMarkBody(BaseModel):
+    file_path: str
+    tags: list = []
+
+
+@router.post("/api/material_marks")
+async def save_material_marks_api(body: MaterialMarkBody):
+    """保存某素材的个人标签（覆盖式更新）。tags 为空列表则清除该素材所有标签。"""
+    try:
+        _save_material_marks(body.file_path, body.tags)
+        return {"success": True, "data": {"file_path": body.file_path, "tags": body.tags}}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+class SplitPlansBody(BaseModel):
+    change_type: str = "换动作"
+    extra: str = ""
+
+
+@router.post("/api/image_split/generate_plans")
+async def generate_split_plans(body: SplitPlansBody):
+    """根据变化类型和补充想法，AI 生成 3 套模特动作方案。"""
+    import os, requests
+    api_key = os.environ.get("NEWAPI_API_KEY", "")
+    base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
+    if not api_key:
+        return {"success": False, "error": "未配置 NEWAPI_API_KEY"}
+    ct = body.change_type
+    if ct == "换场景":
+        field = "场景"
+        examples = ["原场景附近更开阔的位置，保留背景材质和色调", "有自然光的咖啡馆窗边", "简洁的白色摄影棚，柔光"]
+    elif ct == "动作+场景":
+        field = "动作+场景"
+        examples = ["模特侧身站立，在原木色桌面旁", "模特坐在窗边，阳光从侧面照入", "模特自然行走，背景是浅色街道"]
+    else:
+        field = "模特动作"
+        examples = ["自然站立，一手插兜，视线略侧前方", "身体侧转约 30 度，双手自然垂放", "正面微笑，双手自然下垂"]
+    prompt = f"""你是电商摄影指导。用户要对一张服装商品图进行图片裂变，变化类型：{ct}。
+补充想法：{body.extra or '无'}
+
+请生成 3 套不同的{field}方案，每套一句话描述（20-40字），具体、可执行、适合电商商品图。
+只返回 JSON 数组，3 个字符串，不要其他文字。例如：
+{examples}"""
+    import json, re
+    last_err = ""
+    text = ""
+    for model in ["deepseek-v4-flash", "deepseek-v3.2-thinking", "gemini-3.8-flash", "qwen3.8-flash", "gpt-5.4-mini"]:
+        try:
+            resp = requests.post(
+                f"{base}/chat/completions",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "你是电商模特摄影指导，只返回 JSON 数组。"},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "temperature": 0.7,
+                },
+                timeout=60,
+            )
+            rj = resp.json()
+            if resp.status_code == 200 and "choices" in rj:
+                text = rj["choices"][0]["message"]["content"].strip()
+                break
+            last_err = f"{model}: {rj.get('error') or rj}"
+        except Exception as e:
+            last_err = f"{model}: {e}"
+    if not text:
+        return {"success": False, "error": f"所有模型均失败: {last_err}"}
+    import json, re
+    m = re.search(r'\[.*\]', text, re.S)
+    if m:
+        try:
+            plans = json.loads(m.group())
+        except Exception:
+            plans = [l.strip("-·0123456789. ") for l in text.split("\n") if l.strip()][:3]
+    else:
+        plans = [l.strip("-·0123456789. ") for l in text.split("\n") if l.strip()][:3]
+    if len(plans) < 3:
+        plans = (plans + ["自然站立，正面展示", "侧身 45 度，展示侧面", "双手自然下垂，微笑"])[:3]
+    return {"success": True, "plans": plans}
+
+class GenImageBody(BaseModel):
+    source_path: str = ""
+    action: str = ""
+    change_type: str = "换动作"
+
+
+@router.post("/api/image_split/generate_image")
+async def generate_split_image(body: GenImageBody):
+    """根据原图和动作描述，调用 AI 生成图片裂变结果。"""
+    import os, requests, base64, time
+    api_key = os.environ.get("NEWAPI_API_KEY", "")
+    base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
+    if not api_key:
+        return {"success": False, "error": "未配置 NEWAPI_API_KEY"}
+    # 读取本地原图，转 base64
+    src_file = body.source_path
+    if not src_file:
+        return {"success": False, "error": "缺少原图路径"}
+    # media_storage 目录
+    media_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "media_storage")
+    full = os.path.join(media_dir, src_file.replace("/", os.sep))
+    if not os.path.exists(full):
+        return {"success": False, "error": f"原图不存在: {full}"}
+    try:
+        with open(full, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode()
+        ext = os.path.splitext(full)[1].lower().lstrip(".") or "png"
+        data_url = f"data:image/{ext};base64,{img_b64}"
+    except Exception as e:
+        return {"success": False, "error": f"读原图失败: {e}"}
+
+    prompt = f"电商服装商品图裂变。保持商品本身不变，将模特动作改为：{body.action}。要求：{body.change_type}，竖版9:16，干净背景，自然光，真实感。"
+    # 尝试多个模型
+    last_err = "unknown"
+    for model in ["gpt-image-2", "mai-image-2.5", "qwen-image-3.0"]:
+        try:
+            resp = requests.post(
+                f"{base}/images/generations",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "n": 1,
+                    "size": "1024x1536",
+                    "image": data_url,
+                },
+                timeout=120,
+            )
+            rj = resp.json()
+            if resp.status_code == 200 and rj.get("data"):
+                img_url = rj["data"][0].get("url") or rj["data"][0].get("b64_json")
+                if img_url and img_url.startswith("data:"):
+                    # 保存到本地
+                    import re
+                    m = re.match(r'data:image/\w+;base64,(.+)', img_url)
+                    if m:
+                        out_dir = os.path.join(media_dir, "splits")
+                        os.makedirs(out_dir, exist_ok=True)
+                        fname = f"split_{int(time.time()*1000)}_{os.path.basename(full)}"
+                        with open(os.path.join(out_dir, fname), "wb") as fout:
+                            fout.write(base64.b64decode(m.group(1)))
+                        return {"success": True, "url": f"/api/uploaded_media/splits/{fname}"}
+                elif img_url:
+                    return {"success": True, "url": img_url}
+        except Exception as e:
+            last_err = str(e)
+    return {"success": False, "error": f"所有模型均失败：{last_err}"}
+
+@router.get("/api/skus")
+def list_skus():
+    db = SessionLocal()
+    try:
+        rows = db.query(SkuDB).order_by(SkuDB.id.desc()).all()
+        return [{"id": r.id, "series": r.series, "sku_no": r.sku_no, "name": r.name, "brand": r.brand, "category": r.category} for r in rows]
+    finally:
+        db.close()
+
+
+class SkuBody(BaseModel):
+    series: str = ""
+    sku_no: str = ""
+    name: str = ""
+    brand: str = ""
+    category: str = ""
+
+
+@router.post("/api/skus")
+def create_sku(body: SkuBody):
+    db = SessionLocal()
+    try:
+        s = SkuDB(series=body.series, sku_no=body.sku_no, name=body.name, brand=body.brand, category=body.category)
+        db.add(s)
+        db.commit()
+        db.refresh(s)
+        return {"success": True, "id": s.id}
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        db.close()
 
 @router.get("/api/launch_records")
 async def get_launch_records(advertiser_id: str = "", limit: int = 100):
@@ -898,3 +1089,268 @@ async def get_live_room_products(advertiser_id: str = "", refresh: bool = False)
         return {"success": True, **data}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+# ---------------- 素材分类体系：增删改查 ----------------
+class CategoryBody(BaseModel):
+    name: str
+    level: int = 1            # 1=主类目 2=一级 3=二级
+    parent_id: int = 0         # 父分类ID，0=主类目
+    id: Optional[int] = None   # 编辑时传主键
+
+
+@router.get("/api/categories")
+async def list_categories():
+    """返回全部分类（平铺，含层级与父级ID），前端按 level/parent_id 渲染树。"""
+    db = SessionLocal()
+    try:
+        rows = db.query(MaterialCategoryDB).order_by(MaterialCategoryDB.level, MaterialCategoryDB.sort, MaterialCategoryDB.id).all()
+        return {"success": True, "data": [
+            {"id": r.id, "name": r.name, "level": r.level, "parent_id": r.parent_id} for r in rows
+        ]}
+    finally:
+        db.close()
+
+
+@router.post("/api/categories")
+async def save_category(body: CategoryBody):
+    name = (body.name or "").strip()
+    if not name:
+        return {"success": False, "error": "分类名称不能为空"}
+    if body.level not in (1, 2, 3):
+        return {"success": False, "error": "分类层级必须是 1/2/3"}
+    # 二级分类必须选一级父类；一级分类必须选主类目父类
+    parent_id = body.parent_id or 0
+    if body.level >= 2 and parent_id == 0:
+        return {"success": False, "error": f"请选择上级分类"}
+    db = SessionLocal()
+    try:
+        # 同级下名称查重
+        q = db.query(MaterialCategoryDB).filter(
+            MaterialCategoryDB.level == body.level,
+            MaterialCategoryDB.parent_id == parent_id,
+            MaterialCategoryDB.name == name,
+        )
+        if body.id is not None:
+            q = q.filter(MaterialCategoryDB.id != body.id)
+        if q.first():
+            return {"success": False, "error": f"同级下「{name}」已存在"}
+        if body.id is not None:
+            row = db.query(MaterialCategoryDB).filter(MaterialCategoryDB.id == body.id).first()
+            if row:
+                row.name = name
+                row.level = body.level
+                row.parent_id = parent_id
+                row.update_time = datetime.now()
+                db.commit()
+                return {"success": True, "data": {"id": row.id, "name": name, "level": row.level, "parent_id": row.parent_id}}
+        row = MaterialCategoryDB(name=name, level=body.level, parent_id=parent_id)
+        db.add(row)
+        db.commit()
+        return {"success": True, "data": {"id": row.id, "name": name, "level": row.level, "parent_id": row.parent_id}}
+    finally:
+        db.close()
+
+
+@router.delete("/api/categories/{row_id}")
+async def delete_category(row_id: int):
+    db = SessionLocal()
+    try:
+        row = db.query(MaterialCategoryDB).filter(MaterialCategoryDB.id == row_id).first()
+        if not row:
+            return {"success": False, "error": "分类不存在"}
+        # 有子分类则禁止删除
+        child = db.query(MaterialCategoryDB).filter(MaterialCategoryDB.parent_id == row_id).first()
+        if child:
+            return {"success": False, "error": "该分类下还有子分类，请先删除子分类"}
+        db.delete(row)
+        db.commit()
+        return {"success": True}
+    finally:
+        db.close()
+
+
+
+
+# ---------------- 素材投放状态标签：增删改查 ----------------
+DEFAULT_BIZ_STATUSES = [
+    ("审核中", "审核中", "#F5B041", 1),
+    ("待投放", "待投放", "#A8E05F", 2),
+    ("已投放", "已投放", "#5DCEC4", 3),
+    ("已暂停", "已暂停", "#B0B5BD", 4),
+]
+
+def _ensure_default_biz_statuses(db):
+    """首次启动时插入默认状态标签"""
+    if db.query(MaterialBizStatusDB).count() > 0:
+        return
+    for name, code, color, sort in DEFAULT_BIZ_STATUSES:
+        db.add(MaterialBizStatusDB(name=name, code=code, color=color, sort=sort))
+    db.commit()
+
+
+@router.get("/api/material_biz_statuses")
+async def list_material_biz_statuses():
+    db = SessionLocal()
+    try:
+        _ensure_default_biz_statuses(db)
+        rows = db.query(MaterialBizStatusDB).order_by(MaterialBizStatusDB.sort, MaterialBizStatusDB.id).all()
+        return {"success": True, "data": [
+            {"id": r.id, "name": r.name, "code": r.code, "color": r.color, "sort": r.sort} for r in rows
+        ]}
+    finally:
+        db.close()
+
+
+class BizStatusBody(BaseModel):
+    name: str
+    color: str = "#CCFF00"
+    id: Optional[int] = None
+
+
+@router.post("/api/material_biz_statuses")
+async def save_material_biz_status(body: BizStatusBody):
+    name = (body.name or "").strip()
+    if not name:
+        return {"success": False, "error": "状态名称不能为空"}
+    color = (body.color or "").strip() or "#CCFF00"
+    db = SessionLocal()
+    try:
+        if body.id is not None:
+            row = db.query(MaterialBizStatusDB).filter(MaterialBizStatusDB.id == body.id).first()
+            if row:
+                row.name = name
+                row.color = color
+                row.update_time = datetime.now()
+                db.commit()
+                return {"success": True, "data": {"id": row.id, "name": row.name, "code": row.code, "color": row.color}}
+        # 新增：code 用 name（用户可改显示名但 code 不变）
+        row = MaterialBizStatusDB(name=name, code=name, color=color)
+        db.add(row)
+        db.commit()
+        return {"success": True, "data": {"id": row.id, "name": row.name, "code": row.code, "color": row.color}}
+    finally:
+        db.close()
+
+
+@router.delete("/api/material_biz_statuses/{row_id}")
+async def delete_material_biz_status(row_id: int):
+    db = SessionLocal()
+    try:
+        row = db.query(MaterialBizStatusDB).filter(MaterialBizStatusDB.id == row_id).first()
+        if not row:
+            return {"success": False, "error": "状态不存在"}
+        db.delete(row)
+        db.commit()
+        return {"success": True}
+    finally:
+        db.close()
+
+
+# ============ 图片裂变：保存结果 ============
+class ImageSplitSaveBody(BaseModel):
+    source_path: str = ""
+    action: str = ""
+    change_type: str = "换动作"
+    result_url: str = ""
+    sku_id: int = 0
+    mode: str = "入库"  # 入库 / 入投放
+
+@router.post("/api/image_split/save")
+def save_image_split(body: ImageSplitSaveBody):
+    db = SessionLocal()
+    try:
+        rec = MaterialLaunchDB(
+            file_path=body.result_url or body.source_path,
+            status="success",
+            mode="test",
+            biz_status="待投放" if body.mode == "入投放" else "已入库",
+            plan_id="",
+            plan_name="",
+            product_id=str(body.sku_id),
+            detail=f"裂变方式:{body.change_type}; 动作:{body.action}; 模式:{body.mode}",
+        )
+        db.add(rec)
+        db.commit()
+        return {"success": True, "id": rec.id}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+    finally:
+        db.close()
+
+
+# ============ 素材状态统计 ============
+@router.get("/api/material_stats")
+def material_stats():
+    db = SessionLocal()
+    try:
+        rows = db.query(MaterialLaunchDB).all()
+        stats = {"全部素材": len(rows), "审核中": 0, "待投放": 0, "已投放": 0, "已暂停": 0, "已结束": 0, "未提交": 0}
+        for r in rows:
+            biz = r.biz_status or ""
+            if biz == "待审核" or biz == "审核中":
+                stats["审核中"] += 1
+            elif biz == "通过-待投放" or biz == "待投放":
+                stats["待投放"] += 1
+            elif biz in ["直播间已投放", "商城已投放", "已投放商品+直播间", "已投放"]:
+                stats["已投放"] += 1
+            elif biz == "审核驳回" or biz == "已暂停":
+                stats["已暂停"] += 1
+            elif biz == "放弃测试" or biz == "已结束":
+                stats["已结束"] += 1
+            else:
+                stats["未提交"] += 1
+        return stats
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+# ============ 从数据库获取所有素材 ============
+@router.get("/api/db_materials")
+def db_materials():
+    db = SessionLocal()
+    try:
+        rows = db.query(MaterialLaunchDB).order_by(MaterialLaunchDB.create_time.desc()).all()
+        data = []
+        # 同时从上传目录找真实文件
+        upload_dir = r"C:\Users\33082\PycharmProjects\ad_system\upload_materials"
+        local_files = {}
+        if os.path.exists(upload_dir):
+            for f in os.listdir(upload_dir):
+                local_files[f] = os.path.join(upload_dir, f)
+        for r in rows:
+            fname = os.path.basename(r.file_path)
+            # 检查文件是否存在（数据库路径或上传目录）
+            real_path = r.file_path
+            if not os.path.exists(real_path) and fname in local_files:
+                real_path = local_files[fname]
+            if not os.path.exists(real_path):
+                continue
+            ext = os.path.splitext(fname)[1].lower()
+            ftype = "video" if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"] else "image"
+            data.append({
+                "id": r.id,
+                "name": fname,
+                "path": real_path,
+                "type": ftype,
+                "size": os.path.getsize(real_path),
+                "mtime": os.path.getmtime(real_path),
+                "biz_status": r.biz_status,
+                "plan_name": r.plan_name,
+                "detail": r.detail,
+            })
+        return {"success": True, "data": data, "count": len(data)}
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+# ============ 根据完整路径返回文件 ============
+@router.get("/api/file_by_path")
+def file_by_path(path: str):
+    if not os.path.exists(path) or not os.path.isfile(path):
+        return {"error": "文件不存在"}
+    return FileResponse(path)

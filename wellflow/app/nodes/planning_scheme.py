@@ -184,7 +184,7 @@ async def stream_plan_schemes(
     from wellflow.app.config import settings
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node2_reasoning_effort
     system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
 
     product_images = product_images or []
@@ -248,7 +248,7 @@ async def plan_schemes(
     from wellflow.app.config import settings
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node2_reasoning_effort
     system_prompt = PLANNING_AGENT_SYSTEM_PROMPT
 
     product_images = product_images or []

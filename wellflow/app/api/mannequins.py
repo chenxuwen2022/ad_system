@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from sqlalchemy.orm import Session
 
+from wellflow.app.llm.base import InsufficientCreditsError
 from wellflow.app.config import settings
 from wellflow.app.database import get_db
 from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
@@ -442,14 +443,14 @@ async def optimize_prompt(
                 system=system,
                 user=user_text,
                 image_uris=ref_data_uris,
-                reasoning_effort="close",
+                reasoning_effort=settings.text_reasoning_effort,
             )
         else:
             resp, used_model = await pool.chat(
                 system=system,
                 user=user_text,
                 temperature=0.3,
-                reasoning_effort="close",
+                reasoning_effort=settings.text_reasoning_effort,
             )
 
         final_prompt = (resp.content or "").strip()
@@ -462,6 +463,9 @@ async def optimize_prompt(
         print(f"[mannequin/optimize-prompt] ✅ {len(final_prompt)} chars", flush=True)
         return ok(MannequinOptimizePromptResponse(final_prompt=final_prompt))
 
+    except InsufficientCreditsError as e:
+        print(f"[mannequin/optimize-prompt] ❌ 上游额度不足: {e.upstream_message}", flush=True)
+        raise HTTPException(402, f"上游账户额度不足，无法优化提示词。请联系管理员充值：{e.upstream_message}")
     except Exception as e:
         print(f"[mannequin/optimize-prompt] ❌ 失败: {e}", flush=True)
         raise HTTPException(502, f"提示词优化失败: {e}")
@@ -489,54 +493,91 @@ async def generate_mannequin_images(
     **流程定位**：路径 B（AI 生成）的 **必须步骤**。
 
     **入参**：全部 multipart。参考图二进制 → data URI 直接喂生图模型。
+    **generate_model** 参数保留以保持 API 签名兼容，后端内部忽略它，
+    统一走 node4 同源的「动态拉 new-api 渠道模型列表 + 降级链」逻辑，
+    确保与 LangGraph Node4 行为一致。
 
     **返回**：images[] 每项只有 index + base64。**没有 storage_uri / url / revised_prompt**。
     生成图在整个准备阶段都只活在前端内存里。
     """
     import asyncio as _asyncio
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.llm.image_gen_service import generate_single_image
 
-    backend_model = generate_model.strip()
+    # generate_model 参数按「选项 C + 与 node4 一致」处理：API 签名保留但内部忽略，
+    # 让共享 service 统一拉 new-api 渠道模型链并自动降级。
     num_output = max(1, min(num_output, 6))
-    client = get_llm_client("image", model_override=backend_model)
 
     ref_data_uris = await _files_to_data_uris(ref_images) if ref_images else None
 
-    sem = _asyncio.Semaphore(settings.node3_gen_concurrency)
+    sem = _asyncio.Semaphore(settings.mannequins_gen_concurrency)
 
-    print(f"[mannequin/generate] 📤 model={backend_model} n={num_output} "
-          f"refs={len(ref_data_uris) if ref_data_uris else 0} size={size}", flush=True)
+    print(f"[mannequin/generate] 📤 n={num_output} "
+          f"refs={len(ref_data_uris) if ref_data_uris else 0} size={size} "
+          f"(model via node4 image_gen_service)", flush=True)
 
-    async def _one(i: int):
+    # 收集所有成功生图实际用到的模型名（降级链里可能不同）
+    _used_models: list[str] = []
+
+    async def _one(i: int) -> GeneratedImage:
         async with sem:
-            r = await client.generate_image(
+            r = await generate_single_image(
                 prompt=prompt,
-                image_uris=ref_data_uris,
                 size=size,
-                n=1,
-                response_format="b64_json",
+                ref_data_uris=ref_data_uris,
             )
+            if r.model:
+                _used_models.append(r.model)
             img = r.all_images[0]
             return GeneratedImage(index=i, base64=img.b64_json)
 
     try:
-        tasks = [_one(i + 1) for i in range(num_output)]
-        results = await _asyncio.gather(*tasks, return_exceptions=True)
+        tasks = [_asyncio.create_task(_one(i + 1)) for i in range(num_output)]
 
+        credits_failure: InsufficientCreditsError | None = None
+        normal_failures: list[Exception] = []
         images: list[GeneratedImage] = []
-        for r in results:
-            if isinstance(r, Exception):
-                print(f"[mannequin/generate] ⚠️ 一张失败: {r}", flush=True)
-                continue
-            images.append(r)
+        pending_set = set(tasks)
+
+        # 用 FIRST_COMPLETED 循环 —— 一旦任何一个任务爆出 InsufficientCreditsError，
+        # 立刻取消剩余未完成任务，避免继续打到上游浪费配额/重复刷 402 日志
+        while pending_set:
+            done, pending_set = await _asyncio.wait(pending_set, return_when=_asyncio.FIRST_COMPLETED)
+            for fut in done:
+                try:
+                    res = await fut
+                except InsufficientCreditsError as e:
+                    credits_failure = e
+                    break  # 跳出内层，外层 while 会因为 pending_set 处理后续
+                except Exception as e:
+                    normal_failures.append(e)
+                    continue
+                images.append(res)
+            if credits_failure is not None:
+                break
+
+        # 统一取消剩余
+        for fut in pending_set:
+            fut.cancel()
+
+        if credits_failure is not None:
+            print(f"[mannequin/generate] ❌ 上游额度不足，全部取消: {credits_failure.upstream_message}", flush=True)
+            raise HTTPException(
+                status_code=402,
+                detail=f"上游账户额度不足，无法生成模特图。请联系管理员充值：{credits_failure.upstream_message}",
+            )
 
         if not images:
-            raise HTTPException(502, "全部生图失败")
+            raise HTTPException(502, f"全部生图失败: {normal_failures[0] if normal_failures else '未知原因'}")
 
-        print(f"[mannequin/generate] ✅ {len(images)}/{num_output}", flush=True)
+        # 按 index 稳定排序，让 UI 展示顺序跟用户预期一致
+        images.sort(key=lambda g: g.index)
+
+        # 返回实际用到的模型名（取第一个去重后的，通常全成功时都是同一个）
+        actual_model = _used_models[0] if _used_models else "(unknown)"
+        print(f"[mannequin/generate] ✅ {len(images)}/{num_output} model={actual_model}", flush=True)
         return ok(MannequinGenerateResponse(
             images=images,
-            model=backend_model,
+            model=actual_model,
             final_prompt=prompt,
         ))
 
@@ -608,6 +649,12 @@ async def fine_tune_mannequin(
             base64=img.b64_json,
             model=backend_model,
         ))
+    except InsufficientCreditsError as e:
+        print(f"[mannequin/fine-tune] ❌ 上游额度不足: {e.upstream_message}", flush=True)
+        raise HTTPException(
+            status_code=402,
+            detail=f"上游账户额度不足，无法微调模特图。请联系管理员充值：{e.upstream_message}",
+        )
     except Exception as e:
         print(f"[mannequin/fine-tune] ❌ 失败: {e}", flush=True)
         raise HTTPException(502, f"微调失败: {e}")
@@ -681,7 +728,7 @@ async def auto_tag_mannequin(
             user=user_text,
             image_uris=data_uris,
             response_format={"type": "json_object"},
-            reasoning_effort="close",
+            reasoning_effort=settings.text_reasoning_effort,
         )
 
         content = (resp.content or "").strip()
@@ -720,6 +767,12 @@ async def auto_tag_mannequin(
             model=used_model,
         ))
 
+    except InsufficientCreditsError as e:
+        print(f"[mannequin/auto-tag] ❌ 上游额度不足: {e.upstream_message}", flush=True)
+        raise HTTPException(
+            status_code=402,
+            detail=f"上游账户额度不足，无法自动打标。请联系管理员充值：{e.upstream_message}",
+        )
     except json_mod.JSONDecodeError as e:
         print(f"[mannequin/auto-tag] ❌ JSON 解析失败: {e}", flush=True)
         raise HTTPException(502, f"VLM 返回格式错误: {e}")

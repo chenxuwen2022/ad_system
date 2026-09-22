@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+﻿from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import datetime
 
@@ -30,6 +30,7 @@ class AdLaunchRequest(BaseModel):
     aweme_id: Optional[str] = None       # 投放抖音号ID，留空时取 config.py 的 AWEME_ID
     product_ids: Optional[List[str]] = None  # 投放商品ID列表，留空时取 config.py 的 PRODUCT_IDS
     plan_id: Optional[str] = None        # 指定投放的千川计划ID：素材追加到该计划下，不新建计划
+    plan_name: Optional[str] = None      # 选中计划的名称，随投放请求一起落库，便于任务列表/详情展示
     tags: Optional[List[str]] = None     # 素材标签列表（来自标签设置），投放时给素材打标记
     test_mode: Optional[bool] = False    # 测试模式：不调用千川真实接口，本地模拟整条投放链路
 

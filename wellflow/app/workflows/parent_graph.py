@@ -26,7 +26,7 @@
   decision="redo"      → 仅 C4 redo→node4 保留（Node4 是生图 API，无文本产物可 refine）
 
 HITL resume 数据：
-  C1  resume: confirmed_report | decision("confirm"|"refine") + refine_instruction + model_images/ratio
+  C1  resume: confirmed_report | decision("confirm"|"refine") + refine_instruction + reference_images/ratio
   C2  resume: selected_scheme_indices + per_scheme_count | decision("confirm"|"refine") + refine_instruction
   C3  resume: edited_prompts + selected_prompt_indices + per_prompt_size | decision("confirm"|"refine") + refine_instruction
   C4  resume: decision("confirm"|"redo") + redo_target("node4") | decision("refine") + refine_instruction + refine_target
@@ -41,6 +41,8 @@ Phase 枚举（前端 PHASE_LABELS 对齐）：
   → node2_plan_scheme → c2_select → node3_prompt_gen → c3_confirm
   → node4_prepare → node4_generation → node4_archive → c4_review → done/failed
   + node1_refining / node2_refining / node3_refining（refine 中间态）
+
+Node4 子图内部已合并为 2 节点：prepare_work_items → run_generation（含 archive 语义）
 """
 
 from __future__ import annotations
@@ -97,13 +99,15 @@ def build_graph(checkpointer=None):
     graph.add_edge(START, "node1_product_analyzer")
     graph.add_edge("node1_product_analyzer", "c1_confirm_report")
 
-    # ---- C1 条件路由：confirm → Node2，refine → node1_refine_report ----
+    # ---- C1 条件路由：refine → node1_refine_report；confirm(confirmations.c1=True) → Node2；
+    #                  无路由信号（被拒/首 interrupt 返回空值）→ 自循环留在 C1 ----
     graph.add_conditional_edges(
         "c1_confirm_report",
         _route_c1_decision,
         {
             "node2_planning_scheme": "node2_planning_scheme",
             "node1_refine_report": "node1_refine_report",
+            "c1_confirm_report": "c1_confirm_report",  # 自循环：让用户重选
         },
     )
     # refine 完成后回到 C1 让用户再次确认
@@ -111,20 +115,24 @@ def build_graph(checkpointer=None):
 
     graph.add_edge("node2_planning_scheme", "c2_select_scheme")
 
-    # ---- C2 条件路由：confirm → Node3，refine → node2_refine_schemes ----
+    # ---- C2 条件路由：refine → node2_refine_schemes；confirm(confirmations.c2=True) → Node3；
+    #                  无路由信号 → 自循环留在 C2 ----
     graph.add_conditional_edges(
         "c2_select_scheme",
         _route_c2_decision,
         {
             "node3_prompt_generation": "node3_prompt_generation",
             "node2_refine_schemes": "node2_refine_schemes",
+            "c2_select_scheme": "c2_select_scheme",  # 自循环
         },
     )
+    # refine 完回 C2 重选方案；同时承接 C3/C4 跨层级回退到 node2_refine_schemes 的场景
     graph.add_edge("node2_refine_schemes", "c2_select_scheme")
 
     graph.add_edge("node3_prompt_generation", "c3_confirm_prompt")
 
-    # ---- C3 条件路由：confirm → Node4，refine → node2_refine_schemes 或 node3_refine_prompts ----
+    # ---- C3 条件路由：confirm(confirmations.c3=True) → Node4；refine → node2_refine_schemes / node3_refine_prompts；
+    #                  无路由信号 → 自循环留在 C3 ----
     graph.add_conditional_edges(
         "c3_confirm_prompt",
         _route_c3_decision,
@@ -132,23 +140,17 @@ def build_graph(checkpointer=None):
             "node4_generate_image": "node4_generate_image",
             "node2_refine_schemes": "node2_refine_schemes",
             "node3_refine_prompts": "node3_refine_prompts",
+            "c3_confirm_prompt": "c3_confirm_prompt",  # 自循环
         },
     )
     graph.add_edge("node3_refine_prompts", "c3_confirm_prompt")
-    # 如果 refine target=node2（改商拍方案），refine 完也要回 C2 选方案
-    graph.add_edge("node2_refine_schemes", "c2_select_scheme")
 
     # ---- C4 条件路由 ----
-    # Node4 完成后 → C4 review
-    graph.add_conditional_edges(
-        "node4_generate_image",
-        _route_after_node4,
-        {
-            "c4_review": "c4_review_result",
-            "finalize": "finalize",
-        },
-    )
-    # C4 review → finalize 或 refine(node2/3) 或 redo(node4)
+    # Node4 完成后 → 固定走 C4 review（_route_after_node4 原函数恒返回 "c4_review"，
+    #                                    映射表里的 "finalize" 分支是死代码，已删除）
+    graph.add_edge("node4_generate_image", "c4_review_result")
+    # C4 review → finalize(confirm) 或 refine(node2/3) 或 redo(node4)；
+    #             无路由信号（redo/refine 被拒）→ 自循环留在 C4 让用户重选
     graph.add_conditional_edges(
         "c4_review_result",
         _route_c4_decision,
@@ -157,6 +159,7 @@ def build_graph(checkpointer=None):
             "node2_refine_schemes": "node2_refine_schemes",
             "node3_refine_prompts": "node3_refine_prompts",
             "node4_generate_image": "node4_generate_image",  # 仅 redo→node4 保留完全重置
+            "c4_review_result": "c4_review_result",  # 自循环：redo/refine 被拒时留在 C4
         },
     )
 
@@ -227,6 +230,7 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
         "report_sections": node1_state.get("report_sections"),
         "report_hash": current_hash,
         "report_locked": bool(node1_state.get("report_locked")),
+        "thinking_text": node1_state.get("thinking_text", ""),
     })
     print(f"[c1_confirm_report] 🎯 interrupt_value preview: report={current_report[:200]!r}, "
           f"sections_keys={list((node1_state.get('report_sections') or {}).keys()) if isinstance(node1_state.get('report_sections'), dict) else 'N/A'}, "
@@ -303,9 +307,12 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
         flush=True,
     )
 
-    model_images = interrupt_value.get("model_images")
-    if model_images:
-        new_node3["model_images"] = model_images
+    # —— 参考图：C1 也可以上传 mannequin 图（可选），scene/outfit 留到 C2 ——
+    new_refs = dict(new_node3.get("reference_images") or {"mannequin": [], "scene": [], "outfit": []})
+    incoming_refs = interrupt_value.get("reference_images") or {}
+    if "mannequin" in incoming_refs:
+        new_refs["mannequin"] = list(incoming_refs["mannequin"])
+    new_node3["reference_images"] = new_refs
 
     ratio = interrupt_value.get("ratio")
     if ratio:
@@ -320,14 +327,10 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
-    """C2：用户确认这唯一一份商拍方案（可微调）。
-
-    新链路：Node2 固定只产出 1 套最终方案，C2 的角色变成"确认/微调方案"，
-    确认后自动选中这一套方案并让 Node3 围绕它生成 5 份差异化 prompt。
+    """C2：用户明确选定一套商拍方案，或继续微调方案。
 
     决策模式：
-      decision="confirm"  → 写入 selected_scheme_indices=[0], per_scheme_count=[5]
-                            然后流转到 Node3 生成 5 份 prompt
+      decision="confirm"  → 校验选中索引，写入每套提示词数量后流转到 Node3
       decision="refine"   → 纯 text LLM 增量修改商拍方案（不走 VLM 重跑）
     """
     from langgraph.types import interrupt
@@ -344,10 +347,11 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c2",
         "phase": "c2_select",
-        "hint": "请查看并微调这套最终商拍方案。确认后会基于它生成 5 份差异化生图提示词",
+        "hint": f"请查看商拍方案，明确选择 1 套后确认。将基于所选方案生成 {n_variants} 份差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
-        "model_images": node3.get("model_images", []),
+        "reference_images": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
+        "thinking_text": state.get("node2", {}).get("thinking_text", ""),
     })
 
     if not interrupt_value:
@@ -377,17 +381,21 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
             "_redo_target": None,
         }
 
-    # ---- confirm：自动选中唯一方案 + 固定 per_scheme_count=[5] ----
+    # ---- confirm：多套时必须明确选中；单套时可直接确认 ----
     node2 = state.get("node2", {})
     selected = interrupt_value.get("selected_scheme_indices")
     new_node2 = dict(node2)
     all_schemes = node2.get("schemes", [])
 
-    # 默认选中 [0]；前端 intent_classifier 选了别的也尊重
-    if selected is not None:
-        new_node2["selected_scheme_indices"] = list(selected) if selected else [0]
-    else:
-        new_node2["selected_scheme_indices"] = [0] if all_schemes else []
+    # 单套方案可直接确认；多套方案仍须明确选中。
+    if selected is None and len(all_schemes) == 1:
+        selected = [0]
+    if (not isinstance(selected, list) or len(selected) != 1
+            or type(selected[0]) is not int
+            or not 0 <= selected[0] < len(all_schemes)):
+        print(f"[c2_select] ⚠️ 无效方案选择: {selected!r}", flush=True)
+        return {"phase": "c2_select"}
+    new_node2["selected_scheme_indices"] = selected
 
     # per_scheme_count 固定默认 [n_variants]，允许前端覆盖
     counts = interrupt_value.get("per_scheme_count")
@@ -412,9 +420,12 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     image_model = interrupt_value.get("image_model")
     if image_model:
         new_node3["image_model"] = image_model
-    model_images = interrupt_value.get("model_images")
-    if model_images:
-        new_node3["model_images"] = model_images
+    incoming_refs = interrupt_value.get("reference_images") or {}
+    new_node3["reference_images"] = {
+        "mannequin": list(incoming_refs.get("mannequin") or new_node3.get("reference_images", {}).get("mannequin") or []),
+        "scene": list(incoming_refs.get("scene") or []),
+        "outfit": list(incoming_refs.get("outfit") or []),
+    }
 
     return {"phase": "c2_select", "node2": new_node2, "node3": new_node3,
             "confirmations": {"c2": True}, "_redo_target": None}
@@ -446,7 +457,8 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         "hint": "请确认每套方案的最终提示词，可编辑后继续生图",
         "generate_prompts": state.get("node3", {}).get("generate_prompts", []),
         "prompts_detail": state.get("node3", {}).get("prompts_detail", []),
-        "model_images": state.get("node3", {}).get("model_images", []),
+        "reference_images": state.get("node3", {}).get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
+        "thinking_text": state.get("node3", {}).get("thinking_text", ""),
     })
 
     if not interrupt_value:
@@ -522,9 +534,12 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     image_model = interrupt_value.get("image_model")
     if image_model:
         new_node3["image_model"] = image_model
-    model_images = interrupt_value.get("model_images")
-    if model_images:
-        new_node3["model_images"] = model_images
+    incoming_refs = interrupt_value.get("reference_images") or {}
+    new_node3["reference_images"] = {
+        "mannequin": list(incoming_refs.get("mannequin") or new_node3.get("reference_images", {}).get("mannequin") or []),
+        "scene": list(incoming_refs.get("scene") or new_node3.get("reference_images", {}).get("scene") or []),
+        "outfit": list(incoming_refs.get("outfit") or new_node3.get("reference_images", {}).get("outfit") or []),
+    }
 
     return {"phase": "c3_confirm", "node3": new_node3,
             "confirmations": {"c3": True}, "_redo_target": None}
@@ -559,8 +574,9 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         "outputs": node4.get("outputs", []),
         "failed_items": node4.get("failed_items", []),
         "reference_images": req.get("product_images", []),
-        "model_images": node3.get("model_images", []),
+        "reference_images_node3": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
         "generate_prompts": node3.get("generate_prompts", []),
+        "thinking_text": node4.get("thinking_text", ""),
     })
 
     if not interrupt_value:
@@ -596,11 +612,29 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
             "_redo_target": None,
         }
 
-    # ---- redo → 仅保留 node4（生图 API，无法增量编辑）----
+    # ---- redo → 仅保留 node4（生图 API，无文本产物可增量编辑）----
     redo_target = interrupt_value.get("redo_target", "node4")
     if redo_target != "node4":
-        print(f"[c4_review] ⚠️ redo→{redo_target} 不支持完全重做，自动降级为 refine", flush=True)
-        return {"phase": "c4_review", "_refine_target": redo_target, "_refine_instruction": ""}
+        # 🔴 显式拒绝而不是静默降级：
+        #   node1 在 C1 确认后已 report_locked=True，本任务内绝对改不动；
+        #   node2/node3 有 refine 增量编辑通道，redo（完全重置）对 text 产物没意义。
+        # 留在 C4 让用户重选 confirm / refine / redo→node4。
+        _msg_map = {
+            "node1": "商品识别报告已确认并锁定，本任务内无法重新生成。如需调整商品信息，请新建任务。",
+            "node2": "商拍方案支持增量 refine（修改指令 + refine），不支持完全重做。请选择 refine 或确认。",
+            "node3": "生图提示词支持增量 refine（修改指令 + refine），不支持完全重做。请选择 refine 或确认。",
+        }
+        _msg = _msg_map.get(redo_target, f"redo→{redo_target} 不支持完全重做，请选择 refine 或确认。")
+        print(f"[c4_review] 🛡️ redo→{redo_target} 被拒: {_msg}", flush=True)
+        if task_id:
+            publish(task_id, "message", {"text": _msg})
+        return {
+            "phase": "c4_review",
+            "_redo_target": None,
+            "_refine_target": None,
+            "_refine_instruction": None,
+            "_refine_selected_indices": None,
+        }
 
     # redo→node4：只重置 work_items 状态 + 清 outputs/failed_items
     print(f"[c4_review] 🔄 redo → Node4（重置 work_items）", flush=True)
@@ -619,6 +653,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         "_redo_target": "node4",
         "_refine_target": None,
         "_refine_instruction": None,
+        "_refine_selected_indices": None,  # 🛑 清掉上一次 refine 残留的方案过滤索引
     }
 
 
@@ -643,53 +678,57 @@ def _node_mapping() -> dict[str, str]:
 
 def _route_c1_decision(state: dict[str, Any]) -> str:
     """C1 interrupt resume 后的路由：
-      - confirm           → Node2
-      - refine_target=node1 → node1_refine_report（增量编辑报告）
-      - 其他 fallback     → Node2
+      - refine_target=node1 → node1_refine_report
+      - confirmations.c1=True → Node2（正常流转）
+      - 其他（refine 被拒 / interrupt 首次返回空值等）→ 留在 C1 让用户重选
     """
     refine_target = state.get("_refine_target")
     if refine_target == "node1":
         return _node_mapping()["node1"]
-    return "node2_planning_scheme"
+    confirmations = state.get("confirmations") or {}
+    if confirmations.get("c1"):
+        return "node2_planning_scheme"
+    return "c1_confirm_report"
 
 
 def _route_c2_decision(state: dict[str, Any]) -> str:
     """C2 interrupt resume 后的路由：
-      - confirm           → Node3
-      - refine_target=node2 → node2_refine_schemes（增量编辑商拍方案）
-      - 其他 fallback     → Node3
+      - refine_target=node2 → node2_refine_schemes
+      - confirmations.c2=True → Node3
+      - 其他 → 留在 C2 让用户重选
     """
     refine_target = state.get("_refine_target")
     if refine_target == "node2":
         return _node_mapping()["node2"]
-    return "node3_prompt_generation"
+    confirmations = state.get("confirmations") or {}
+    if confirmations.get("c2"):
+        return "node3_prompt_generation"
+    return "c2_select_scheme"
 
 
 def _route_c3_decision(state: dict[str, Any]) -> str:
     """C3 interrupt resume 后的路由：
-      - confirm           → Node4
-      - refine_target=node2 → node2_refine_schemes（改商拍方案，refine 完会回流到 C2）
+      - refine_target=node2 → node2_refine_schemes（改方案，refine 完会回流到 C2）
       - refine_target=node3 → node3_refine_prompts（改当前提示词，refine 完回流到 C3）
-      - 其他 fallback     → Node4
+      - confirmations.c3=True → Node4
+      - 其他 → 留在 C3 让用户重选
     """
     refine_target = state.get("_refine_target")
     if refine_target in ("node2", "node3"):
         return _node_mapping()[refine_target]
-    return "node4_generate_image"
-
-
-def _route_after_node4(state: dict[str, Any]) -> str:
-    """Node4（生图）完成后，路由到 C4 review。"""
-    return "c4_review"
+    confirmations = state.get("confirmations") or {}
+    if confirmations.get("c3"):
+        return "node4_generate_image"
+    return "c3_confirm_prompt"
 
 
 def _route_c4_decision(state: dict[str, Any]) -> str:
     """C4 interrupt resume 后的路由：
-      - confirm           → finalize
-      - refine_target=node2 → node2_refine_schemes（改方案，refine 完回流到 C2）
-      - refine_target=node3 → node3_refine_prompts（改提示词，refine 完回流到 C3）
+      - refine_target=node2 → node2_refine_schemes
+      - refine_target=node3 → node3_refine_prompts
       - redo_target=node4  → Node4 完全重置 work_items（唯一保留的完全重做）
-      - 其他 fallback     → finalize
+      - confirmations.c4=True → finalize
+      - 其他（redo/refine 被拒，所有控制字段全清）→ 留在 C4 让用户重选
     """
     refine_target = state.get("_refine_target")
     if refine_target in ("node2", "node3"):
@@ -697,4 +736,7 @@ def _route_c4_decision(state: dict[str, Any]) -> str:
     redo_target = state.get("_redo_target")
     if redo_target == "node4":
         return _node_mapping()["node4"]
-    return "finalize"
+    confirmations = state.get("confirmations") or {}
+    if confirmations.get("c4"):
+        return "finalize"
+    return "c4_review_result"

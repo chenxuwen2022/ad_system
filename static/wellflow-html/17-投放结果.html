@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>投放结果 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1E2416;--card2:#1A1F14;--line:#2E3A1E;--green:#CCFF00;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:40px}
+.wrap{max-width:1200px;margin:0 auto;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:36px}
+.eyebrow{font-size:11px;color:var(--t3);letter-spacing:2px;margin-bottom:8px}
+h1{font-size:24px;font-weight:700;margin-bottom:20px}
+.head{display:flex;justify-content:space-between;align-items:flex-start}
+.close{width:36px;height:36px;border-radius:8px;background:#222;color:#aaa;font-size:20px;border:none;cursor:pointer}
+.done-badge{background:rgba(82,196,26,.15);color:#52C41A;border:1px solid rgba(82,196,26,.3);padding:6px 14px;border-radius:20px;font-size:13px;font-weight:600}
+
+.meta{font-size:13px;color:var(--t3);margin-bottom:20px}
+.meta b{color:var(--text)}
+
+.steps{display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px;margin-bottom:20px}
+.step{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:16px 20px;display:flex;align-items:center;gap:12px}
+.step .chk{width:32px;height:32px;border-radius:50%;background:var(--green);color:#000;display:grid;place-items:center;font-weight:900;font-size:15px}
+.step .lb{font-weight:600;font-size:15px}
+.step .sub{font-size:12.5px;color:var(--t3);margin-top:2px}
+
+.ok-box{background:rgba(82,196,26,.08);border:1px solid rgba(82,196,26,.2);border-radius:12px;padding:16px 20px;margin-bottom:20px}
+.ok-box .t{font-weight:600;color:#52C41A;margin-bottom:4px}
+.ok-box .d{font-size:13px;color:var(--t2)}
+
+.progress-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.progress-row .lb{font-weight:600;font-size:15px}
+.progress-row .val{font-size:13px;color:var(--t3)}
+.progress-row .val b{color:var(--green)}
+.progress{height:6px;background:#222;border-radius:3px;overflow:hidden;margin-bottom:8px}
+.progress .bar{height:100%;background:var(--green);border-radius:3px}
+.note{font-size:12.5px;color:var(--t3);margin-bottom:24px}
+
+.tabs{display:flex;gap:8px;margin-bottom:16px;justify-content:flex-end}
+.tab{padding:6px 14px;border-radius:6px;background:#222;color:var(--t3);font-size:13px;cursor:pointer;border:1px solid #333}
+.tab.active{background:rgba(204,255,0,.12);color:var(--green);border-color:var(--green)}
+
+.mat-card{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:24px;max-width:320px}
+.mat-card img{width:90px;height:120px;object-fit:cover;border-radius:6px;margin-bottom:10px}
+.mat-card .nm{font-weight:600;font-size:14px;margin-bottom:4px}
+.mat-card .st{color:#52C41A;font-size:13px}
+
+h3{font-size:16px;margin-bottom:12px}
+.result-row{display:flex;justify-content:space-between;color:var(--t3);font-size:13px;margin-bottom:12px}
+.result-table{background:var(--card2);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin-bottom:24px}
+.result-table .hd{display:grid;grid-template-columns:1fr 160px 160px;gap:12px;font-size:13px;color:var(--t3);margin-bottom:12px}
+.result-table .bd{display:grid;grid-template-columns:1fr 160px 160px;gap:12px;font-size:14px}
+.result-table .plan .nm{font-weight:600;margin-bottom:4px}
+.result-table .plan .pid{font-size:12.5px;color:var(--t3);margin-bottom:4px}
+.result-table .plan .sku{font-size:12.5px;color:var(--t3)}
+.result-table .ok{color:#52C41A;font-weight:600}
+
+.foot-note{font-size:13px;color:var(--t3);border-top:1px solid var(--line);padding-top:16px;margin-bottom:20px}
+.btns{display:flex;justify-content:flex-end}
+.btn{padding:11px 22px;border-radius:9px;font-size:14px;cursor:pointer;border:none;background:#222;color:#fff;border:1px solid #333}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <div class="eyebrow">MATERIAL WORKSPACE</div>
+      <h1>任务已完成</h1>
+    </div>
+</div>
+
+  <div class="meta">
+    广告主 ID: <b>1854728640974923</b> · 巨量千川·品牌旗舰店 · 09/20 18:12 创建
+  </div>
+  <div style="position:absolute;top:80px;right:60px"><span class="done-badge">已完成</span></div>
+
+  <div class="steps">
+    <div class="step"><span class="chk">✓</span><div><div class="lb">上传素材</div><div class="sub">1 / 1 份成功</div></div></div>
+    <div class="step"><span class="chk">✓</span><div><div class="lb">关联计划</div><div class="sub">1 / 1 个已关联</div></div></div>
+    <div class="step"><span class="chk">✓</span><div><div class="lb">启动投放</div><div class="sub">1 / 1 个已启动</div></div></div>
+  </div>
+
+  <div class="ok-box">
+    <div class="t">1 份素材上传成功，1 个计划已启动投放</div>
+    <div class="d">全部处理完成，可在素材详情和数据看板查看后续表现。</div>
+  </div>
+
+  <div class="progress-row">
+    <span class="lb">素材上传进度</span>
+    <span class="val"><b>1</b> / 1 份成功 · 100%</span>
+  </div>
+  <div class="progress"><div class="bar" style="width:100%"></div></div>
+  <div class="note">每批最多 5 份，按批次依次上传。素材已全部上传，计划结果见下方。</div>
+
+  <div class="tabs">
+    <span class="tab active">全部 1</span>
+    <span class="tab">失败 0</span>
+    <span class="tab">待完成 0</span>
+    <span class="tab">成功 1</span>
+  </div>
+
+  <h3>素材明细</h3>
+  <div class="mat-card">
+    <img src="" id="matThumb" onerror="this.style.display='none'">
+    <div class="nm" id="matName">生成儿童服装人像照片 (1)</div>
+    <div class="st">上传成功</div>
+  </div>
+
+  <div class="result-row">
+    <span>计划投放结果</span>
+    <span>这 1 份素材将关联到以下每个计划</span>
+  </div>
+  <div class="result-table">
+    <div class="hd"><span>计划</span><span>素材关联</span><span>投放状态</span></div>
+    <div class="bd" id="resultBody"></div>
+  </div>
+
+  <div class="foot-note">关闭窗口后任务仍会继续，可从"投放任务"重新查看。刷新或离开页面后，未完成任务需手动继续。</div>
+  <div class="btns">
+    <button class="btn" onclick="window.close()">完成并关闭</button>
+  </div>
+</div>
+
+<script>
+// 从 sessionStorage 读投放结果
+const chosen=JSON.parse(sessionStorage.getItem('launch_chosen')||'[]');
+document.getElementById('resultBody').innerHTML=chosen.map(c=>
+  '<div class="plan">'+
+    '<div class="nm">'+(c.plan_name||'')+'</div>'+
+    '<div class="pid">计划 ID: '+c.plan_id+'</div>'+
+    (c.product_ids&&c.product_ids[0]?'<div class="sku">SKU ID: '+c.product_ids[0]+'</div>':'')+
+  '</div>'+
+  '<span class="ok">已关联</span>'+
+  '<span class="ok">已启动投放</span>'
+).join('');
+</script>
+</body>
+</html>

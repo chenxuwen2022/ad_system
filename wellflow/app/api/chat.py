@@ -129,7 +129,7 @@ def _langgraph_config(task_id: str):
 
 
 # ---------------------------------------------------------------------------
-# 图片分类规则：images → (product_images, model_images)
+# 图片分类规则：images → (product_images, ref_images)
 # ---------------------------------------------------------------------------
 
 # 第二层关键词：命中则覆盖上下文路由
@@ -154,44 +154,48 @@ def classify_images(
     has_task: bool,
     current_node: str | None,
     message: str = "",
-) -> tuple[list[UploadFile], list[UploadFile]]:
-    """把统一的 images 列表分流为 (product_images, model_images)。
+) -> tuple[list[UploadFile], dict[str, list[UploadFile]]]:
+    """把统一的 images 列表分流为 (product_images, ref_images)。
+
+    ref_images = {"mannequin": [...], "scene": [...], "outfit": [...]}
+    这里只区分 product vs 其他；其他默认归 mannequin（旧前端自动上传逻辑保留）。
+    新前端应直接按 type 分组后通过 resume_json.reference_images 显式传入，不走这里。
 
     三层优先级：
-      1. message 关键词覆盖（命中 PRODUCT → 全部 product；命中 MODEL → 全部 model）
-      2. 上下文路由（无 task → product；有 task + c1/c2/c3 → model）
-      3. 兜底 → model_images
-
-    不做 VLM 视觉分类（v1），保持零延迟。
+      1. message 关键词覆盖（命中 PRODUCT → 全部 product；命中 MODEL → 全部 mannequin）
+      2. 上下文路由（无 task → product；有 task + c1/c2/c3 → ref_images.mannequin）
+      3. 兜底 → ref_images.mannequin
     """
     if not images:
-        return [], []
+        return [], {"mannequin": [], "scene": [], "outfit": []}
 
     msg = message.strip()
+    _empty_ref: dict[str, list[UploadFile]] = {"mannequin": [], "scene": [], "outfit": []}
 
     # 第二层：关键词覆盖
     if _match_any(msg, _PRODUCT_KEYWORDS):
         print(f"[classify_images] 关键词覆盖 → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        return list(images), _empty_ref
     if _match_any(msg, _MODEL_KEYWORDS):
-        print(f"[classify_images] 关键词覆盖 → model ({len(images)} 张)", flush=True)
-        return [], list(images)
+        print(f"[classify_images] 关键词覆盖 → mannequin ({len(images)} 张)", flush=True)
+        ref_mannequin = {"mannequin": list(images), "scene": [], "outfit": []}
+        return [], ref_mannequin
 
     # 第一层：上下文路由
     if not has_task:
         print(f"[classify_images] 无任务 → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        return list(images), _empty_ref
     if current_node in ("c1", "c2"):
-        # C1/C2 阶段用户上传的图默认为商品参考图（可追加替换商品图）
         print(f"[classify_images] 上下文 c={current_node} → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        return list(images), _empty_ref
     if current_node in ("c3", "c4"):
-        print(f"[classify_images] 上下文 c={current_node} → model ({len(images)} 张)", flush=True)
-        return [], list(images)
+        print(f"[classify_images] 上下文 c={current_node} → mannequin ({len(images)} 张)", flush=True)
+        ref_mannequin = {"mannequin": list(images), "scene": [], "outfit": []}
+        return [], ref_mannequin
 
     # 兜底
     print(f"[classify_images] 兜底 → product ({len(images)} 张)", flush=True)
-    return list(images), []
+    return list(images), _empty_ref
 
 
 async def _aget_snapshot(task_id: str) -> tuple[Any, dict[str, Any] | None]:
@@ -400,7 +404,7 @@ async def chat(
     completed_mask = [False] * 6
     existing_report = ""
     existing_schemes: list = []
-    existing_model_images: list[str] = []
+    existing_ref_images: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
 
     # conversation 关联解析：
     # 1) 前端显式传了 conversation_id → 用它
@@ -452,9 +456,9 @@ async def chat(
             # c2 的可选项是 schemes（方案），不是 prompts —— 历史上误读 node2.generate_prompts
             # （该字段属于 node3），导致 existing_schemes 永远为空，"默认全选"退化成"全不选"
             existing_schemes = list(graph_state.get("node2", {}).get("schemes", []) or [])
-            existing_model_images = list(graph_state.get("node3", {}).get("model_images", []) or [])
+            existing_ref_images = graph_state.get("node3", {}).get("reference_images") or existing_ref_images
         print(f"[chat] 上下文: task={t_id} node={current_node} completed={completed_mask}"
-              f" model_images_in_state={len(existing_model_images)}"
+              f" ref_images={existing_ref_images}"
               f" conversation={resolved_conv_id}", flush=True)
 
     # ------------------------------------------------------------------
@@ -532,46 +536,71 @@ async def chat(
                 return StreamingResponse(_dup_sse(), media_type="text/event-stream")
 
     # 🔑 统一 images → 后端判断分流
-    product_images, model_images = classify_images(
+    product_images, ref_images = classify_images(
         images, has_task=has_task, current_node=current_node, message=message,
     )
 
     # ------------------------------------------------------------------
-    # 意图分类（全 LLM，唯一入口）
+    # 🛑 LLM 意图分类短路：无任务 + 无文字消息 → 必定是 start_task
+    #
+    # 场景：用户新建任务时只传了图片（产品图），前端没发任何文字。
+    # 这时根本不需要调 LLM 意图分类器——没有文字可供分析，
+    # 唯一合理的意图就是 start_task。省掉一次 LLM 调用 + 几百 ms 延迟。
+    #
+    # 判定条件（必须同时满足）：
+    #   - has_task=False （真的没任务，不是"任务未启动"）
+    #   - message 为空 / 全空白（strip 后长度 == 0）
+    #   - len(images) > 0（有图片，图片已在 classify_images 里分流完）
     # ------------------------------------------------------------------
-    _state_brief = summarize_graph_state(graph_state)
-    # 日志打印：结构摘要（一眼看清各 node 产物状态）+ 完整 brief 仅在 debug 时打
-    # 旧版 print(_state_brief[:300]) 会全是 node1 报告正文，c2/c3/c4 阶段完全看不到当前产物
-    if graph_state:
-        _sn1 = graph_state.get("node1") or {}
-        _sn2 = graph_state.get("node2") or {}
-        _sn3 = graph_state.get("node3") or {}
-        _sn4 = graph_state.get("node4") or {}
-        _n1_tag = f"locked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("report_locked") else f"unlocked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("product_insight") else "none"
-        _schemes = _sn2.get("schemes") or []
-        _sel = _sn2.get("selected_scheme_indices") or []
-        _n2_tag = f"{len(_schemes)}套(已选{_sel})" if _schemes else "none"
-        _prompts = _sn3.get("generate_prompts") or []
-        _details = _sn3.get("prompts_detail") or []
-        _n3_tag = f"{len(_prompts)}条" if _prompts else f"{len(_details)}条(detail)" if _details else "none"
-        _outputs = _sn4.get("outputs") or []
-        _works = _sn4.get("work_items") or []
-        _n4_tag = f"{len(_outputs)}张" if _outputs else f"进行中{sum(1 for w in _works if isinstance(w,dict) and w.get('status')=='done')}/{len(_works)}" if _works else "none"
-        print(f"[chat] 📋 state 结构摘要: node1={_n1_tag}, node2={_n2_tag}, node3={_n3_tag}, node4={_n4_tag} | current_node={current_node}", flush=True)
+    if (not has_task) and (not message) and images:
+        print(f"[chat] 🛑 意图分类短路：无任务 + 无文字 + 图片={len(images)}张 → 直接 start_task（跳过 LLM）", flush=True)
+        intent_result: dict[str, Any] = {
+            "intent": "start_task",
+            "reasoning": "无任务 + 无文字消息 + 有图片 → 必然新建任务，短路跳过 LLM",
+            "refine_target": None,
+            "refine_instruction": None,
+            "selected_indices": None,
+            "blocked_step": None,
+            "_short_circuited": True,  # 调试标记：下游 dispatch 可忽略
+        }
+        intent = "start_task"
     else:
-        print(f"[chat] 📋 state 结构摘要: graph_state=None | current_node={current_node}", flush=True)
-    intent_result = await classify(
-        message,
-        has_task=has_task,
-        current_node=current_node,
-        completed_mask=completed_mask,
-        has_images=len(images) > 0,
-        selected_finetuning_target=selected_finetuning_target,
-        graph_state_brief=_state_brief,
-    )
-    intent = intent_result.get("intent", "chat_outside")
-    print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
-          f"reason={intent_result.get('reasoning', '')[:80]} | user_msg={message[:60]}", flush=True)
+        # ------------------------------------------------------------------
+        # 意图分类（全 LLM，唯一入口）
+        # ------------------------------------------------------------------
+        _state_brief = summarize_graph_state(graph_state)
+        # 日志打印：结构摘要（一眼看清各 node 产物状态）+ 完整 brief 仅在 debug 时打
+        # 旧版 print(_state_brief[:300]) 会全是 node1 报告正文，c2/c3/c4 阶段完全看不到当前产物
+        if graph_state:
+            _sn1 = graph_state.get("node1") or {}
+            _sn2 = graph_state.get("node2") or {}
+            _sn3 = graph_state.get("node3") or {}
+            _sn4 = graph_state.get("node4") or {}
+            _n1_tag = f"locked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("report_locked") else f"unlocked(len={len(_sn1.get('product_insight',''))})" if _sn1.get("product_insight") else "none"
+            _schemes = _sn2.get("schemes") or []
+            _sel = _sn2.get("selected_scheme_indices") or []
+            _n2_tag = f"{len(_schemes)}套(已选{_sel})" if _schemes else "none"
+            _prompts = _sn3.get("generate_prompts") or []
+            _details = _sn3.get("prompts_detail") or []
+            _n3_tag = f"{len(_prompts)}条" if _prompts else f"{len(_details)}条(detail)" if _details else "none"
+            _outputs = _sn4.get("outputs") or []
+            _works = _sn4.get("work_items") or []
+            _n4_tag = f"{len(_outputs)}张" if _outputs else f"进行中{sum(1 for w in _works if isinstance(w,dict) and w.get('status')=='done')}/{len(_works)}" if _works else "none"
+            print(f"[chat] 📋 state 结构摘要: node1={_n1_tag}, node2={_n2_tag}, node3={_n3_tag}, node4={_n4_tag} | current_node={current_node}", flush=True)
+        else:
+            print(f"[chat] 📋 state 结构摘要: graph_state=None | current_node={current_node}", flush=True)
+        intent_result = await classify(
+            message,
+            has_task=has_task,
+            current_node=current_node,
+            completed_mask=completed_mask,
+            has_images=len(images) > 0,
+            selected_finetuning_target=selected_finetuning_target,
+            graph_state_brief=_state_brief,
+        )
+        intent = intent_result.get("intent", "chat_outside")
+        print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
+              f"reason={intent_result.get('reasoning', '')[:80]} | user_msg={message[:60]}", flush=True)
 
     # ------------------------------------------------------------------
     # persist 辅助函数 —— 必须在 node1 锁定守卫之前定义，
@@ -612,8 +641,10 @@ async def chat(
 
         识别的事件类型：
           - event: message       → data.text
-          - event: resume_ack    → data.message
           - event: error         → data.message / data.error
+
+        注意：resume_ack 是纯进度 ack（"好的，正在继续执行…"这类），
+        只用于 SSE 即时反馈，**不持久化**到对话历史——否则会在继续后留下误导性消息。
         """
         try:
             lines = raw_sse.splitlines()
@@ -633,8 +664,6 @@ async def chat(
         text = ""
         if ev_type == "message":
             text = str(data.get("text") or "").strip()
-        elif ev_type == "resume_ack":
-            text = str(data.get("message") or "").strip()
         elif ev_type == "error":
             text = str(data.get("message") or data.get("error") or "").strip()
         if text:
@@ -711,19 +740,31 @@ async def chat(
 
     # start_task → 新建 conversation（优先用前端传的，否则后端生成）；否则用已解析的
     if intent == "start_task":
+        # 构造 title_hint —— 让 repo 在 create 时根据意图生成真实 title
+        _title_hint = {
+            "kind": "chat_start_task",
+            "message": message,
+            "intent": intent,
+        }
         # 优先复用前端传的 conversation_id（前端用 createId() 生成，全局唯一）
         if not conv_id_for_this_turn:
             conv_id_for_this_turn = _short_uuid()
-            _title = message.strip()[:30] or "新对话"
-            conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
-            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title={_title}", flush=True)
+            conv_repo.create(
+                conversation_id=conv_id_for_this_turn,
+                title="新对话",  # 占位，repo 会用 hint 覆盖
+                title_hint=_title_hint,
+            )
+            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title_hint=start_task", flush=True)
         else:
             # 前端传了但还没建（首次 start_task，前端 generate 的 id 后端还没记录）
             # 用 resolve() 兼容 short_id / 完整 UUID
             existing = conv_repo.resolve(conv_id_for_this_turn)
             if not existing:
-                _title = message.strip()[:30] or "新对话"
-                conv_repo.create(conversation_id=conv_id_for_this_turn, title=_title)
+                conv_repo.create(
+                    conversation_id=conv_id_for_this_turn,
+                    title="新对话",
+                    title_hint=_title_hint,
+                )
                 print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
 
     # 归一化：确保 conv_id_for_this_turn 是完整主键（short_id / UUID 都能解析）
@@ -772,6 +813,21 @@ async def chat(
         # 当成 event_generator 的局部变量，遮蔽外层闭包 intent，导致
         # 前面 `if intent == "model_pool_unavailable"` 触发 UnboundLocalError。
         nonlocal intent
+
+        # ── conversation title 推送 ──
+        # 新建 conversation 后 repo 已经生成真实 title，推给前端让侧边栏实时更新
+        # 只推一次（不影响后续任何 early-return 分支）
+        if conv_id_for_this_turn:
+            try:
+                _cur = conv_repo.resolve(conv_id_for_this_turn)
+                if _cur and _cur.title and _cur.title not in ("新对话", ""):
+                    yield _sse("conversation_title", {
+                        "conversation_id": _cur.conversation_id,
+                        "title": _cur.title,
+                    })
+                    print(f"[chat] 📢 conversation_title={_cur.title}", flush=True)
+            except Exception as exc:
+                print(f"[chat] ⚠️ conversation_title 推送失败（不阻断）: {exc}", flush=True)
 
         # ── 模型池全挂：给用户准确的信息，不要误导为闲聊 ──
         if intent == "model_pool_unavailable":
@@ -855,7 +911,6 @@ async def chat(
         if has_task and t_id and _dispatch_intent != "start_task" and is_running(t_id):
             print(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={_dispatch_intent}", flush=True)
             chunk = _sse("message", {"text": "任务正在执行中，请等待当前操作完成后再试。"})
-            await _persist_sse_text(chunk, known_task_id=t_id)
             yield chunk
             yield _sse("done", {"phase": "done"})
             return
@@ -982,16 +1037,19 @@ async def chat(
                                 "schemes": _node2.get("schemes"),
                                 "selected_scheme_indices": _node2.get("selected_scheme_indices"),
                                 "scheme_raw": _node2.get("scheme_raw"),
+                                "thinking_text": _node2.get("thinking_text"),
                             })
                         elif _current_after == "c3":
                             _interrupt.update({
                                 "generate_prompts": _node3.get("generate_prompts"),
                                 "prompts_detail": _node3.get("prompts_detail"),
+                                "thinking_text": _node3.get("thinking_text"),
                             })
                         elif _current_after == "c4":
                             _interrupt.update({
                                 "outputs": _node4.get("outputs"),
                                 "failed_items": _node4.get("failed_items"),
+                                "thinking_text": _node4.get("thinking_text"),
                             })
                         print(f"[chat] 📤 stale 恢复后 SSE payload node={_current_after}", flush=True)
 
@@ -1108,9 +1166,9 @@ async def chat(
             else:
                 async for ev in _pipe(_handle_resume(
                     _dispatch_intent, t_id or '', current_node, intent_result,
-                    message, model_images, product_images,
+                    message, ref_images, product_images,
                     existing_report, existing_schemes,
-                    existing_model_images, graph,
+                    existing_ref_images, graph,
                     selected_scheme_indices=selected_scheme_indices,
                     graph_state=graph_state,
                 )):
@@ -1407,11 +1465,11 @@ async def _handle_resume(
     current_node: str | None,
     intent_result: dict[str, Any],
     message: str,
-    model_images: list[UploadFile],
+    ref_images: dict[str, list[UploadFile]],
     product_images: list[UploadFile] | None,
     existing_report: str,
     existing_schemes: list,
-    existing_model_images: list[str],
+    existing_ref_images: dict[str, list[str]],
     graph,
     *,
     selected_scheme_indices: str | None = None,
@@ -1429,10 +1487,13 @@ async def _handle_resume(
 
     q = await drain_and_subscribe(task_id)
 
-    model_image_paths: list[str] = []
-    if model_images:
-        raw = [(f.filename or "model", await f.read(), f.content_type) for f in model_images]
-        model_image_paths = save_upload(task_id, raw, prefix="m")
+    # —— 三类参考图落盘 ——
+    ref_paths: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
+    for k in ("mannequin", "scene", "outfit"):
+        files = ref_images.get(k) or []
+        if files:
+            raw = [(f.filename or k, await f.read(), f.content_type) for f in files]
+            ref_paths[k] = save_upload(task_id, raw, prefix=k[0])
 
     # 处理 product_images（仅在关键词覆盖时出现，比如 redo→node1 换商品图）
     product_image_paths: list[str] = []
@@ -1465,8 +1526,9 @@ async def _handle_resume(
             resume_values["confirmed_report"] = existing_report
             # 🔴 版本绑定：把当前报告的 hash 原样带回，_c1_confirm_report 会校验
             resume_values["report_hash"] = _current_report_hash
-        if model_image_paths:
-            resume_values["model_images"] = model_image_paths
+        # C1 允许传 mannequin 图（前端自动补）
+        if ref_paths.get("mannequin"):
+            resume_values["reference_images"] = {"mannequin": ref_paths["mannequin"], "scene": [], "outfit": []}
         resume_values.setdefault("ratio", "9:16竖版")
         resume_values.setdefault("count", 3)
 
@@ -1484,11 +1546,9 @@ async def _handle_resume(
             #   1) 前端 checkbox 显式传的 selected_scheme_indices（resume 表单）
             #   2) 意图分类器从消息文本解析的 intent_result.selected_indices（"选第1套"/"全选"）
             #
-            # 🔴 C2 阶段**严禁兜底全选**：3 套方案是风格迥异、场景互补、互斥的，
-            #    用户必须显式选 1 套才能进入 Node3。没收到任何选值 → 拦截，
-            #    提示用户先在方案卡片里选 1 套。
-            #    正常 C2 确认流程走 /api/tasks/{id}/resume（带 selected_scheme_indices），
-            #    confirm_current 走到这里只会是 stale 恢复 + 用户手动发消息的异常场景。
+            # 多套方案必须明确选中一套；微调/融合后仅剩一套时，
+            # "继续" 可以直接确认唯一的最终方案。
+            #    卡片确认走 /api/tasks/{id}/resume，输入框确认走这里。
             indices: list[int] = []
             if selected_scheme_indices:
                 for part in selected_scheme_indices.split(","):
@@ -1507,9 +1567,11 @@ async def _handle_resume(
                                 indices.append(idx)
                         except (ValueError, TypeError):
                             pass
-            if not indices:
+            if not indices and len(existing_schemes) == 1:
+                indices = [0]
+            if len(indices) != 1:
                 print(
-                    f"[chat] 🛑 c2 阶段 confirm_current 未收到任何方案选中 → 拦截, "
+                    f"[chat] 🛑 c2 阶段必须明确选中一套方案 → 拦截, "
                     f"existing_schemes={len(existing_schemes)}",
                     flush=True,
                 )
@@ -1519,8 +1581,13 @@ async def _handle_resume(
                 yield _sse("done", {"phase": "c2_select"})
                 return
             resume_values["selected_scheme_indices"] = indices
-        if model_image_paths:
-            resume_values["model_images"] = model_image_paths
+        # C2 阶段三类参考图全注入
+        if any(ref_paths.values()):
+            resume_values["reference_images"] = {
+                "mannequin": ref_paths.get("mannequin") or [],
+                "scene": ref_paths.get("scene") or [],
+                "outfit": ref_paths.get("outfit") or [],
+            }
 
     elif node == "c3":
         # ── edit_and_confirm_c3：用户想微调/修改提示词 → 走 refine 路径 ──
@@ -1558,8 +1625,12 @@ async def _handle_resume(
 
             # 若意图分类器把 c3 纯选择判成了 select_topics（新增意图），
             # selected_prompt_indices 已在上面填好；confirm_current 则默认全选。
-            if model_image_paths:
-                resume_values["model_images"] = model_image_paths
+            if any(ref_paths.values()):
+                resume_values["reference_images"] = {
+                    "mannequin": ref_paths.get("mannequin") or [],
+                    "scene": ref_paths.get("scene") or [],
+                    "outfit": ref_paths.get("outfit") or [],
+                }
 
             # 给用户一条可读的选择确认 —— 前端会直接展示这条 message 事件
             _spi = resume_values.get("selected_prompt_indices")
@@ -1575,7 +1646,6 @@ async def _handle_resume(
                         + f" 条提示词（共 {len(_spi)} 条）开始生图…"
                     )
                 _chunk = _sse("message", {"text": _pick_msg})
-                await _persist_sse_text(_chunk, known_task_id=t_id)
                 yield _chunk
 
     elif node == "c4":

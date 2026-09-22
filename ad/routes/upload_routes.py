@@ -1,4 +1,4 @@
-import os
+﻿import os
 from fastapi import APIRouter, UploadFile, File, Request, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 from ad.file_service import save_upload_file
@@ -1515,6 +1515,9 @@ async function popLaunchAd(){
     if(!pid){ alert("请选择投放商品"); return; }
     const planId = document.getElementById("popPlanSelect").value;
     if(!planId){ alert("请先选择投放计划（素材必须投放到所选计划下，不会新建计划）"); return; }
+    // 从已加载的计划列表取出选中计划的名称，随请求一起落库，便于任务列表/详情展示
+    const _p = (typeof popPlans !== "undefined" && popPlans || []).find(x => String(x.ad_id) === String(planId));
+    const planName = _p ? (_p.name || "") : "";
     const btn = document.getElementById("popLaunchBtn");
     if(btn.disabled) return;
     const mats = (popLocalFilePaths && popLocalFilePaths.length) ? popLocalFilePaths : [];
@@ -1541,6 +1544,7 @@ async function popLaunchAd(){
                 "product_ids": [pid],
                 "advertiser_id": document.getElementById("popAdvertiser").value || null,
                 "plan_id": planId,
+                "plan_name": planName,
                 "tags": popSelectedTags,
                 "test_mode": testMode
             };

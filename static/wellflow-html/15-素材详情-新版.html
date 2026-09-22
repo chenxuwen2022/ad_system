@@ -1,0 +1,663 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>素材详情 · WellFlow</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+<style>
+:root{--bg:#0F0F0F;--card:#1A1F14;--card2:#1E2416;--line:#2E3A1E;--green:#CCFF00;--red:#FF6B6B;--yellow:#FAAD14;--blue:#69C0FF;--orange:#FFB35C;--gray:#8A9A78;--pink:#FF9E9E;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78;--t4:#5A6A48}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);font-size:14px;min-height:100vh}
+button,input,select{font-family:inherit;outline:none}
+button{cursor:pointer;border:none;background:none;color:inherit}
+.page{max-width:1400px;margin:0 auto;padding:28px 32px 60px}
+.head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px}
+.eyebrow{font-size:12px;color:var(--t3);letter-spacing:2px;margin-bottom:8px}
+h1{font-size:24px;font-weight:700}
+.close{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;color:var(--t2);font-size:20px}
+.close:hover{background:var(--card2)}
+.hero{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-bottom:24px}
+@media(max-width:1000px){.hero{grid-template-columns:1fr}}
+.player{background:#000;border-radius:12px;aspect-ratio:9/12;max-height:520px;display:grid;place-items:center;position:relative;overflow:hidden}
+.player img,.player video{width:100%;height:100%;object-fit:cover}
+.player .badge{position:absolute;top:12px;right:14px;font-size:11px;color:rgba(255,255,255,.7)}
+.pinfo{padding-top:10px}
+.status{display:inline-block;padding:5px 14px;border-radius:8px;background:rgba(82,196,26,.15);color:#52C41A;font-size:13px;font-weight:600;margin-bottom:16px}
+.status.st-pause{background:rgba(250,173,20,.15);color:var(--yellow)}
+h2{font-size:28px;font-weight:700;margin-bottom:8px}
+.idline{color:var(--t3);font-size:14px;margin-bottom:24px}
+.kv{display:grid;grid-template-columns:100px 1fr;row-gap:14px;column-gap:12px;font-size:14px;margin-bottom:20px}
+.kv .k{color:var(--t3)}
+.kv .v{color:var(--text)}
+.tags{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
+.tag{padding:6px 14px;border-radius:7px;background:rgba(120,160,40,.18);color:var(--green);font-size:13px;border:1px solid #3A5A10}
+.tag.gray{background:var(--card2);color:var(--t2);border-color:var(--line)}
+.edit-tag{color:var(--t3);font-size:13px;margin-left:auto}
+.edit-tag:hover{color:var(--green)}
+.card{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:24px;margin-bottom:18px}
+.card h3{font-size:18px;font-weight:700;margin-bottom:8px}
+.card .desc{color:var(--t3);font-size:13px;margin-bottom:16px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:20px 24px;margin-top:18px}
+@media(max-width:1000px){.grid4{grid-template-columns:repeat(2,1fr)}}
+.filter-group{margin-bottom:14px}
+.filter-label{font-size:13px;color:var(--t3);margin-bottom:8px}
+.filter-select{width:100%;padding:10px 12px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:13px;appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238A9A78' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center}
+.export-btn{padding:10px 18px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:13px;display:flex;align-items:center;gap:6px;float:right}
+.export-btn:hover{border-color:var(--green)}
+.note{font-size:12.5px;color:var(--t3);line-height:1.6;margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+.time-row{display:grid;grid-template-columns:repeat(4,1fr);gap:20px 24px;margin-top:20px;padding-top:20px;border-top:1px solid var(--line)}
+@media(max-width:1000px){.time-row{grid-template-columns:repeat(2,1fr)}}
+.ai3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0;margin-top:20px}
+@media(max-width:1000px){.ai3{grid-template-columns:1fr}}
+.ai3>div{padding:0 24px;border-left:1px solid var(--line)}
+.ai3>div:first-child{border-left:none;padding-left:0}
+@media(max-width:1000px){.ai3>div{border-left:none;padding:20px 0;border-top:1px solid var(--line)}.ai3>div:first-child{border-top:none}}
+.ai3 .lb{color:var(--t3);font-size:13px;margin-bottom:10px}
+.ai3 .ttl{font-size:16px;font-weight:700;margin-bottom:8px}
+.ai3 .ttl.green{color:var(--green)}
+.ai3 .ttl.yellow{color:var(--yellow)}
+.ai3 .num{font-size:13px;color:var(--t2);margin-bottom:14px}
+.ai3 .hint{font-size:13px;color:var(--t3);line-height:1.6}
+.ai-btn{padding:10px 20px;border-radius:8px;background:var(--green);color:#000;font-weight:600;font-size:14px;float:right}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:16px}
+th{text-align:left;padding:14px 16px;color:var(--t3);font-weight:600;font-size:13px;border-bottom:1px solid var(--line)}
+td{padding:18px 16px;border-bottom:1px solid var(--line);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+.metric-name{font-weight:600}
+.metric-value{font-size:22px;font-weight:700;color:var(--green)}
+.metric-other{color:var(--t2)}
+.up{color:#52C41A}.down{color:var(--red)}
+.chart{width:100%;height:320px;margin-top:16px}
+.tabs{display:flex;gap:6px}
+.tabs button{padding:8px 16px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--t2);font-size:13px}
+.tabs button.on{background:var(--green);color:#000;font-weight:600;border-color:var(--green)}
+.mini-btn{padding:8px 14px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:12.5px}
+.mini-btn:hover{border-color:var(--green)}
+.funnel-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:20px}
+@media(max-width:900px){.funnel-row{grid-template-columns:repeat(2,1fr)}}
+.funnel-step{background:rgba(120,160,40,.12);border:1px solid #2E3A1E;border-radius:10px;padding:18px}
+.funnel-step .no{font-size:13px;color:var(--t3)}
+.funnel-step .big{font-size:26px;font-weight:700;color:var(--text);margin:6px 0 14px}
+.funnel-step .nm{font-size:14px;font-weight:600;margin-bottom:4px}
+.funnel-step .sb{font-size:12px;color:var(--t3)}
+.funnel-step .pct{font-size:12px;color:var(--t3);margin-top:6px}
+.compare-card{display:flex;gap:18px;align-items:flex-start;background:rgba(120,160,40,.08);border:1px solid #2E3A1E;border-radius:12px;padding:18px;margin-top:20px}
+.compare-thumb{width:90px;height:110px;background:#000;border-radius:8px;flex-shrink:0;overflow:hidden}
+.compare-thumb img{width:100%;height:100%;object-fit:cover}
+.compare-info h4{font-size:16px;font-weight:700;margin-bottom:4px}
+.compare-info .sub{color:var(--t3);font-size:13px;margin-bottom:6px}
+.compare-info .cond{color:var(--t2);font-size:13px}
+.drop-label{font-size:13px;color:var(--t3)}
+/* 当前素材表现 - 5列 */
+.kpi5{display:grid;grid-template-columns:repeat(5,1fr);gap:0;background:rgba(120,160,40,.12);border:1px solid #2E3A1E;border-radius:12px;margin-top:16px;overflow:hidden}
+@media(max-width:900px){.kpi5{grid-template-columns:repeat(2,1fr)}}
+.kpi5>div{padding:20px;border-right:1px solid #2E3A1E}
+.kpi5>div:last-child{border-right:none}
+@media(max-width:900px){.kpi5>div{border-right:none;border-bottom:1px solid #2E3A1E}}
+.kpi5 .lb{color:var(--t3);font-size:13px;margin-bottom:10px}
+.kpi5 .vl{font-size:20px;font-weight:700}
+/* 情感进度条 */
+.sent-bar{display:flex;height:14px;border-radius:7px;overflow:hidden;width:240px}
+.sent-bar .s{height:100%}
+.sent-bar .sp{background:#CCFF00}
+.sent-bar .sm{background:#8A9A78}
+.sent-bar .sn{background:#FF9E9E}
+/* 榜单卡片 */
+.rank-thumb{width:60px;height:75px;background:#000;border-radius:6px;overflow:hidden;flex-shrink:0}
+.rank-thumb img{width:100%;height:100%;object-fit:cover}
+.rank-row{display:flex;gap:16px;align-items:center;padding:18px 16px;border-bottom:1px solid var(--line)}
+.rank-row:last-child{border-bottom:none}
+.pager{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:16px;font-size:13px;color:var(--t3)}
+/* 共同特点 6列卡片 */
+.feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:20px}
+@media(max-width:1100px){.feat-grid{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:700px){.feat-grid{grid-template-columns:1fr}}
+.feat-card{background:rgba(120,160,40,.08);border:1px solid #2E3A1E;border-radius:12px;padding:18px}
+.feat-card .head-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+.feat-card .cat{font-size:12.5px;color:var(--t3)}
+.feat-card .cnt{font-size:12.5px;color:var(--t3)}
+.feat-card h4{font-size:18px;font-weight:700;margin-bottom:12px}
+.feat-thumb{width:110px;height:140px;background:#000;border-radius:8px;position:relative;overflow:hidden;margin-bottom:14px}
+.feat-thumb img{width:100%;height:100%;object-fit:cover}
+.feat-play{position:absolute;bottom:8px;left:8px;right:8px;background:rgba(0,0,0,.7);color:#fff;font-size:12px;padding:6px 10px;border-radius:6px;text-align:center}
+.feat-metrics{display:flex;gap:32px;margin-bottom:12px}
+.feat-metrics .m .l{font-size:12px;color:var(--t3)}
+.feat-metrics .m .v{font-size:20px;font-weight:700;color:var(--green)}
+.feat-hint{font-size:12.5px;color:var(--t3);margin-bottom:14px;line-height:1.5}
+.feat-divider{border-top:1px solid #2E3A1E;margin-bottom:12px}
+.feat-rec h5{font-size:14px;font-weight:700;margin-bottom:6px}
+.feat-rec p{font-size:13px;color:var(--t2);line-height:1.6}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <div>
+      <div class="eyebrow">MATERIAL WORKSPACE</div>
+      <h1>素材详情</h1>
+    </div>
+    <button class="close" onclick="window.close()">✕</button>
+  </div>
+  <div class="hero">
+    <div class="player" id="playerBox">
+      <img src="https://aka.doubaocdn.com/s/i5DqANPjnO" alt="素材预览">
+      <span class="badge">01 / 03</span>
+    </div>
+    <div class="pinfo">
+      <span class="status" id="statusTag"></span>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <h2 id="matName" style="margin:0"></h2>
+        <button id="btnImg2Video" style="display:none;padding:10px 20px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px">图生视频</button>
+      </div>
+      <div id="imgActions" style="display:none;margin:10px 0">
+        <button onclick="openImgSplit()" style="padding:10px 20px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px">图片裂变</button>
+      </div>
+      <div class="idline" id="matId">ID </div>
+      <div class="kv">
+        <span class="k">商品分类</span><span class="v"></span>
+        <span class="k">作者</span><span class="v"></span>
+        <span class="k">上传时间</span><span class="v"></span>
+        <span class="k">广告平台</span><span class="v"></span>
+        <span class="k">系统标签</span><span class="v"></span>
+      </div>
+      <div class="filter-label" style="margin-bottom:8px;color:var(--t3);font-size:14px">公共标签</div>
+      <div class="tags"><span class="tag"></span><span class="tag"></span></div>
+      <div class="tags">
+        <span style="color:var(--t3);font-size:14px">个人标签</span>
+        <span class="tag gray">暂无个人标签</span>
+        <span class="edit-tag" onclick="openTagModal()">✏️ 编辑标签</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <button class="export-btn">⬇ 导出数据 CSV</button>
+    <h3>素材数据范围</h3>
+    <div class="desc">这份素材在所选规格下表现怎样，比其他图片或视频更好吗？</div>
+    <div class="note" style="border-top:none;padding-top:0;margin-top:0">同一素材用于多个规格时，数据分别统计。请先选择规格，再选择素材。数据截至 。</div>
+    <div class="grid4">
+      <div class="filter-group"><div class="filter-label">投放渠道</div><select class="filter-select"><option>全部渠道</option><option></option><option></option></select></div>
+      <div class="filter-group"><div class="filter-label">查找素材</div><input class="filter-select" type="text" placeholder="名称 / ID，仅查找对象"></div>
+      <div class="filter-group"><div class="filter-label">先找商品（SPU）</div><select class="filter-select"><option>全部定位 SPU</option></select></div>
+      <div class="filter-group"><div class="filter-label">再找颜色款（SKC）</div><select class="filter-select"><option>全部定位 SKC</option></select></div>
+      <div class="filter-group"><div class="filter-label">分析规格（SKU）*</div><select class="filter-select"><option></option></select></div>
+      <div class="filter-group"><div class="filter-label">素材</div><select class="filter-select"><option></option></select></div>
+      <div class="filter-group"><div class="filter-label">限定店铺（可选）</div><select class="filter-select" id="shopFilter"><option value="">全部店铺</option></select></div>
+      <div class="filter-group"><div class="filter-label">限定投放计划（可选）</div><select class="filter-select" id="planFilter"><option value="">全部关联计划</option></select></div>
+      <div class="filter-group"><div class="filter-label">素材类型</div><select class="filter-select"><option>视频</option><option>图片</option></select></div>
+    </div>
+    <div class="note">SPU 是一款商品，SKC 是其颜色款，SKU 是具体颜色与尺码组合。前两项用来找规格；选定 SKU 后才展示分析。更换商品或颜色需重新选规格。</div>
+    <div class="time-row">
+      <div class="filter-group"><div class="filter-label">统计时间</div><select class="filter-select"><option>自定义</option><option>近7天</option><option>近30天</option></select></div>
+      <div class="filter-group"><div class="filter-label">开始日期</div><input type="date" value="" class="filter-select"></div>
+      <div class="filter-group"><div class="filter-label">结束日期</div><input type="date" value="" class="filter-select"></div>
+      <div class="filter-group"><div class="filter-label">已应用</div><div style="color:var(--t2);padding:10px 0"> — </div></div>
+      <div class="filter-group" style="flex:0 0 auto;align-self:flex-end;display:flex;gap:8px"><button onclick="openResetViewModal()" style="padding:10px 20px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:13px;cursor:pointer;white-space:nowrap">重置当前视角</button><button onclick="resetAll()" style="padding:10px 20px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:13px;cursor:pointer;white-space:nowrap">重置全部条件</button></div>
+    </div>
+  </div>
+
+  <div id="resetViewModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
+    <div style="width:640px;max-width:92vw;background:#1E2416;border:1px solid #2E3A1E;border-radius:16px;padding:32px;text-align:center">
+      <h3 style="font-size:22px;font-weight:700;margin-bottom:12px">请选择一份素材及其商品规格</h3>
+      <p style="color:#8A9A78;font-size:14px;line-height:1.6;margin-bottom:24px">同一素材用于多个规格时，数据分别统计。请先选择规格，再选择素材。选定后展示指标、趋势和素材榜单。</p>
+      <div style="display:flex;justify-content:flex-end;gap:10px;padding-top:20px;border-top:1px solid #2E3A1E">
+        <button onclick="closeResetViewModal()" style="padding:10px 22px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px">关闭</button>
+        <button onclick="closeResetViewModal()" style="padding:10px 22px;border-radius:8px;background:#CCFF00;color:#000;font-weight:600;font-size:14px">加入选择</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  function openResetViewModal(){ document.getElementById('resetViewModal').style.display = 'flex'; }
+  function closeResetViewModal(){ document.getElementById('resetViewModal').style.display = 'none'; }
+  function resetAll(){
+    // 清空所有筛选条件
+    document.querySelectorAll('.filter-select').forEach(sel => { sel.selectedIndex = 0; });
+    document.querySelectorAll('input[type="date"]').forEach(d => { d.value = ''; });
+    // 刷新页面数据
+    if (typeof loadShopAndPlans === 'function') loadShopAndPlans();
+  }
+  </script>
+
+  <div class="card">
+    <button class="ai-btn">与 Agent 对话 ↗</button>
+    <h3 style="margin-bottom:6px">✨ AI 投放建议 · 一份素材及其商品规格</h3>
+    <div class="desc" style="margin-bottom:0">根据上方已选条件更新</div>
+    <div style="color:var(--t3);font-size:13px;margin:16px 0 20px"> · 规格： · 全部渠道 · 全部店铺 · 全部关联计划 · 视频 ·  — </div>
+    <div class="ai3">
+      <div><div class="lb"></div><div class="ttl green"></div><div class="num"></div><div class="hint"></div></div>
+      <div><div class="lb"></div><div class="ttl yellow"></div><div class="num"></div><div class="hint"></div></div>
+      <div><div class="lb"></div><div class="ttl"></div><div class="num">成交 —，环比 —；消耗环比 —；ROI 环比 —</div><div class="hint"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>核心投放指标 · 这份素材的投放表现</h3>
+    <div class="desc"> · 规格： · 视频；下方趋势使用相同数据。</div>
+    <table>
+      <thead><tr><th>核心指标</th><th>本期</th><th>上周对照</th><th>周比</th><th>上一周期</th><th>环比</th></tr></thead>
+      <tbody>
+        <tr><td class="metric-name">消耗</td><td class="metric-value">—</td><td class="metric-other">—</td><td class="up">—</td><td class="metric-other">—</td><td class="up">—</td></tr>
+        <tr><td class="metric-name">成交金额</td><td class="metric-value">—</td><td class="metric-other">—</td><td class="up">—</td><td class="metric-other">—</td><td class="up">—</td></tr>
+        <tr><td class="metric-name">点击率</td><td class="metric-value">—</td><td class="metric-other">—</td><td class="up">—</td><td class="metric-other">—</td><td class="up">—</td></tr>
+        <tr><td class="metric-name">转化率</td><td class="metric-value">—</td><td class="metric-other">—</td><td class="down">—</td><td class="metric-other">—</td><td class="down">—</td></tr>
+        <tr><td class="metric-name">ROI</td><td class="metric-value">—</td><td class="metric-other">—</td><td class="down">—</td><td class="metric-other">—</td><td class="down">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 style="margin:0">投放结构明细</h3>
+      <div class="tabs"><button class="on">渠道明细</button><button>计划明细</button></div>
+    </div>
+    <div class="desc">查看这份素材在不同渠道、计划中的表现；只统计所选商品规格。未能关联的数据单独列出。</div>
+    <table>
+      <thead><tr><th>渠道</th><th>消耗</th><th>成交金额</th><th>点击率</th><th>转化率</th><th>ROI</th><th>消耗占比</th><th>成交环比</th><th>操作</th></tr></thead>
+      <tbody>
+        <tr><td></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="up">—</td><td><button class="mini-btn">只看此渠道</button></td></tr>
+        <tr><td></td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="down">—</td><td><button class="mini-btn">只看此渠道</button></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div><h3>这份素材的投放趋势</h3><div class="desc">观察 · 规格： 在所选日期内的变化，和它自己的历史表现比较。</div></div>
+      <div style="text-align:right"><div class="drop-label">每个点代表</div><select class="filter-select" style="width:140px;margin-top:4px"><option>一天</option><option>一小时</option></select></div>
+    </div>
+    <div class="tabs" style="margin:16px 0"><button class="on">消耗</button><button>成交金额</button><button>点击率</button><button>转化率</button><button>ROI</button></div>
+    <div id="trendChart" class="chart"></div>
+    <div class="note" style="border-top:none;padding-top:0;margin-top:8px">本期 —；上周对照 —6-09-03——6-09-09；上一周期 —6-09-03——6-09-09。历史曲线按相对日期对齐。本期为 7 天，两段历史日期相同，曲线会重合。点击图例可隐藏或显示对应曲线。</div>
+  </div>
+
+  <div class="card">
+    <h3>素材对比</h3>
+    <div class="desc">这份素材只和其他视频比较。此处选择仅影响对照图，上方汇总指标不变。</div>
+    <div class="tabs" style="margin:16px 0 20px"><button class="on">消耗</button><button>成交金额</button><button>点击率</button><button>转化率</button><button>ROI</button></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
+      <div><div class="drop-label" style="margin-bottom:8px">当前素材</div><select class="filter-select"><option>视频 · </option></select></div>
+      <div><div class="drop-label" style="margin-bottom:8px">与哪些视频比较</div><select class="filter-select"><option>该规格（SKU）下其他视频</option></select></div>
+      <div><div class="drop-label" style="margin-bottom:8px">再选一份视频单独对比（可选）</div><select class="filter-select"><option>不添加</option></select></div>
+    </div>
+    <div class="compare-card">
+      <div class="compare-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"></div>
+      <div class="compare-info">
+        <h4>当前：</h4>
+        <div class="sub"></div>
+        <div class="sub"></div>
+        <div class="cond">沿用条件：全部渠道 · 全部店铺 · 全部关联计划 · 视频 · —</div>
+      </div>
+    </div>
+    <div id="compareChart" class="chart"></div>
+    <div class="note" style="border-top:none;padding-top:0;margin-top:8px">图片只与图片比较，视频只与视频比较；当前素材在其他规格下的记录也会排除。</div>
+  </div>
+
+  <!-- 当前素材表现 -->
+  <div class="card">
+    <h3>当前素材表现</h3>
+    <div class="desc"> · 亚麻通勤衬衫 / 白色 / L；独立展示，不计入下方参考榜单。</div>
+    <div class="kpi5">
+      <div><div class="lb">消耗</div><div class="vl">—</div></div>
+      <div><div class="lb">成交金额</div><div class="vl">—</div></div>
+      <div><div class="lb">点击率</div><div class="vl">—</div></div>
+      <div><div class="lb">转化率</div><div class="vl">—</div></div>
+      <div><div class="lb">ROI</div><div class="vl">—</div></div>
+    </div>
+  </div>
+
+  <!-- 这份素材投在哪些计划 -->
+  <div class="card">
+    <h3>这份素材投在哪些计划</h3>
+    <table>
+      <thead><tr><th>渠道</th><th>店铺</th><th>计划 / ID</th><th>投放场景</th><th>达人</th><th>阶段</th></tr></thead>
+      <tbody>
+        <tr><td></td><td></td><td><br><span style="color:var(--t3);font-size:12px"></span></td><td></td><td></td><td></td></tr>
+        <tr><td></td><td></td><td><br><span style="color:var(--t3);font-size:12px"></span></td><td></td><td></td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- 商品评价：买家关心哪些卖点 -->
+  <div class="card">
+    <h3>商品评价：买家关心哪些卖点</h3>
+    <div class="desc">亚麻通勤衬衫 / 白色 / L 的商品评价汇总，用来核对素材卖点；不是观看这份素材的用户评价。</div>
+    <table>
+      <thead><tr><th>评价维度</th><th>情感分布</th><th>好评 / 中评 / 差评</th><th>提及覆盖率</th><th>样本量</th><th>素材是否表达该卖点</th></tr></thead>
+      <tbody>
+        <tr>
+          <td style="font-weight:600"></td>
+          <td><div class="sent-bar"><div class="s sp" style="width:57.1%"></div><div class="s sm" style="width:37.2%"></div><div class="s sn" style="width:5.7%"></div></div></td>
+          <td>—</td><td>—</td><td>—</td><td></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600"></td>
+          <td><div class="sent-bar"><div class="s sp" style="width:68.2%"></div><div class="s sm" style="width:17.9%"></div><div class="s sn" style="width:14%"></div></div></td>
+          <td>—</td><td>—</td><td>—</td><td></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600"></td>
+          <td><div class="sent-bar"><div class="s sp" style="width:79.2%"></div><div class="s sm" style="width:14.9%"></div><div class="s sn" style="width:5.9%"></div></div></td>
+          <td>—</td><td>—</td><td>—</td><td></td>
+        </tr>
+        <tr>
+          <td style="font-weight:600"></td>
+          <td><div class="sent-bar"><div class="s sp" style="width:56.9%"></div><div class="s sm" style="width:28.9%"></div><div class="s sn" style="width:14.2%"></div></div></td>
+          <td>—</td><td>—</td><td>—</td><td></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="note" style="border-top:none;padding-top:0;margin-top:16px">好评/中评/差评占比只看提到该卖点的评价；提及覆盖率看这些评价占商品全部评价的比例。一条评价可以提到多个卖点。这里的商品评价不随投放渠道、计划或图片/视频筛选改变。</div>
+  </div>
+
+  <!-- 该规格下其他视频榜单 -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <h3 style="margin:0">该规格下其他视频榜单</h3>
+      <div class="tabs"><button class="on">优秀素材</button><button>上升素材</button></div>
+    </div>
+    <div class="desc">该规格下的其他视频 · 全部渠道 · 全部店铺 · 全部关联计划 · 视频。每行是一份素材在一个商品规格下的表现；点击素材查看详情。</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:24px;margin:20px 0 12px">
+      <div><div class="drop-label" style="margin-bottom:8px">查找榜单素材</div><input class="filter-select" placeholder="名称 / ID"></div>
+      <div><div class="drop-label" style="margin-bottom:8px">排序指标</div><select class="filter-select"><option>ROI</option><option>消耗</option><option>成交金额</option></select></div>
+      <div><div class="drop-label" style="margin-bottom:8px">最小值</div><input class="filter-select" placeholder="如 0.03 表示 3%"></div>
+      <div><div class="drop-label" style="margin-bottom:8px">最大值</div><input class="filter-select" placeholder=""></div>
+    </div>
+    <div style="color:var(--t3);font-size:13px;margin-bottom:16px">仅筛选本榜单，不改变上方指标或下方共性分析。点击率/增幅请输入小数，例如 0.03 表示 3%。优秀素材：从有消耗的素材与规格组合中，保留消耗不低于中位数的一半左右，再按所选指标排序。已排除当前素材，供你寻找替换或复测方向。</div>
+    <table>
+      <thead><tr><th>素材 / 商品规格（SKU）</th><th>消耗</th><th>成交金额</th><th>点击率</th><th>转化率</th><th>ROI</th><th>成交环比</th><th>创意复刻</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>
+            <div style="display:flex;gap:14px;align-items:center">
+              <div class="rank-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"></div>
+              <div><div style="font-weight:600"></div><div style="color:var(--t3);font-size:12px;margin-top:4px"></div></div>
+            </div>
+          </td>
+          <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td class="down">—</td>
+          <td><button class="mini-btn" style="margin-bottom:6px">一键转视频</button><br><button class="mini-btn">一键裂变多图</button></td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="pager">
+      共 0 条 <button class="mini-btn">上一页</button> <span>1 / 1</span> <button class="mini-btn">下一页</button>
+    </div>
+  </div>
+
+  <!-- 该规格下其他视频的共同特点 -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <h3>✨ 该规格下其他视频的共同特点</h3>
+      <button class="mini-btn" style="border-color:var(--green);color:var(--green)">与 Agent 深入讨论</button>
+    </div>
+    <div class="desc">从该规格下的其他视频中寻找可复用的内容特点；独立选择样本，不随榜单的搜索或排序改变。</div>
+    <div style="color:var(--t3);font-size:13px;margin-bottom:8px">正在分析视频的共同特点；样本与指标都只包含视频。</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:16px 0">
+      <h4 style="font-size:15px;font-weight:700;margin:0">单份素材观察</h4>
+      <span style="color:var(--t3);font-size:13px">点击缩略图播放视频</span>
+    </div>
+    <div style="color:var(--t3);font-size:13px;margin-bottom:16px">当前范围的独立素材不足 2 份，以下仅展示素材特点；扩大范围后可比较共性。</div>
+    <div class="feat-grid">
+      <div class="feat-card">
+        <div class="head-row"><span class="cat">主体表达</span><span class="cnt">1/1 份</span></div>
+        <h4></h4>
+        <div class="feat-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"><div class="feat-play">▶ 播放视频</div></div>
+        <div class="feat-metrics"><div class="m"><div class="l">CTR</div><div class="v">—</div></div><div class="m"><div class="l">ROI</div><div class="v">—</div></div></div>
+        <div class="feat-hint"></div>
+        <div class="feat-divider"></div>
+        <div class="feat-rec"><h5>复用建议</h5><p></p></div>
+      </div>
+      <div class="feat-card">
+        <div class="head-row"><span class="cat">场景氛围</span><span class="cnt">1/1 份</span></div>
+        <h4></h4>
+        <div class="feat-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"><div class="feat-play">▶ 播放视频</div></div>
+        <div class="feat-metrics"><div class="m"><div class="l">CTR</div><div class="v">—</div></div><div class="m"><div class="l">ROI</div><div class="v">—</div></div></div>
+        <div class="feat-hint"></div>
+        <div class="feat-divider"></div>
+        <div class="feat-rec"><h5>复用建议</h5><p></p></div>
+      </div>
+      <div class="feat-card">
+        <div class="head-row"><span class="cat">构图方式</span><span class="cnt">1/1 份</span></div>
+        <h4></h4>
+        <div class="feat-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"><div class="feat-play">▶ 播放视频</div></div>
+        <div class="feat-metrics"><div class="m"><div class="l">CTR</div><div class="v">—</div></div><div class="m"><div class="l">ROI</div><div class="v">—</div></div></div>
+        <div class="feat-hint"></div>
+        <div class="feat-divider"></div>
+        <div class="feat-rec"><h5>复用建议</h5><p></p></div>
+      </div>
+      <div class="feat-card">
+        <div class="head-row"><span class="cat">卖点呈现</span><span class="cnt">1/1 份</span></div>
+        <h4></h4>
+        <div class="feat-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"><div class="feat-play">▶ 播放视频</div></div>
+        <div class="feat-metrics"><div class="m"><div class="l">CTR</div><div class="v">—</div></div><div class="m"><div class="l">ROI</div><div class="v">—</div></div></div>
+        <div class="feat-hint"></div>
+        <div class="feat-divider"></div>
+        <div class="feat-rec"><h5>复用建议</h5><p></p></div>
+      </div>
+      <div class="feat-card">
+        <div class="head-row"><span class="cat">视频开头</span><span class="cnt">1/1 份视频</span></div>
+        <h4></h4>
+        <div class="feat-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"><div class="feat-play">▶ 播放视频</div></div>
+        <div class="feat-metrics"><div class="m"><div class="l">CTR</div><div class="v">—</div></div><div class="m"><div class="l">ROI</div><div class="v">—</div></div></div>
+        <div class="feat-hint"></div>
+        <div class="feat-divider"></div>
+        <div class="feat-rec"><h5>复用建议</h5><p></p></div>
+      </div>
+      <div class="feat-card">
+        <div class="head-row"><span class="cat">视频节奏</span><span class="cnt">1/1 份视频</span></div>
+        <h4></h4>
+        <div class="feat-thumb"><img src="https://aka.doubaocdn.com/s/i5DqANPjnO"><div class="feat-play">▶ 播放视频</div></div>
+        <div class="feat-metrics"><div class="m"><div class="l">CTR</div><div class="v">—</div></div><div class="m"><div class="l">ROI</div><div class="v">—</div></div></div>
+        <div class="feat-hint"></div>
+        <div class="feat-divider"></div>
+        <div class="feat-rec"><h5>复用建议</h5><p></p></div>
+      </div>
+    </div>
+    <div class="note" style="border-top:none;padding-top:0;margin-top:16px">在当前范围的视频中，先按消耗中位数筛选，再按 ROI 选取最多 5 份素材。参考数据只包含视频；同一素材用于多个规格时只计一份内容，指标保留各规格归因。共同特点用于测试方向，不代表效果归因。</div>
+    <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--line);color:var(--t3);font-size:14px">▸ 补充竞品素材与行业资料 · 0 份</div>
+  </div>
+
+  <!-- 素材转化漏斗 -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+      <div><h3>素材转化漏斗</h3><div class="desc"> —  · 全部渠道 · 全部店铺 · 全部关联计划 · 视频</div></div>
+      <div style="text-align:right"><div class="drop-label">整体成交转化率</div><div style="font-size:32px;font-weight:700;color:var(--green)">—</div></div>
+    </div>
+    <div class="funnel-row">
+      <div class="funnel-step"><div class="no">01</div><div class="big">—</div><div class="nm">广告素材点击</div><div class="sb">漏斗入口</div><div class="pct"></div></div>
+      <div class="funnel-step"><div class="no">02</div><div class="big">—</div><div class="nm">详情页曝光</div><div class="sb">上一步转化 —</div><div class="pct">较入口 —</div></div>
+      <div class="funnel-step"><div class="no">03</div><div class="big">—</div><div class="nm">创单</div><div class="sb">上一步转化 —</div><div class="pct">较入口 —</div></div>
+      <div class="funnel-step"><div class="no">04</div><div class="big">—</div><div class="nm">成交</div><div class="sb">上一步转化 6—</div><div class="pct">较入口 —</div></div>
+    </div>
+    <div class="note" style="border-top:none;padding-top:0;margin-top:16px">事件量口径：点击次数 → 详情页曝光次数 → 创建订单数 → 成交订单数；非去重人数，各阶段应使用同一归因窗口。</div>
+  </div>
+</div>
+
+<script>
+const qs = new URLSearchParams(location.search);
+const MNAME = qs.get("name") || "";
+const MTYPE = qs.get("type") || "";
+if (MNAME) {
+  var fn = MNAME;
+  var ext = fn.split('.').pop().toLowerCase();
+  var isVideo = ['mp4','mov','avi','mkv','webm'].indexOf(ext) >= 0;
+  var idName = fn.replace(/\.[^.]+$/, "");
+  document.getElementById("matName").textContent = idName;
+  document.getElementById("matId").textContent = "ID " + idName + " · 成片 · " + (isVideo ? "视频" : "图片");
+  document.title = idName + " · WellFlow";
+  const url = "/api/uploaded_media/" + encodeURIComponent(fn);
+  const player = document.getElementById("playerBox");
+  if (isVideo) {
+    player.innerHTML = '<video src="' + url + '" muted controls autoplay loop></video><span class="badge">本地素材</span>';
+  } else {
+    player.innerHTML = '<img src="' + url + '" alt=""><span class="badge">本地素材</span>';
+  }
+  const st = document.getElementById("statusTag");
+  st.className = "status st-pause";
+  st.textContent = "未投放";
+}
+const trendChart = echarts.init(document.getElementById('trendChart'));
+const days = ['09-10','09-11','09-12','09-13','09-14','09-15','09-16'];
+trendChart.setOption({
+  backgroundColor:'transparent',
+  grid:{left:60,right:20,top:30,bottom:40},
+  legend:{textStyle:{color:'#C8D4B8'},top:0},
+  tooltip:{trigger:'axis',backgroundColor:'#1A1F14',borderColor:'#2E3A1E',textStyle:{color:'#fff'}},
+  xAxis:{type:'category',data:days,axisLine:{lineStyle:{color:'#3A4432'}},axisLabel:{color:'#8A9A78'}},
+  yAxis:{type:'value',axisLabel:{color:'#8A9A78',formatter:'¥{value}'},splitLine:{lineStyle:{color:'#2A3320'}}},
+  series:[
+    {name:'本期',type:'line',data:[0,0,0,0,0,0,0],smooth:true,lineStyle:{color:'#CCFF00',width:3},itemStyle:{color:'#CCFF00'}},
+    {name:'上周对照',type:'line',data:[0,0,0,0,0,0,0],smooth:true,lineStyle:{color:'#FFB35C',width:2,type:'dashed'},itemStyle:{color:'#FFB35C'}},
+    {name:'上一周期',type:'line',data:[0,0,0,0,0,0,0],smooth:true,lineStyle:{color:'#69C0FF',width:2,type:'dashed'},itemStyle:{color:'#69C0FF'}}
+  ]
+});
+const cmpChart = echarts.init(document.getElementById('compareChart'));
+cmpChart.setOption({
+  backgroundColor:'transparent',
+  grid:{left:60,right:20,top:30,bottom:40},
+  legend:{textStyle:{color:'#C8D4B8'},top:0},
+  tooltip:{trigger:'axis',backgroundColor:'#1A1F14',borderColor:'#2E3A1E',textStyle:{color:'#fff'}},
+  xAxis:{type:'category',data:days,axisLine:{lineStyle:{color:'#3A4432'}},axisLabel:{color:'#8A9A78'}},
+  yAxis:{type:'value',axisLabel:{color:'#8A9A78',formatter:'¥{value}'},splitLine:{lineStyle:{color:'#2A3320'}}},
+  series:[
+    {name:'当前：',type:'line',data:[820,650,780,820,590,620,920],smooth:true,lineStyle:{color:'#CCFF00',width:3},itemStyle:{color:'#CCFF00'}},
+    {name:'该规格（SKU）下其他视频 · 平均值',type:'line',data:[880,920,560,1180,1050,620,810],smooth:true,lineStyle:{color:'#69C0FF',width:2,type:'dashed'},itemStyle:{color:'#69C0FF'}}
+  ]
+});
+window.addEventListener('resize',()=>{trendChart.resize();cmpChart.resize();});
+</script>
+<!-- 编辑标签弹窗 -->
+<div id="tagModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:9999;align-items:center;justify-content:center">
+  <div style="width:560px;max-width:92vw;background:#1E2416;border:1px solid #2E3A1E;border-radius:16px;padding:28px">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:20px">
+      <div>
+        <div style="font-size:11px;color:#8A9A78;letter-spacing:2px;margin-bottom:6px">MATERIAL WORKSPACE</div>
+        <h3 style="font-size:22px;font-weight:700">编辑个人标签</h3>
+      </div>
+      <button onclick="closeTagModal()" style="width:32px;height:32px;border-radius:8px;display:grid;place-items:center;color:#C8D4B8;font-size:18px;background:transparent">✕</button>
+    </div>
+    <div id="tagModalName" style="color:#8A9A78;font-size:14px;margin-bottom:20px"></div>
+    <div style="font-size:14px;margin-bottom:8px">个人标签</div>
+    <textarea id="tagInput" rows="5" placeholder="重点关注，待复盘（逗号分隔，清空可移除全部标签）" style="width:100%;padding:14px;border-radius:10px;background:#0F0F0F;border:1px solid #2E3A1E;color:#fff;font-size:14px;resize:vertical;font-family:inherit"></textarea>
+    <div id="tagPreview" style="margin-top:10px;font-size:14px;color:#CCFF00"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:24px;padding-top:20px;border-top:1px solid #2E3A1E">
+      <button onclick="closeTagModal()" style="padding:10px 22px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px">取消</button>
+      <button onclick="saveTags()" style="padding:10px 22px;border-radius:8px;background:#CCFF00;color:#000;font-weight:600;font-size:14px">保存标签</button>
+    </div>
+  </div>
+</div>
+<script>
+async function loadShopAndPlans(){
+  const shopSel=document.getElementById('shopFilter');
+  const planSel=document.getElementById('planFilter');
+  if(!shopSel||!planSel)return;
+  try{
+    const r=await fetch('/api/advertiser_accounts');
+    const j=await r.json();
+    if(j.success&&j.data){j.data.forEach(s=>{const o=document.createElement('option');o.value=s.advertiser_id;o.textContent=s.name||s.advertiser_id;shopSel.appendChild(o);});}
+  }catch(e){console.error('shops',e);}
+  shopSel.onchange=async function(){
+    const aid=this.value;
+    planSel.innerHTML='';
+    const o0=document.createElement('option');o0.value='';o0.textContent='全部关联计划';planSel.appendChild(o0);
+    if(!aid)return;
+    try{
+      const r=await fetch('/api/plans?advertiser_id='+encodeURIComponent(aid));
+      const j=await r.json();
+      if(j.success&&j.plans){j.plans.forEach(p=>{const o=document.createElement('option');o.value=p.ad_id;o.textContent=p.name||p.ad_id;planSel.appendChild(o);});}
+    }catch(e){console.error('plans',e);}
+  };
+}
+loadShopAndPlans();
+
+// 如果是图片素材，显示图片裂变和图生视频按钮
+if (typeof MTYPE !== 'undefined' && MTYPE === 'image') {
+  const ia = document.getElementById('imgActions');
+  const b2v = document.getElementById('btnImg2Video');
+  if (ia) ia.style.display = 'block';
+  if (b2v) b2v.style.display = 'inline-block';
+}
+
+function openImgSplit(){
+  const qs = new URLSearchParams();
+  qs.set('name', MNAME);
+  qs.set('path', MPATH);
+  qs.set('type', MTYPE);
+  window.location.href = '16-图片裂变.html?' + qs.toString();
+}
+
+let currentTags = [];
+async function openTagModal(){
+  const fp = (typeof MPATH !== 'undefined' && MPATH) || (typeof MNAME !== 'undefined' && MNAME) || '';
+  const nm = (typeof document.getElementById('matName') !== 'undefined') ? document.getElementById('matName').textContent : '';
+  document.getElementById('tagModalName').textContent = nm;
+  document.getElementById('tagModal').style.display = 'flex';
+  try {
+    const r = await fetch('/api/material_marks?file_path=' + encodeURIComponent(fp));
+    const j = await r.json();
+    if (j.success && j.data && j.data.tags) {
+      currentTags = j.data.tags;
+      document.getElementById('tagInput').value = currentTags.join('，');
+      document.getElementById('tagPreview').textContent = currentTags.join(' ');
+    }
+  } catch(e) { console.error(e); }
+}
+function closeTagModal(){ document.getElementById('tagModal').style.display = 'none'; }
+(function(){
+  const inp = document.getElementById('tagInput');
+  if (inp) inp.addEventListener('input', function(){
+    const v = this.value;
+    const tags = v.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+    document.getElementById('tagPreview').textContent = tags.join(' ');
+  });
+})();
+async function saveTags(){
+  const fp = (typeof MPATH !== 'undefined' && MPATH) || (typeof MNAME !== 'undefined' && MNAME) || '';
+  const v = document.getElementById('tagInput').value;
+  const tags = v.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+  try {
+    const r = await fetch('/api/material_marks', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({file_path: fp, tags: tags})
+    });
+    const j = await r.json();
+    if (j.success) {
+      currentTags = tags;
+      const wraps = document.querySelectorAll('.tags');
+      const wrap = wraps[1];
+      if (wrap) {
+        wrap.innerHTML = '';
+        const lb = document.createElement('span');
+        lb.style.cssText = 'color:#8A9A78;font-size:14px';
+        lb.textContent = '个人标签';
+        wrap.appendChild(lb);
+        if (tags.length === 0) {
+          const empty = document.createElement('span');
+          empty.className = 'tag gray';
+          empty.textContent = '暂无个人标签';
+          wrap.appendChild(empty);
+        } else {
+          tags.forEach(t => {
+            const s = document.createElement('span');
+            s.className = 'tag';
+            s.textContent = t;
+            wrap.appendChild(s);
+          });
+        }
+        const edit = document.createElement('span');
+        edit.className = 'edit-tag';
+        edit.textContent = '✏️ 编辑标签';
+        edit.onclick = openTagModal;
+        wrap.appendChild(edit);
+      }
+      closeTagModal();
+    } else {
+      alert('保存失败：' + (j.error || ''));
+    }
+  } catch(e) { alert('保存失败：' + e); }
+}
+</script>
+</body>
+</html>

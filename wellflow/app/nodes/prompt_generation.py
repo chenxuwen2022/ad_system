@@ -4,7 +4,7 @@
   - scheme: 单个 12 维商拍方案 JSON（来自 Node2 PlanningScheme）
   - product_insight: Node1 的 Markdown 识别报告（可选，补充上下文）
   - product_images: 商品图 data URI 列表
-  - model_images: 用户上传的模特图 data URI 列表（可选）
+  - reference_images: 三类参考图 {"mannequin": [...], "scene": [...], "outfit": [...]}（可选，data URI）
   - user_requirement: 用户原始创作需求（可选）
 
 输出：
@@ -65,6 +65,28 @@ def _extract_json(text: str) -> dict[str, Any]:
 
     print(f"[prompt_generation] ⚠️ 无法解析 JSON, 原文本前200字: {text[:200]!r}", flush=True)
     return {}
+
+
+def _extract_prompt_subtitle(raw_text: str, max_chars: int = 6) -> str:
+    """从 LLM 原始输出里抽 `#NAME: xxx` 那一行，清理后返回 ≤max_chars 字的 subtitle。
+
+    LLM 按 prompt 约定会在 JSON 之后另起一行输出 `#NAME: 天台逆光剪影` 之类。
+    万一没按格式来，就返回空字符串，调用方负责 fallback。
+    """
+    if not raw_text:
+        return ""
+    m = re.search(r"(?:^|\n)\s*#NAME\s*[:：]\s*(.+?)\s*$", raw_text, flags=re.MULTILINE)
+    if not m:
+        return ""
+    subtitle = m.group(1).strip()
+    # 去掉可能的 markdown / 引号 / 代码块包裹
+    subtitle = subtitle.strip("`\"'，。,.；;!！?？、· \t")
+    if not subtitle:
+        return ""
+    # 截断到 max_chars（按字符数，中文=1）
+    if len(subtitle) > max_chars:
+        subtitle = subtitle[:max_chars]
+    return subtitle
 
 
 # ---------------------------------------------------------------------------
@@ -222,7 +244,7 @@ async def stream_generate_prompt(
     scheme: dict[str, Any],
     product_insight: str = "",
     product_images: list[str] | None = None,
-    model_images: list[str] | None = None,
+    reference_images: dict[str, list[str]] | None = None,
     user_requirement: str = "",
     reasoning_effort: str | None = None,
     variant_index: int | None = None,
@@ -235,7 +257,7 @@ async def stream_generate_prompt(
     from wellflow.app.config import settings
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
 
     system_prompt = GENERATE_IMAGE_PROMPT
 
@@ -260,34 +282,68 @@ async def stream_generate_prompt(
             "光影、模特姿势或场景氛围，使这一份与生图结果和同方案的其他变体明显区分。"
         )
 
+    # —— refs 结构化拆分 ——
     product_images = product_images or []
-    model_images = model_images or []
+    ref_images = reference_images or {}
+    mannequin_images = ref_images.get("mannequin") or []
+    scene_images = ref_images.get("scene") or []
+    outfit_images = ref_images.get("outfit") or []
 
-    # 显式告诉 VLM 图片编号语义（仅在有图时附加）
+    # 固定顺序拼接：商品图 → mannequin → scene → outfit
+    all_images = product_images + mannequin_images + scene_images + outfit_images
+
+    # —— 编号范围计算 ——
     n_prod = len(product_images)
-    n_model = len(model_images)
-    if n_prod or n_model:
-        ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
+    n_m = len(mannequin_images)
+    n_s = len(scene_images)
+    n_o = len(outfit_images)
+
+    start_m = n_prod + 1 if n_prod else 1
+    end_m = start_m + n_m - 1 if n_m else start_m - 1
+    start_s = end_m + 1 if n_m else start_m
+    end_s = start_s + n_s - 1 if n_s else start_s - 1
+    start_o = end_s + 1 if n_s else start_s
+    end_o = start_o + n_o - 1 if n_o else start_o - 1
+
+    has_any_ref = n_prod + n_m + n_s + n_o > 0
+    if has_any_ref:
+        ref_lines = [f"共 {n_prod + n_m + n_s + n_o} 张参考图，编号含义如下："]
         if n_prod:
-            ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
-        if n_model:
-            ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（人脸、体型、气质）")
+            ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质，用于保证商品一致性）")
+        if n_m:
+            ref_lines.append(f"• 第 {start_m} ~ {end_m} 张（共 {n_m} 张）= 模特参考图（人脸、体型、气质，用于保证模特特征一致性）")
+        if n_s:
+            ref_lines.append(f"• 第 {start_s} ~ {end_s} 张（共 {n_s} 张）= 场景参考图（环境、光线、氛围，用于保证场景一致性）")
+        if n_o:
+            ref_lines.append(f"• 第 {start_o} ~ {end_o} 张（共 {n_o} 张）= 穿搭参考图（服装搭配、叠穿、配饰，用于保证穿搭呈现一致性）")
         user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
 
-    # ⚠️ 有模特图时追加强制约束：确保 prompt 中的模特描述与参考图一致
-    if n_model:
+    # —— 按类型注入约束（每类只在有内容时注入）——
+    if n_m:
         user_text_parts.append(
-            "【模特参考图约束】\n"
-            "参考图中的模特是最终生图的人脸/体型/气质基准，必须严格参照模特图的特征，"
-            "确保输出的 14 维 JSON 中 model 字段（性别、年龄、脸型、五官、肤色、发型、体型、气质）"
-            "与参考图中的模特高度一致，不要自行替换或臆造模特特征。"
+            f"【模特参考图约束】\n"
+            f"请严格参考第 {start_m} ~ {end_m} 张模特参考图的人脸/体型/气质特征，"
+            f"确保输出的 14 维 JSON 中 model 字段（性别、年龄、脸型、五官、肤色、发型、体型、气质）"
+            f"与参考图高度一致，不得自行替换或臆造模特特征。"
+        )
+    if n_s:
+        user_text_parts.append(
+            f"【场景参考图约束】\n"
+            f"请严格参考第 {start_s} ~ {end_s} 张场景参考图的环境、光线、氛围、空间布局，"
+            f"确保输出的 14 维 JSON 中 scene 字段（location_type、background、material、weather_time）"
+            f"与参考图高度一致，不得自行臆造未出现的场景元素。"
+        )
+    if n_o:
+        user_text_parts.append(
+            f"【穿搭参考图约束】\n"
+            f"请严格参考第 {start_o} ~ {end_o} 张穿搭参考图的服装搭配、叠穿方式、配饰、整体造型逻辑，"
+            f"确保输出的 14 维 JSON 中 clothing 字段（category、color_blocking、silhouette、key_design）"
+            f"与参考图一致，不得自行修改服装的搭配组合。"
         )
 
     user_text_parts.append(
         f"请按 System Prompt 的 14 维结构输出 JSON。"
     )
-
-    all_images = product_images + model_images
 
     async for delta in pool.stream_chat_with_images(
         system=system_prompt,
@@ -309,7 +365,7 @@ async def generate_prompt_for_scheme(
     scheme: dict[str, Any],
     product_insight: str = "",
     product_images: list[str] | None = None,
-    model_images: list[str] | None = None,
+    reference_images: dict[str, list[str]] | None = None,
     user_requirement: str = "",
     reasoning_effort: str | None = None,
     variant_index: int | None = None,
@@ -326,7 +382,7 @@ async def generate_prompt_for_scheme(
     from wellflow.app.config import settings
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
 
     system_prompt = GENERATE_IMAGE_PROMPT
 
@@ -350,32 +406,63 @@ async def generate_prompt_for_scheme(
             "光影、模特姿势或场景氛围，使这一份与生图结果和同方案的其他变体明显区分。"
         )
 
+    # —— refs 结构化拆分 ——
     product_images = product_images or []
-    model_images = model_images or []
+    ref_images = reference_images or {}
+    mannequin_images = ref_images.get("mannequin") or []
+    scene_images = ref_images.get("scene") or []
+    outfit_images = ref_images.get("outfit") or []
 
-    # 显式告诉 VLM 图片编号语义（仅在有图时附加）
+    all_images = product_images + mannequin_images + scene_images + outfit_images
+
     n_prod = len(product_images)
-    n_model = len(model_images)
-    if n_prod or n_model:
-        ref_lines = [f"共 {n_prod + n_model} 张参考图，编号含义如下："]
+    n_m = len(mannequin_images)
+    n_s = len(scene_images)
+    n_o = len(outfit_images)
+
+    start_m = n_prod + 1 if n_prod else 1
+    end_m = start_m + n_m - 1 if n_m else start_m - 1
+    start_s = end_m + 1 if n_m else start_m
+    end_s = start_s + n_s - 1 if n_s else start_s - 1
+    start_o = end_s + 1 if n_s else start_s
+    end_o = start_o + n_o - 1 if n_o else start_o - 1
+
+    has_any_ref = n_prod + n_m + n_s + n_o > 0
+    if has_any_ref:
+        ref_lines = [f"共 {n_prod + n_m + n_s + n_o} 张参考图，编号含义如下："]
         if n_prod:
-            ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质）")
-        if n_model:
-            ref_lines.append(f"• 第 {n_prod + 1} ~ {n_prod + n_model} 张（共 {n_model} 张）= 模特图（人脸、体型、气质）")
+            ref_lines.append(f"• 第 1 ~ {n_prod} 张（共 {n_prod} 张）= 商品图（服装外观、颜色、细节、材质，用于保证商品一致性）")
+        if n_m:
+            ref_lines.append(f"• 第 {start_m} ~ {end_m} 张（共 {n_m} 张）= 模特参考图（人脸、体型、气质，用于保证模特特征一致性）")
+        if n_s:
+            ref_lines.append(f"• 第 {start_s} ~ {end_s} 张（共 {n_s} 张）= 场景参考图（环境、光线、氛围，用于保证场景一致性）")
+        if n_o:
+            ref_lines.append(f"• 第 {start_o} ~ {end_o} 张（共 {n_o} 张）= 穿搭参考图（服装搭配、叠穿、配饰，用于保证穿搭呈现一致性）")
         user_text_parts.append("【参考图编号说明】\n" + "\n".join(ref_lines))
 
-    # ⚠️ 有模特图时追加强制约束：确保 prompt 中的模特描述与参考图一致
-    if n_model:
+    if n_m:
         user_text_parts.append(
-            "【模特参考图约束】\n"
-            "参考图中的模特是最终生图的人脸/体型/气质基准，必须严格参照模特图的特征，"
-            "确保输出的 14 维 JSON 中 model 字段（性别、年龄、脸型、五官、肤色、发型、体型、气质）"
-            "与参考图中的模特高度一致，不要自行替换或臆造模特特征。"
+            f"【模特参考图约束】\n"
+            f"请严格参考第 {start_m} ~ {end_m} 张模特参考图的人脸/体型/气质特征，"
+            f"确保输出的 14 维 JSON 中 model 字段（性别、年龄、脸型、五官、肤色、发型、体型、气质）"
+            f"与参考图高度一致，不得自行替换或臆造模特特征。"
+        )
+    if n_s:
+        user_text_parts.append(
+            f"【场景参考图约束】\n"
+            f"请严格参考第 {start_s} ~ {end_s} 张场景参考图的环境、光线、氛围、空间布局，"
+            f"确保输出的 14 维 JSON 中 scene 字段（location_type、background、material、weather_time）"
+            f"与参考图高度一致，不得自行臆造未出现的场景元素。"
+        )
+    if n_o:
+        user_text_parts.append(
+            f"【穿搭参考图约束】\n"
+            f"请严格参考第 {start_o} ~ {end_o} 张穿搭参考图的服装搭配、叠穿方式、配饰、整体造型逻辑，"
+            f"确保输出的 14 维 JSON 中 clothing 字段（category、color_blocking、silhouette、key_design）"
+            f"与参考图一致，不得自行修改服装的搭配组合。"
         )
 
     user_text_parts.append("请按 System Prompt 的 14 维结构输出 JSON。")
-
-    all_images = product_images + model_images
 
     _variant_label = (
         f" variant {variant_index+1}/{variant_total}"
@@ -383,7 +470,7 @@ async def generate_prompt_for_scheme(
         else ""
     )
     print(f"[prompt_generation] 调用: scheme #{scheme_index}{_variant_label}, "
-          f"product_images={n_prod}, model_images={n_model}, "
+          f"product_images={n_prod}, mannequin={n_m}, scene={n_s}, outfit={n_o}, "
           f"reasoning_effort={effort}",
           flush=True)
 
@@ -402,9 +489,11 @@ async def generate_prompt_for_scheme(
 
     detail = _extract_json(raw)
     prompt, negative_prompt = _json_to_natural_prompt(detail)
+    subtitle = _extract_prompt_subtitle(raw)
 
     print(f"[prompt_generation] ✅ scheme #{scheme_index}{_variant_label}: prompt len={len(prompt)}, "
-          f"negative_prompt={'有' if negative_prompt else '无'}", flush=True)
+          f"negative_prompt={'有' if negative_prompt else '无'}, "
+          f"subtitle={subtitle!r}", flush=True)
 
     return {
         "prompt": prompt,
@@ -414,4 +503,5 @@ async def generate_prompt_for_scheme(
         "thinking_text": thinking_text,
         "scheme_index": scheme_index,
         "scheme_name": scheme_name,
+        "prompt_subtitle": subtitle,
     }

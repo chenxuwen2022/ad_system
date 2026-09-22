@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WellFlow · AI 电商商拍创作平台</title>
+<style>
+:root{
+  --brand-green:#CCFF00; --brand-green-soft:#1A2E0A; --brand-green-deep:#A8D400;
+  --ink-900:#FFFFFF; --ink-700:#B8B8B8; --ink-500:#8A8A8A; --ink-400:#6A6A6A; --ink-300:#5A5A5A;
+  --ink-200:#3A3A3A; --ink-100:#2A2A2A; --pearl:#0F0F0F; --pearl-2:#1A1A1A;
+  --border:#2A2A2A; --border-strong:#3A3A3A;
+  --success-bg:#1A2E0A; --warn-bg:#3A2A10; --error-bg:#3A1414;
+  --radius-md:10px; --radius-lg:16px; --radius-xl:24px;
+  --shadow-md:0 4px 12px rgba(10,10,10,.08),0 2px 4px rgba(10,10,10,.04);
+  --shadow-lg:0 20px 40px rgba(10,10,10,.12),0 8px 16px rgba(10,10,10,.06);
+  --font:'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);font-size:15px;line-height:1.6;color:var(--ink-900);background:var(--pearl);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input,textarea,select{font-family:inherit;font-size:inherit;outline:none}
+img{display:block;max-width:100%}
+
+/* ===== Top Nav ===== */
+.top-nav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:24px;height:60px;padding:0 28px;background:#0F0F0F;border-bottom:1px solid var(--border)}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
+.nav-logo-mark{width:26px;height:26px;border-radius:7px;background:var(--brand-green);display:grid;place-items:center;font-size:13px;font-weight:800;color:#0A0A0A}
+.nav-links{display:flex;gap:4px;flex:1}
+.nav-link{padding:8px 16px;border-radius:999px;font-size:14px;color:var(--ink-500);transition:.15s}
+.nav-link:hover{background:var(--pearl-2);color:var(--ink-900)}
+.nav-link.active{background:var(--brand-green);color:#0A0A0A;font-weight:600}
+.nav-right{display:flex;align-items:center;gap:14px}
+.icon-btn{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;color:var(--ink-700)}
+.icon-btn:hover{background:var(--pearl-2)}
+.nav-avatar{width:34px;height:34px;border-radius:50%;background:#333;color:#fff;display:grid;place-items:center;font-size:14px;font-weight:600}
+
+/* ===== Layout ===== */
+.page{max-width:1280px;margin:0 auto;padding:28px}
+.hero{margin-bottom:24px}
+.hero h1{font-size:28px;font-weight:700;letter-spacing:-.5px}
+.hero p{color:var(--ink-500);margin-top:6px;font-size:15px}
+.grid{display:grid;grid-template-columns:420px 1fr;gap:24px;align-items:start}
+@media(max-width:1080px){.grid{grid-template-columns:1fr}}
+
+.card{background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-lg);padding:22px}
+.card+.card{margin-top:18px}
+.card-title{font-size:15px;font-weight:600;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.card-title .req{color:var(--error);font-size:13px}
+.step-badge{display:inline-grid;place-items:center;width:22px;height:22px;border-radius:50%;background:var(--brand-green);color:#0A0A0A;font-size:12px;font-weight:700}
+
+/* uploader */
+.dropzone{border:1.5px dashed var(--border-strong);border-radius:var(--radius-md);padding:30px 20px;text-align:center;color:var(--ink-400);transition:.150;background:var(--pearl-2)}
+.dropzone:hover,.dropzone.drag{border-color:var(--brand-green-deep);background:#1A2E0A;color:var(--brand-green)}
+.dropzone .dz-icon{font-size:28px;margin-bottom:8px}
+.dropzone .dz-main{font-size:14px;color:var(--ink-700);font-weight:500}
+.dropzone .dz-sub{font-size:12px;margin-top:4px}
+.materials{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.mat{position:relative;aspect-ratio:1;border-radius:var(--radius-md);overflow:hidden;background:var(--pearl-2)}
+.mat img{width:100%;height:100%;object-fit:cover}
+.mat .rm{position:absolute;top:5px;right:5px;width:20px;height:20px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:12px;display:grid;place-items:center;line-height:1}
+
+/* form rows */
+.field{margin-bottom:14px}
+.field label{display:block;font-size:13px;color:var(--ink-500);margin-bottom:6px}
+.field input,.field textarea{width:100%;border:1px solid var(--border);border-radius:var(--radius-md);padding:10px 12px;font-size:14px;background:#1A1A1A;color:#fff}
+.field input:focus,.field textarea:focus{border-color:var(--brand-green)}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+
+/* option cards */
+.opt-group{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+.opt{padding:9px 16px;border:1.5px solid var(--border);border-radius:999px;font-size:13.5px;color:var(--ink-500);transition:.15s}
+.opt:hover{border-color:var(--ink-300)}
+.opt.active{background:var(--brand-green);color:#0A0A0A;border-color:var(--ink-900);font-weight:600}
+.opt .em{font-size:11px;display:block;opacity:.75;font-weight:400}
+
+/* prompt */
+.prompt-box{border:1.5px solid var(--border);border-radius:var(--radius-md);overflow:hidden}
+.prompt-box textarea{width:100%;border:none;padding:14px;min-height:90px;resize:vertical;font-size:14px;line-height:1.6}
+.prompt-box:focus-within{border-color:var(--brand-green)}
+.prompt-foot{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;border-top:1px solid var(--border);background:var(--pearl-2);font-size:12px;color:var(--ink-400)}
+.spark{display:inline-flex;align-items:center;gap:4px;color:var(--brand-green-deep);font-weight:600}
+
+/* chips / links */
+.chip-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{display:inline-flex;align-items:center;gap:6px;background:var(--pearl-2);border:1px solid var(--border);border-radius:999px;padding:5px 12px;font-size:12.5px;color:var(--ink-700)}
+.chip .x{cursor:pointer;color:var(--ink-400)}
+.chip .x:hover{color:var(--error)}
+.link-add{display:flex;gap:8px;margin-top:10px}
+.link-add input{flex:1;border:1px solid var(--border);border-radius:var(--radius-md);padding:8px 12px;font-size:13.5px}
+
+/* doc grid */
+.docs{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:10px}
+.doc{border:1px solid var(--border);border-radius:var(--radius-md);padding:12px;display:flex;flex-direction:column;gap:8px}
+.doc .ext{align-self:flex-start;background:var(--brand-green);color:#0A0A0A;font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px}
+.doc .nm{font-size:12px;color:var(--ink-700);word-break:break-all;line-height:1.4}
+
+/* CTA */
+.cta{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:20px;padding-top:20px;border-top:1px solid var(--border)}
+.cta-summary{font-size:13px;color:var(--ink-500)}
+.cta-summary b{color:var(--ink-900)}
+.btn{padding:13px 28px;border-radius:999px;font-size:15px;font-weight:600;transition:.15s}
+.btn-primary{background:var(--brand-green);color:#0A0A0A}
+.btn-primary:hover{background:var(--brand-green-deep)}
+.btn-ghost{border:1.5px solid var(--border);color:var(--ink-700)}
+.btn-ghost:hover{border-color:var(--ink-900)}
+.cta-btns{display:flex;gap:10px}
+
+/* hint */
+.hint{font-size:12px;color:var(--ink-400);margin-top:8px}
+.brand-tag{display:inline-block;background:var(--brand-green-soft);color:var(--brand-green);font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <div class="nav-logo"><div class="nav-logo-mark">W</div><span>WellFlow</span></div>
+  <div class="nav-links">
+    <button class="nav-link active">首页</button>
+    <button class="nav-link" onclick="location.href='02-资产库.html'">资产库</button>
+    <button class="nav-link" onclick="location.href='03-知识库.html'">知识库</button>
+    <button class="nav-link" onclick="location.href='04-投放台.html'">投放台</button>
+  </div>
+  <div class="nav-right">
+    <button class="icon-btn" title="通知">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+    </button>
+    <div class="nav-avatar">周</div>
+  </div>
+</nav>
+
+<div class="page">
+  <div class="hero">
+    <h1>从商品素材到投流图、商详图，AI 全流程商拍创作</h1>
+    <p>上传商品图，选择投放平台与创作目标，AI 自动生成投流图、商详图与短片。</p>
+  </div>
+
+  <div class="grid">
+    <!-- 左：素材 + SKU -->
+    <div>
+      <div class="card">
+        <div class="card-title"><span class="step-badge">1</span>商品素材 <span class="req">*</span></div>
+        <div class="dropzone" id="dz">
+          <div class="dz-icon">⬆</div>
+          <div class="dz-main">点击或拖拽上传商品图</div>
+          <div class="dz-sub">支持 JPG / PNG / WebP，单张 ≤ 20MB</div>
+        </div>
+        <div class="materials">
+          <div class="mat"><img src="assets/shirt-front.jpg" alt=""><button class="rm" onclick="this.parentElement.remove()">×</button></div>
+          <div class="mat"><img src="assets/shirt-back.jpg" alt=""><button class="rm" onclick="this.parentElement.remove()">×</button></div>
+          <div class="mat"><img src="assets/shirt-side.jpg" alt=""><button class="rm" onclick="this.parentElement.remove()">×</button></div>
+          <div class="mat"><img src="assets/shirt-detail.jpg" alt=""><button class="rm" onclick="this.parentElement.remove()">×</button></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="step-badge">2</span>SKU 归属</div>
+        <div class="field"><label>货号（SKU）</label><input value="BC-BABY-001"></div>
+        <div class="two-col">
+          <div class="field"><label>系列</label><input value="棉麻通勤系列"></div>
+          <div class="field"><label>品牌</label><input value="Babycare"></div>
+        </div>
+        <div class="field"><label>商品名称</label><input value="儿童纯棉长袖衬衫 浅灰条纹"></div>
+        <div class="field"><label>类目</label><input value="童装 > 上衣 > 衬衫"></div>
+      </div>
+    </div>
+
+    <!-- 右：创作参数 -->
+    <div>
+      <div class="card">
+        <div class="card-title"><span class="step-badge">3</span>创作目标</div>
+        <label style="font-size:13px;color:var(--ink-500)">图片类型</label>
+        <div class="opt-group" id="imgType">
+          <button class="opt active" data-v="ad">投流图<span class="em">信息流广告投放</span></button>
+          <button class="opt" data-v="detail">商详图<span class="em">商品详情页</span></button>
+          <button class="opt" data-v="main">主图<span class="em">白底/场景主图</span></button>
+        </div>
+        <label style="font-size:13px;color:var(--ink-500)">营销目标</label>
+        <div class="opt-group" id="goal">
+          <button class="opt active" data-v="acquisition">拉新获客</button>
+          <button class="opt" data-v="conversion">促成交</button>
+          <button class="opt" data-v="retention">复购沉淀</button>
+        </div>
+        <label style="font-size:13px;color:var(--ink-500)">投放平台</label>
+        <div class="opt-group" id="platform">
+          <button class="opt active" data-v="qianchuan">巨量千川</button>
+          <button class="opt" data-v="douyin">抖音电商</button>
+          <button class="opt" data-v="taobao">淘宝/天猫</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="step-badge">4</span>创作指令</div>
+        <div class="prompt-box">
+          <textarea>请为我的儿童纯棉长袖衬衫 浅灰条纹 生成一张用于拉新的投流图。</textarea>
+          <div class="prompt-foot">
+            <span class="spark">✦ AI 已根据目标自动预填，可修改</span>
+            <span>0 / 500</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">商品链接 <span style="font-weight:400;font-size:12px;color:var(--ink-400)">· 最多 10 条</span></div>
+        <div class="link-add">
+          <input placeholder="粘贴商品链接，回车添加">
+          <button class="btn btn-ghost" style="padding:8px 16px;font-size:13px" onclick="addChip('links')">添加</button>
+        </div>
+        <div class="chip-list" id="linkChips">
+          <span class="chip">detail.tmall.com/item.htm?id=88... <span class="x" onclick="this.parentElement.remove()">×</span></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">参考资料 <span style="font-weight:400;font-size:12px;color:var(--ink-400)">· 在线链接 + 上传文档</span></div>
+        <div class="link-add">
+          <input placeholder="粘贴商品详情页 / 评测 / 文档链接">
+          <button class="btn btn-ghost" style="padding:8px 16px;font-size:13px" onclick="addChip('docs')">添加</button>
+        </div>
+        <div class="docs" style="margin-top:12px">
+          <div class="doc"><span class="ext">PDF</span><span class="nm">品牌视觉手册_v3.pdf</span></div>
+          <div class="doc"><span class="ext">DOC</span><span class="nm">商品卖点拆解.docx</span></div>
+        </div>
+      </div>
+
+      <div class="cta">
+        <div class="cta-summary">
+          <span class="brand-tag">当前任务</span> &nbsp;
+          <b>巨量千川</b> · 投流图 · 拉新获客
+        </div>
+        <div class="cta-btns">
+          <button class="btn btn-ghost" onclick="location.href='07-无限画布.html'">进入画布</button>
+          <button class="btn btn-primary" onclick="location.href='06-阶段创作台.html'">开始创作 →</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// 选项卡切换
+document.querySelectorAll('.opt-group').forEach(g=>{
+  g.addEventListener('click',e=>{
+    const b=e.target.closest('.opt'); if(!b)return;
+    g.querySelectorAll('.opt').forEach(o=>o.classList.remove('active'));
+    b.classList.add('active');
+  });
+});
+function addChip(type){
+  const box=type==='links'?document.getElementById('linkChips'):null;
+  if(!box)return;
+  const inp=box.parentElement.querySelector('input');
+  const v=inp.value.trim(); if(!v)return;
+  const c=document.createElement('span'); c.className='chip';
+  c.innerHTML=v+' <span class="x" onclick="this.parentElement.remove()">×</span>';
+  box.appendChild(c); inp.value='';
+}
+// dropzone 视觉
+const dz=document.getElementById('dz');
+dz.addEventListener('click',()=>{const f=document.createElement('input');f.type='file';f.accept='image/*';f.multiple=1;f.onchange=()=>{dz.querySelector('.dz-main').textContent='已选择 '+f.files.length+' 个文件';};f.click();});
+</script>
+</body>
+</html>

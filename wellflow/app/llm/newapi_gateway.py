@@ -13,22 +13,40 @@ from typing import Any
 
 import httpx
 
-from wellflow.app.llm.base import BaseLLMClient, LLMResponse
+from wellflow.app.llm.base import (
+    BaseLLMClient,
+    LLMResponse,
+    InsufficientCreditsError,
+    extract_error_message,
+)
 
 
 def _apply_reasoning_control(payload: dict[str, Any], model: str, reasoning_effort: str) -> None:
     """按模型族关闭/开启 thinking。
 
     - "close"：强制关闭（GLM/Qwen/豆包/DeepSeek 默认开推理会吞 completion 预算）
-    - "low"/"medium"/"high"：透传 reasoning_effort
+    - "low"/"medium"/"high"：透传 reasoning_effort + 对部分模型显式 enable_thinking=True
+      （qwen 在只传 reasoning_effort 不强制 enable_thinking 时，有小概率把推理写进
+      content 通道 —— 这就是 node1 的「thinking 泄漏」—— 所以非 close 模式下必须
+      显式 enable_thinking=True 让模型把思考走独立 reasoning_content 通道）
     - None：禁止，调用方必须显式指定
     """
     if reasoning_effort is None:
         raise ValueError("reasoning_effort 不允许为 None，请显式传 'close' 或 'low'/'medium'/'high'")
+    m = model.lower()
     if reasoning_effort != "close":
         payload["reasoning_effort"] = reasoning_effort
+        # 🔴 关键：qwen / deepseek 在 effort=low 时若不显式 enable_thinking，
+        # 部分版本会把推理写进 content 通道（"已识别品牌名称…" 这种动作进度句泄漏进报告正文）。
+        # 显式 enable_thinking=True 确保模型走独立 reasoning_content 通道。
+        if "qwen" in m:
+            payload["enable_thinking"] = True
+        elif "deepseek" in m:
+            payload["enable_thinking"] = True
+        elif "glm" in m or "doubao" in m or "seed" in m:
+            payload["thinking"] = {"type": "enabled"}
         return
-    m = model.lower()
+    # close 模式：各模型族用各自的关闭开关
     if "glm" in m or "doubao" in m or "seed" in m:
         payload["thinking"] = {"type": "disabled"}
     elif "qwen" in m:
@@ -116,6 +134,26 @@ class NewApiGateway(BaseLLMClient):
         ):
             yield delta
 
+    async def stream_chat(
+        self,
+        system: str,
+        user: str,
+        reasoning_effort: str = "close",
+        response_format: dict[str, Any] | None = None,
+        extra_params: dict[str, Any] | None = None,
+    ):
+        """纯文本流式 —— yield {"type": "thinking"|"content", "text": "..."}。
+
+        和 stream_chat_with_images 共用同一条 SSE 解析路径，user_content=None
+        时 _build_messages 会把 user 当作纯字符串消息内容。
+        """
+        async for delta in self._openai_chat_stream(
+            system=system, user=user, reasoning_effort=reasoning_effort,
+            extra_params=extra_params, user_content=None,
+            response_format=response_format,
+        ):
+            yield delta
+
     # ------------------------------------------------------------------
     # helpers
     # ------------------------------------------------------------------
@@ -194,6 +232,9 @@ class NewApiGateway(BaseLLMClient):
                     if resp.status_code in self.RETRYABLE_STATUS and attempt < self.MAX_RETRIES:
                         last_exc = httpx.HTTPStatusError(str(resp.status_code), request=resp.request, response=resp)
                         continue
+                    if resp.status_code == 402:
+                        print(f"[llm] ❌ HTTP 402 credits: {resp.text[:500]}", flush=True)
+                        raise InsufficientCreditsError(extract_error_message(402, resp.text))
                     if resp.status_code >= 400:
                         print(f"[llm] ❌ HTTP {resp.status_code} body={resp.text[:1000]}", flush=True)
                     resp.raise_for_status()
@@ -260,6 +301,9 @@ class NewApiGateway(BaseLLMClient):
 
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError, httpx.ConnectTimeout, httpx.HTTPStatusError)
         last_exc: Exception | None = None
+        # 🩺 临时诊断：前 N 条 delta 打印真实字段分布，排查模型把正文写进了 reasoning 还是 content
+        _diag_delta_count = 0
+        _DIAG_MAX = 30
         for attempt in range(self.MAX_RETRIES + 1):
             _stream_started = False
             _content_buf = ""
@@ -312,6 +356,12 @@ class NewApiGateway(BaseLLMClient):
 
                             if delta.get("content"):
                                 _content_buf += delta["content"]
+
+                            # 🩺 临时诊断：打印前 N 条 delta 的真实字段分布
+                            if _diag_delta_count < _DIAG_MAX:
+                                _diag_delta_count += 1
+
+   
 
                             if time.time() - _last_flush_ts >= _FLUSH_INTERVAL:
                                 async for item in _flush():

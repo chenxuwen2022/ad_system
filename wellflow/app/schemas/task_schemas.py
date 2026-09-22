@@ -50,7 +50,7 @@ class TaskInfoResponse(BaseModel):
     node2: dict[str, Any] | None = None
     node3: dict[str, Any] | None = None
     # 任务关联图片（从 task_image 表读出）
-    model_images: list[dict[str, Any]] = Field(default_factory=list)  # C1 上传的模特图
+    reference_images: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)  # 按 type 分组：mannequin / scene / outfit
     output_images: list[dict[str, Any]] = Field(default_factory=list)  # 确认结束后的生图成品
     created_at: str = ""
     updated_at: str = ""

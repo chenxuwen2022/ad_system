@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>素材筛选配置 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1A1F14;--card2:#1E2416;--line:#2E3A1E;--green:#CCFF00;--red:#FF6B6B;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);font-size:14px;min-height:100vh}
+button,input,select{font-family:inherit;outline:none}
+button{cursor:pointer;border:none;background:none;color:inherit}
+.eyebrow{font-size:12px;color:var(--t3);letter-spacing:2px;margin-bottom:10px}
+h1{font-size:24px;font-weight:700}
+.head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.page{max-width:1400px;margin:0 auto;padding:30px 40px 100px}
+.tabs{display:flex;gap:10px;margin:20px 0 18px;flex-wrap:wrap}
+.tab{padding:10px 20px;border-radius:9px;font-size:13.5px;background:var(--card);border:1px solid var(--line);color:var(--t2)}
+.tab.on{background:var(--green);color:#000;font-weight:600;border-color:var(--green)}
+.desc{color:var(--t3);font-size:13.5px;margin-bottom:18px;line-height:1.6}
+.add{background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:22px;margin-bottom:18px}
+.add-row{display:grid;grid-template-columns:1fr 1fr 1fr auto;gap:18px;align-items:end}
+@media(max-width:900px){.add-row{grid-template-columns:1fr}}
+.f label{display:block;font-size:13px;color:var(--t2);margin-bottom:7px}
+.f select,.f input{width:100%;background:var(--card);border:1px solid var(--line);border-radius:9px;padding:12px 14px;color:#fff;font-size:14px;appearance:none}
+.f select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238A9A78' stroke-width='1.5' fill='none'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 14px center}
+.add-btn{padding:12px 22px;border-radius:9px;background:var(--green);color:#000;font-weight:600;font-size:13.5px;white-space:nowrap}
+.table{background:var(--card2);border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.th{display:grid;grid-template-columns:140px 1fr 220px;padding:14px 22px;background:rgba(120,160,40,.1);font-size:13px;color:var(--t2);font-weight:600}
+.tr{display:grid;grid-template-columns:140px 1fr 220px;padding:13px 22px;border-top:1px solid var(--line);align-items:center;font-size:14px}
+.tr:hover{background:rgba(120,160,40,.06)}
+.lv{display:inline-block;padding:3px 10px;border-radius:6px;font-size:12px;font-weight:600}
+.lv1{background:rgba(204,255,0,.15);color:var(--green)}
+.lv2{background:rgba(100,160,255,.15);color:#7DB4FF}
+.lv3{background:rgba(180,120,255,.15);color:#C9A0FF}
+.path{color:var(--text)}
+.acts{display:flex;gap:8px}
+.e{padding:5px 14px;border-radius:7px;font-size:12.5px;background:rgba(120,160,40,.14);color:var(--green);border:1px solid #3A5A10}
+.e:hover{background:rgba(120,160,40,.28)}
+.d{padding:5px 14px;border-radius:7px;font-size:12.5px;background:rgba(255,107,107,.08);color:var(--red);border:1px solid #5A2020}
+.d:hover{background:rgba(255,107,107,.18)}
+.panel{display:none}.panel.on{display:block}
+.placeholder{color:var(--t3);padding:40px;text-align:center;font-size:14px}
+.empty{color:var(--t3);padding:30px;text-align:center;font-size:13px}
+.tag-list{display:flex;flex-wrap:wrap;gap:10px;padding:20px}
+.tag-chip{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;border-radius:8px;font-size:13px;border:1px solid var(--line);background:var(--card)}
+.tag-chip .dot{width:10px;height:10px;border-radius:50%}
+.tag-chip .x{color:var(--t3);font-size:15px;line-height:1}
+.tag-chip .x:hover{color:var(--red)}
+.status-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;padding:20px}
+.status-card{padding:14px 16px;border-radius:10px;background:var(--card);border:1px solid var(--line);display:flex;align-items:center;gap:10px}
+.status-card .dot{width:8px;height:8px;border-radius:50%;background:var(--green)}
+.hint{font-size:12.5px;color:var(--t3);margin-top:10px;line-height:1.6}
+.modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;place-items:center;z-index:99}
+.modal-mask.on{display:grid}
+.modal{width:420px;max-width:92vw;background:var(--card2);border:1px solid var(--line);border-radius:14px;padding:24px}
+.modal h3{font-size:16px;margin-bottom:16px}
+.modal .f{margin-bottom:14px}
+.modal-acts{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.save{padding:9px 20px;border-radius:8px;background:var(--green);color:#000;font-weight:600;font-size:13px}
+.cancel{padding:9px 20px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:13px}
+.msg{position:fixed;top:20px;left:50%;transform:translateX(-50%);padding:10px 20px;border-radius:8px;background:var(--card2);border:1px solid var(--line);font-size:13.5px;z-index:200;display:none}
+.msg.ok{border-color:var(--green);color:var(--green)}
+.msg.err{border-color:var(--red);color:var(--red)}
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="head">
+    <div>
+      <div class="eyebrow">MATERIAL WORKSPACE</div>
+      <h1>素材筛选配置</h1>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab on" onclick="switchTab('p1',this)">分类体系</button>
+    <button class="tab" onclick="switchTab('p2',this)">状态标签</button>
+    <button class="tab" onclick="switchTab('p3',this)">公共标签</button>
+    <button class="tab" onclick="switchTab('p4',this)">个人标签</button>
+  </div>
+
+  <!-- 分类体系 -->
+  <div class="panel on" id="p1">
+    <p class="desc">按 主类目 → 一级分类 → 二级分类 管理。新增二级分类时必须选上级一级分类；一级分类必须选上级主类目。有子分类的节点不能直接删除。</p>
+    <div class="add">
+      <div class="add-row">
+        <div class="f"><label>分类层级</label>
+          <select id="catLevel"><option value="1">主类目</option><option value="2">一级分类</option><option value="3">二级分类</option></select>
+        </div>
+        <div class="f"><label>上级分类</label>
+          <select id="catParent"><option value="0">— 无（主类目）—</option></select>
+        </div>
+        <div class="f"><label>分类名称</label><input id="catName" placeholder="输入分类名称"></div>
+        <button class="add-btn" id="catAddBtn">+ 新增分类</button>
+      </div>
+      <div class="hint">提示：选择层级后，"上级分类"下拉会自动列出可选父级。</div>
+    </div>
+    <div class="table">
+      <div class="th"><span>层级</span><span>分类路径</span><span style="text-align:right">操作</span></div>
+      <div id="catList"><div class="empty">加载中…</div></div>
+    </div>
+  </div>
+
+  <!-- 状态标签（可增删改） -->
+  <div class="panel" id="p2">
+    <p class="desc">状态标签对应投放阶段。可调整显示名称和颜色，已有阶段的状态编码保持不变；新增状态在有对应数据后计数。</p>
+    <div class="add">
+      <div class="add-row">
+        <div class="f"><label>标签名称</label><input id="bizName" placeholder="输入标签名称"></div>
+        <div class="f"><label>标签颜色</label><input id="bizColor" type="color" value="#CCFF00" style="height:46px;padding:6px"></div>
+        <div></div>
+        <button class="add-btn" id="bizAddBtn">+ 新增标签</button>
+      </div>
+    </div>
+    <div class="table">
+      <div class="th"><span>颜色</span><span>标签名称</span><span>状态编码</span><span style="text-align:right">操作</span></div>
+      <div id="bizList"><div class="empty">加载中…</div></div>
+    </div>
+  </div>
+
+  <!-- 公共标签 -->
+  <div class="panel" id="p3">
+    <p class="desc">公共标签：全团队共享，用于标记素材卖点、内容类型、场景、营销节点等。</p>
+    <div class="add">
+      <div class="add-row">
+        <div class="f"><label>标签名称</label><input id="pubTagName" placeholder="输入标签名称"></div>
+        <div class="f"><label>标签颜色</label><input id="pubTagColor" type="color" value="#1f6feb" style="height:46px;padding:6px"></div>
+        <div></div>
+        <button class="add-btn" id="pubTagAddBtn">+ 新增标签</button>
+      </div>
+    </div>
+    <div class="table"><div class="tag-list" id="pubTagList"><div class="empty">加载中…</div></div></div>
+  </div>
+
+  <!-- 个人标签 -->
+  <div class="panel" id="p4">
+    <p class="desc">个人标签：仅自己使用的素材标记，与公共标签隔离。</p>
+    <div class="add">
+      <div class="add-row">
+        <div class="f"><label>标签名称</label><input id="perTagName" placeholder="输入标签名称"></div>
+        <div class="f"><label>标签颜色</label><input id="perTagColor" type="color" value="#CCFF00" style="height:46px;padding:6px"></div>
+        <div></div>
+        <button class="add-btn" id="perTagAddBtn">+ 新增标签</button>
+      </div>
+    </div>
+    <div class="table"><div class="tag-list" id="perTagList"><div class="empty">加载中…</div></div></div>
+  </div>
+</div>
+
+<!-- 编辑状态标签弹窗 -->
+<div class="modal-mask" id="bizEditMask">
+  <div class="modal">
+    <h3>编辑状态标签</h3>
+    <div class="f"><label>标签名称</label><input id="bizEditName"></div>
+    <div class="f"><label>标签颜色</label><input id="bizEditColor" type="color" style="height:46px;padding:6px"></div>
+    <div class="f" style="opacity:.5"><label>状态编码</label><input id="bizEditCode" disabled></div>
+    <div class="modal-acts">
+      <button class="cancel" id="bizEditCancel">取消</button>
+      <button class="save" id="bizEditSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 编辑分类弹窗 -->
+<div class="modal-mask" id="catEditMask">
+  <div class="modal">
+    <h3>编辑分类</h3>
+    <div class="f"><label>分类名称</label><input id="editCatName"></div>
+    <div class="modal-acts">
+      <button class="cancel" id="editCatCancel">取消</button>
+      <button class="save" id="editCatSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="msg" id="msg"></div>
+
+<script>
+function switchTab(pid, btn){
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));
+  btn.classList.add('on');
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('on'));
+  document.getElementById(pid).classList.add('on');
+}
+const $ = id => document.getElementById(id);
+const LEVEL_LABEL = {1:'主类目',2:'一级分类',3:'二级分类'};
+let CATS = [];
+let EDITING_CAT_ID = null;
+
+function showMsg(t, ok=true){
+  const m=$('msg'); m.textContent=t; m.className='msg '+(ok?'ok':'err'); m.style.display='block';
+  setTimeout(()=>m.style.display='none', 2200);
+}
+function api(url, opt){
+  return fetch(url, Object.assign({headers:{'Content-Type':'application/json'}}, opt||{})).then(r=>r.json());
+}
+
+// tab 切换已改为内联 onclick（见 tab 按钮上的 onclick 属性）
+
+// ============ 分类体系 ============
+function refreshParentOptions(){
+  const lv = parseInt($('catLevel').value);
+  const sel = $('catParent');
+  sel.innerHTML = '';
+  if(lv === 1){
+    sel.innerHTML = '<option value="0">— 无（主类目）—</option>';
+    return;
+  }
+  const needLv = lv - 1;
+  const parents = CATS.filter(c=>c.level===needLv);
+  sel.innerHTML = '<option value="0">— 请选择上级 —</option>' + parents.map(p=>`<option value="${p.id}">${pathOf(p)}</option>`).join('');
+}
+$('catLevel').addEventListener('change', refreshParentOptions);
+
+function pathOf(cat){
+  if(cat.level===1) return cat.name;
+  const parent = CATS.find(c=>c.id===cat.parent_id);
+  return (parent ? pathOf(parent) : '?') + ' / ' + cat.name;
+}
+function renderCats(){
+  const wrap = $('catList');
+  if(!CATS.length){ wrap.innerHTML = '<div class="empty">暂无分类，请在上方新增</div>'; return; }
+  // 按层级排序展示
+  const sorted = [...CATS].sort((a,b)=> a.level-b.level || a.parent_id-b.parent_id || a.id-b.id);
+  wrap.innerHTML = sorted.map(c=>`
+    <div class="tr">
+      <span><span class="lv lv${c.level}">${LEVEL_LABEL[c.level]}</span></span>
+      <span class="path">${pathOf(c)}</span>
+      <span class="acts" style="justify-content:flex-end">
+        <button class="e" onclick="openEditCat(${c.id})">编辑</button>
+        <button class="d" onclick="delCat(${c.id})">删除</button>
+      </span>
+    </div>`).join('');
+}
+function loadCats(){
+  api('/api/categories').then(r=>{
+    if(r.success){ CATS = r.data||[]; } else { CATS=[]; }
+    refreshParentOptions();
+    renderCats();
+  });
+}
+$('catAddBtn').addEventListener('click', ()=>{
+  const lv = parseInt($('catLevel').value);
+  const pid = parseInt($('catParent').value)||0;
+  const name = $('catName').value.trim();
+  if(!name){ showMsg('请输入分类名称', false); return; }
+  if(lv>=2 && pid===0){ showMsg('请选择上级分类', false); return; }
+  api('/api/categories',{method:'POST',body:JSON.stringify({name,level:lv,parent_id:pid})}).then(r=>{
+    if(r.success){ showMsg('已新增'); $('catName').value=''; loadCats(); }
+    else showMsg(r.error||'新增失败', false);
+  });
+});
+window.openEditCat = function(id){
+  const c = CATS.find(x=>x.id===id); if(!c) return;
+  EDITING_CAT_ID = id;
+  $('editCatName').value = c.name;
+  $('catEditMask').classList.add('on');
+};
+$('editCatCancel').addEventListener('click', ()=>$('catEditMask').classList.remove('on'));
+$('editCatSave').addEventListener('click', ()=>{
+  const c = CATS.find(x=>x.id===EDITING_CAT_ID); if(!c) return;
+  const name = $('editCatName').value.trim();
+  if(!name){ showMsg('名称不能为空', false); return; }
+  api('/api/categories',{method:'POST',body:JSON.stringify({id:c.id,name,level:c.level,parent_id:c.parent_id})}).then(r=>{
+    if(r.success){ showMsg('已保存'); $('catEditMask').classList.remove('on'); loadCats(); }
+    else showMsg(r.error||'保存失败', false);
+  });
+});
+window.delCat = function(id){
+  if(!confirm('确定删除该分类？')) return;
+  api('/api/categories/'+id,{method:'DELETE'}).then(r=>{
+    if(r.success){ showMsg('已删除'); loadCats(); }
+    else showMsg(r.error||'删除失败', false);
+  });
+};
+
+// ============ 状态标签（可增删改） ============
+function loadStatuses(){
+  api('/api/material_biz_statuses').then(r=>{
+    if(!r.success) return;
+    const list = r.data||[];
+    $('bizList').innerHTML = list.length ? list.map(s=>`
+      <div class="tr">
+        <span><span style="display:inline-block;width:18px;height:18px;border-radius:4px;background:${s.color}"></span></span>
+        <span>${s.name}</span>
+        <span style="color:#888">${s.code}</span>
+        <span class="acts" style="justify-content:flex-end">
+          <button class="e" data-edit-id="${s.id}" data-edit-name="${s.name}" data-edit-color="${s.color}" data-edit-code="${s.code}">编辑</button>
+          <button class="d" data-del-id="${s.id}">删除</button>
+        </span>
+      </div>`).join('') : '<div class="empty">暂无状态</div>';
+    bindBizRowClicks();
+  });
+}
+let EDITING_BIZ_ID = null;
+function bindBizRowClicks(){
+  document.querySelectorAll('[data-edit-id]').forEach(b=>b.onclick=()=>{
+    EDITING_BIZ_ID = parseInt(b.getAttribute('data-edit-id'));
+    $('bizEditName').value = b.getAttribute('data-edit-name');
+    $('bizEditColor').value = b.getAttribute('data-edit-color');
+    $('bizEditCode').value = b.getAttribute('data-edit-code') || '';
+    $('bizEditMask').classList.add('on');
+  });
+  document.querySelectorAll('[data-del-id]').forEach(b=>b.onclick=()=>{
+    if(!confirm('确定删除该状态？')) return;
+    api('/api/material_biz_statuses/'+b.getAttribute('data-del-id'),{method:'DELETE'}).then(r=>{
+      if(r.success){ showMsg('已删除'); loadStatuses(); } else showMsg(r.error||'删除失败', false);
+    });
+  });
+}
+$('bizEditCancel').addEventListener('click', ()=>$('bizEditMask').classList.remove('on'));
+$('bizEditSave').addEventListener('click', ()=>{
+  const name = $('bizEditName').value.trim();
+  if(!name){ showMsg('名称不能为空', false); return; }
+  const color = $('bizEditColor').value;
+  api('/api/material_biz_statuses',{method:'POST',body:JSON.stringify({id:EDITING_BIZ_ID,name,color})}).then(r=>{
+    if(r.success){ showMsg('已保存'); $('bizEditMask').classList.remove('on'); loadStatuses(); }
+    else showMsg(r.error||'保存失败', false);
+  });
+});
+$('bizAddBtn').addEventListener('click', ()=>{
+  const name=$('bizName').value.trim();
+  if(!name){ showMsg('请输入状态名称', false); return; }
+  const color=$('bizColor').value;
+  api('/api/material_biz_statuses',{method:'POST',body:JSON.stringify({name,color})}).then(r=>{
+    if(r.success){ showMsg('已新增'); $('bizName').value=''; loadStatuses(); }
+    else showMsg(r.error||'新增失败', false);
+  });
+});
+
+// ============ 标签（公共/个人） ============
+function loadTags(type){
+  return api('/api/tags?tag_type='+type).then(r=>{
+    if(!r.success) return [];
+    return r.data||[];
+  });
+}
+function renderTags(list, type){
+  const wrap = $(type==='public'?'pubTagList':'perTagList');
+  if(!list.length){ wrap.innerHTML = '<div class="empty">暂无标签</div>'; return; }
+  wrap.innerHTML = list.map(t=>`
+    <span class="tag-chip">
+      <span class="dot" style="background:${t.color}"></span>
+      <span>${t.name}</span>
+      <button class="x" data-del-tag="${t.id}" data-tag-type="${type}" title="删除">×</button>
+    </span>`).join('');
+  bindTagRowClicks();
+}
+function reloadAllTags(){
+  loadTags('public').then(l=>renderTags(l,'public'));
+  loadTags('personal').then(l=>renderTags(l,'personal'));
+}
+function bindTagAdd(inputId, colorId, btnId, type){
+  $(btnId).addEventListener('click', ()=>{
+    const name = $(inputId).value.trim();
+    if(!name){ showMsg('请输入标签名称', false); return; }
+    const color = $(colorId).value;
+    api('/api/tags',{method:'POST',body:JSON.stringify({name,color,tag_type:type})}).then(r=>{
+      if(r.success){ showMsg('已新增'); $(inputId).value=''; reloadAllTags(); }
+      else showMsg(r.error||'新增失败', false);
+    });
+  });
+}
+function bindTagRowClicks(){
+  document.querySelectorAll('[data-del-tag]').forEach(b=>b.onclick=()=>{
+    if(!confirm('确定删除该标签？')) return;
+    api('/api/tags/'+b.getAttribute('data-del-tag'),{method:'DELETE'}).then(r=>{
+      if(r.success){ showMsg('已删除'); reloadAllTags(); }
+      else showMsg(r.error||'删除失败', false);
+    });
+  });
+}
+bindTagAdd('pubTagName','pubTagColor','pubTagAddBtn','public');
+bindTagAdd('perTagName','perTagColor','perTagAddBtn','personal');
+
+// 初始化
+loadCats();
+loadStatuses();
+reloadAllTags();
+</script>
+</body>
+</html>

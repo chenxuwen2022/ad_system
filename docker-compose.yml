@@ -9,6 +9,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: wellflow
+    command: ["-c", "max_connections=200"]
     ports:
       - "15432:5432"
     volumes:

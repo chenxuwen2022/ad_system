@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>资产库 · WellFlow</title>
+<style>
+:root{
+  --brand-green:#CCFF00;--brand-green-deep:#A8D400;--brand-green-soft:#1A2E0A;
+  --ink-900:#FFFFFF;--ink-700:#B8B8B8;--ink-500:#8A8A8A;--ink-400:#6A6A6A;--ink-300:#5A5A5A;--ink-200:#3A3A3A;--ink-100:#2A2A2A;
+  --pearl:#0F0F0F;--pearl-2:#1A1A1A;--border:#2A2A2A;--border-strong:#3A3A3A;
+  --radius-md:10px;--radius-lg:16px;--shadow-md:0 4px 12px rgba(10,10,10,.08);
+  --font:'Inter','Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);font-size:14px;color:var(--ink-900);background:var(--pearl);-webkit-font-smoothing:antialiased}
+button{font-family:inherit;cursor:pointer;border:none;background:none;color:inherit}
+input{font-family:inherit;outline:none}
+img{display:block;max-width:100%}
+.top-nav{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:24px;height:60px;padding:0 28px;background:#0F0F0F;border-bottom:1px solid var(--border)}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px}
+.nav-logo-mark{width:26px;height:26px;border-radius:7px;background:var(--brand-green);display:grid;place-items:center;font-size:13px;font-weight:800;color:#0A0A0A}
+.nav-links{display:flex;gap:4px;flex:1}
+.nav-link{padding:8px 16px;border-radius:999px;font-size:14px;color:var(--ink-500)}
+.nav-link:hover{background:var(--pearl-2);color:var(--ink-900)}
+.nav-link.active{background:var(--brand-green);color:#0A0A0A;font-weight:600}
+.nav-avatar{width:34px;height:34px;border-radius:50%;background:#333;color:#fff;display:grid;place-items:center;font-size:14px;font-weight:600}
+
+.page{max-width:1400px;margin:0 auto;padding:24px 28px}
+.page-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.page-head h1{font-size:22px;font-weight:700}
+.head-actions{display:flex;gap:10px;align-items:center}
+.search{display:flex;align-items:center;gap:8px;background:var(--pearl-2);border:1px solid var(--border);border-radius:999px;padding:8px 14px;width:260px}
+.search input{border:none;background:transparent;flex:1;font-size:13px}
+.btn{padding:9px 18px;border-radius:999px;font-size:13.5px;font-weight:600}
+.btn-primary{background:var(--brand-green);color:#0A0A0A}
+.btn-primary:hover{background:var(--brand-green-deep)}
+.btn-ghost{border:1.5px solid var(--border);color:var(--ink-700)}
+
+/* section tabs */
+.section-tabs{display:flex;gap:6px;margin-bottom:16px}
+.section-tab{padding:8px 18px;border-radius:999px;font-size:14px;color:var(--ink-500);background:var(--pearl-2)}
+.section-tab.active{background:var(--brand-green);color:#0A0A0A;font-weight:600}
+
+.layout{display:grid;grid-template-columns:220px 1fr;gap:24px;align-items:start}
+@media(max-width:980px){.layout{grid-template-columns:1fr}}
+
+/* sidebar */
+.side{background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-lg);padding:16px}
+.side h4{font-size:12px;color:var(--ink-400);text-transform:uppercase;letter-spacing:.5px;margin:14px 0 8px}
+.side h4:first-child{margin-top:0}
+.cat-item{display:flex;align-items:center;justify-content:space-between;padding:9px 12px;border-radius:8px;font-size:14px;color:var(--ink-700);cursor:pointer}
+.cat-item:hover{background:var(--pearl-2)}
+.cat-item.active{background:var(--brand-green-soft);color:#3a5200;font-weight:600}
+.cat-item .cnt{font-size:12px;color:var(--ink-400)}
+.scope-row{display:flex;gap:6px}
+.scope{flex:1;text-align:center;padding:6px;border-radius:8px;font-size:12.5px;color:var(--ink-500);cursor:pointer;border:1px solid var(--border)}
+.scope.active{background:var(--brand-green);color:#0A0A0A;border-color:var(--ink-900);font-weight:600}
+.tag-cloud{display:flex;flex-wrap:wrap;gap:6px}
+.tag{font-size:12px;padding:4px 10px;border-radius:999px;background:var(--pearl-2);color:var(--ink-700);cursor:pointer}
+.tag:hover{border:1px solid var(--border-strong)}
+.tag.on{background:var(--brand-green);color:#0A0A0A}
+
+/* grid */
+.grid-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.grid-head h2{font-size:16px;font-weight:600}
+.grid-head .meta{font-size:12.5px;color:var(--ink-400)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:16px}
+.card{background:#1A1A1A;border:1px solid var(--border);border-radius:var(--radius-lg);overflow:hidden;transition:.15s;cursor:pointer}
+.card:hover{box-shadow:var(--shadow-md);transform:translateY(-2px)}
+.cover{aspect-ratio:3/4;background:var(--pearl-2);overflow:hidden;position:relative}
+.cover img{width:100%;height:100%;object-fit:cover}
+.cover .code{position:absolute;top:8px;left:8px;background:rgba(10,10,10,.7);color:#fff;font-size:10.5px;padding:2px 7px;border-radius:5px}
+.cover .badge{position:absolute;top:8px;right:8px;background:var(--brand-green);color:#000;font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px}
+.cover .badge.personal{background:#333}
+.body{padding:12px}
+.body .nm{font-size:13.5px;font-weight:600;line-height:1.3}
+.body .desc{font-size:12px;color:var(--ink-400);margin-top:4px;line-height:1.4;height:34px;overflow:hidden}
+.body .tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.body .tags span{font-size:11px;background:var(--pearl-2);color:var(--ink-500);padding:2px 8px;border-radius:999px}
+</style>
+</head>
+<body>
+
+<nav class="top-nav">
+  <div class="nav-logo"><div class="nav-logo-mark">W</div><span>WellFlow</span></div>
+  <div class="nav-links">
+    <button class="nav-link" onclick="location.href='01-首页.html'">首页</button>
+    <button class="nav-link active">资产库</button>
+    <button class="nav-link" onclick="location.href='03-知识库.html'">知识库</button>
+    <button class="nav-link" onclick="location.href='04-投放台.html'">投放台</button>
+  </div>
+  <div class="nav-avatar">周</div>
+</nav>
+
+<div class="page">
+  <div class="page-head">
+    <h1>资产库</h1>
+    <div class="head-actions">
+      <div class="search">🔍 <input placeholder="搜索资产名称、标签"></div>
+      <button class="btn btn-ghost">批量导入</button>
+      <button class="btn btn-primary" onclick="location.href='08-模特创建向导.html'">+ 创建资产</button>
+    </div>
+  </div>
+
+  <div class="section-tabs">
+    <button class="section-tab active">商品 SKU</button>
+    <button class="section-tab">创作资产</button>
+  </div>
+
+  <div class="layout">
+    <aside class="side">
+      <h4>范围</h4>
+      <div class="scope-row">
+        <div class="scope active">全部</div>
+        <div class="scope">官方</div>
+        <div class="scope">个人</div>
+      </div>
+      <h4>资产分类</h4>
+      <div class="cat-item active" data-cat="model">模特库 <span class="cnt">28</span></div>
+      <div class="cat-item" data-cat="outfit">穿搭库 <span class="cnt">16</span></div>
+      <div class="cat-item" data-cat="bg">场景库 <span class="cnt">22</span></div>
+      <div class="cat-item" data-cat="element">元素库 <span class="cnt">9</span></div>
+      <h4>风格标签</h4>
+      <div class="tag-cloud">
+        <span class="tag on">通勤</span><span class="tag">休闲</span><span class="tag">简约</span>
+        <span class="tag">高级感</span><span class="tag">日系</span><span class="tag">都市</span>
+      </div>
+      <h4>身高区间</h4>
+      <div class="tag-cloud">
+        <span class="tag">150-160</span><span class="tag">160-170</span><span class="tag">170-180</span>
+      </div>
+    </aside>
+
+    <div>
+      <div class="grid-head">
+        <h2>模特库 <span style="font-weight:400;color:var(--ink-400);font-size:13px">· 28 个模特</span></h2>
+        <span class="meta">按更新时间排序</span>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const data={
+  model:[
+    {img:'assets/ref-model-card-woman-eastasian-white.png',code:'WF-M001',badge:'官方',nm:'东亚女模 · 通勤白',desc:'25岁 168cm 通勤气质，适合正装、商务系列',tags:['通勤','东亚女','25岁']},
+    {img:'assets/ref-model-card-woman-black-burgundy.png',code:'WF-M002',badge:'官方',nm:'女模 · 黑红气质',desc:'28岁 172cm 成熟御姐风，适合轻奢系列',tags:['轻奢','成熟','28岁']},
+    {img:'assets/ref-model-card-woman-southeast-blue.png',code:'WF-M003',badge:'官方',nm:'女模 · 东南蓝',desc:'22岁 165cm 清新自然，适合户外、度假',tags:['户外','清新','22岁']},
+    {img:'assets/ref-model-card-cool-white.png',code:'WF-M004',badge:'官方',nm:'女模 · 冷调白',desc:'26岁 170cm 冷感高级，适合极简风',tags:['极简','高级','26岁']},
+    {img:'assets/ref-model-card-fashion-olive.png',code:'WF-M005',badge:'官方',nm:'女模 · 橄榄绿',desc:'24岁 166cm 潮流时尚，适合潮流系列',tags:['潮流','时尚','24岁']},
+    {img:'assets/ref-model-card-commercial-black.png',code:'WF-M006',badge:'官方',nm:'女模 · 商业黑',desc:'30岁 174cm 商业大片感，适合品牌大片',tags:['商业','大片','30岁']},
+    {img:'assets/ref-model-card-mature-navy.png',code:'WF-M007',badge:'个人',nm:'男模 · 藏青成熟',desc:'32岁 180cm 成熟稳重，适合男装通勤',tags:['男装','成熟','32岁']},
+  ],
+  outfit:[
+    {img:'assets/ref-outfit-natural.png',code:'WF-O001',badge:'官方',nm:'自然棉麻套装',desc:'浅米色棉麻衬衫+直筒裤，日常通勤',tags:['棉麻','通勤']},
+    {img:'assets/ref-outfit-urban.png',code:'WF-O002',badge:'官方',nm:'都市干练套装',desc:'白衬衫+西裤，商务通勤风',tags:['商务','干练']},
+    {img:'assets/ref-outfit-vacation.png',code:'WF-O003',badge:'官方',nm:'度假休闲套装',desc:'浅色系休闲搭配，户外度假',tags:['度假','户外']},
+  ],
+  bg:[
+    {img:'assets/ref-background-studio.png',code:'WF-S001',badge:'官方',nm:'摄影棚白底',desc:'标准棚拍背景，干净无干扰',tags:['棚拍','白底']},
+    {img:'assets/ref-background-city.png',code:'WF-S002',badge:'官方',nm:'都市街景',desc:'现代都市街道，玻璃幕墙背景',tags:['都市','街景']},
+    {img:'assets/ref-background-coast.png',code:'WF-S003',badge:'官方',nm:'海边自然',desc:'海岸自然光，清新度假风',tags:['海边','自然']},
+  ]
+};
+function render(cat){
+  const list=data[cat]||data.model;
+  document.getElementById('grid').innerHTML=list.map(c=>`
+    <div class="card">
+      <div class="cover"><img src="${c.img}" alt=""><span class="code">${c.code}</span><span class="badge ${c.badge==='个人'?'personal':''}">${c.badge}</span></div>
+      <div class="body">
+        <div class="nm">${c.nm}</div>
+        <div class="desc">${c.desc}</div>
+        <div class="tags">${c.tags.map(t=>`<span>${t}</span>`).join('')}</div>
+      </div>
+    </div>`).join('');
+}
+render('model');
+document.querySelectorAll('.cat-item').forEach(el=>{
+  el.addEventListener('click',()=>{
+    document.querySelectorAll('.cat-item').forEach(i=>i.classList.remove('active'));
+    el.classList.add('active');
+    const map={model:'model',outfit:'outfit',bg:'bg',element:'model'};
+    render(map[el.dataset.cat]);
+  });
+});
+document.querySelectorAll('.tag').forEach(t=>t.addEventListener('click',()=>t.classList.toggle('on')));
+document.querySelectorAll('.scope').forEach(s=>s.addEventListener('click',()=>{document.querySelectorAll('.scope').forEach(i=>i.classList.remove('active'));s.classList.add('active');}));
+</script>
+</body>
+</html>

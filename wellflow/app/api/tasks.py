@@ -29,6 +29,7 @@ from wellflow.app.config import settings
 from wellflow.app.graph_persist import persist_phase, persist_interrupt, persist_error, persist_outputs
 from wellflow.app.models.task_models import TaskPhase
 from wellflow.app.repositories.task_repo import TaskRepo
+from wellflow.app.repositories.conversation_repo import _compose_title_from_hint
 from wellflow.app.schemas.task_schemas import (
     TaskListResponse,
     TaskListItem,
@@ -204,7 +205,9 @@ async def create_task(
 
     t0 = time.time()
     task_id = _short_uuid()
-    print(f"[create_task] 🚀 开始, task_id={task_id}", flush=True)
+    # 为这次按钮直跑创建独立的 conversation —— 让它也有自己的侧边栏条目
+    conversation_id = _short_uuid()
+    print(f"[create_task] 🚀 开始, task_id={task_id} conversation_id={conversation_id}", flush=True)
 
     # --- Step 1: 读上传文件 → 落盘（同步 I/O，放 to_thread 里更快？不，FastAPI UploadFile.read 是 async 的） ---
     raw_files = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
@@ -260,7 +263,19 @@ async def create_task(
         }
 
         # fire-and-forget 写 DB + 启动 graph
-        asyncio.create_task(_create_task_in_background(task_id, request_json, brand_cfg, graph, config, initial_state))
+        # title_hint 让 conversation 在建的时候就有真实 title（不是"新对话"占位）
+        _title_hint = {
+            "kind": "button_create_task",
+            "description": description,
+            "product_link": product_link,
+            "image_filenames": [f.filename or "" for f in product_images],
+            "platform": platform,
+        }
+        _computed_conv_title = _compose_title_from_hint(_title_hint)
+        asyncio.create_task(_create_task_in_background(
+            task_id, conversation_id, _title_hint,
+            request_json, brand_cfg, graph, config, initial_state,
+        ))
     except Exception as exc:
         print(f"[create_task] ❌ graph 不可用: {exc}", flush=True)
 
@@ -275,6 +290,13 @@ async def create_task(
             "estimated_cost_range": [2.0, 10.0],
             "description": _desc,
         })
+
+        # conversation title —— 提前算好直接发，前端侧边栏无需刷新就能显示
+        yield _sse("conversation_title", {
+            "conversation_id": conversation_id,
+            "title": _computed_conv_title,
+        })
+        print(f"[create_task] 📢 conversation_title={_computed_conv_title}", flush=True)
 
         # 先推一个 phase=input（对齐旧版 SSE 契约）
         yield _sse("phase", {"phase": "input"})
@@ -323,6 +345,8 @@ async def create_task(
 
 async def _create_task_in_background(
     task_id: str,
+    conversation_id: str,
+    title_hint: dict[str, Any],
     request_json: dict[str, Any],
     brand_cfg: dict[str, Any],
     graph,
@@ -333,11 +357,27 @@ async def _create_task_in_background(
 
     DB create 必须在 graph 启动前完成——否则 graph 很快跑到 interrupt 点，
     前端立即调 resume，此时 Task 行还没写入就会 404。
+    conversation 必须先于 task 创建（FK 约束）。
     """
     def _sync_write():
         with session_scope() as db:
+            from wellflow.app.repositories.conversation_repo import ConversationRepo
+            conv_repo = ConversationRepo(db)
+            # conversation —— 带 title_hint，repo 会自动生成真实 title
+            conv_repo.create(
+                conversation_id=conversation_id,
+                title="新对话",
+                current_task_id=task_id,
+                title_hint=title_hint,
+            )
             repo = TaskRepo(db)
-            repo.create(task_id=task_id, request_json=request_json, phase=TaskPhase.INPUT.value, brand_config_json=brand_cfg)
+            repo.create(
+                task_id=task_id,
+                request_json=request_json,
+                phase=TaskPhase.INPUT.value,
+                brand_config_json=brand_cfg,
+                conversation_id=conversation_id,
+            )
             repo.add_event(task_id, "task_created", phase=TaskPhase.INPUT.value, payload_json=request_json)
 
     try:
@@ -400,7 +440,6 @@ async def resume_task(
     # action: "confirm" | "refine" | "redo"(仅 C4 redo→node4 保留)
     action: str = Form(default="confirm"),
     image_model: str | None = Form(default=None),
-    model_images: list[UploadFile] = File(default_factory=list),
     selected_scheme_indices: str | None = Form(default=None),
     # redo_target: C4 阶段可选，仅 redo 模式生效
     redo_target: str | None = Form(default=None),
@@ -408,6 +447,10 @@ async def resume_task(
     refine_instruction: str | None = Form(default=None),
     refine_target: str | None = Form(default=None),
     resume_json: str | None = Form(default=None),
+    # 三类参考图（一步到位：直接在 resume 请求里把图传过来）
+    mannequin_files: list[UploadFile] = File(default_factory=list),
+    scene_files: list[UploadFile] = File(default_factory=list),
+    outfit_files: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
     import json as _json
@@ -515,12 +558,22 @@ async def resume_task(
                 "请重试当前节点，不允许跳过向下流转。",
             )
 
-    # model_images 落盘（C1 专用）
-    model_image_paths: list[str] = []
-    if model_images:
-        raw_files = [(f.filename or "model", await f.read(), f.content_type) for f in model_images]
-        from wellflow.app.utils.image_store import save_upload
-        model_image_paths = save_upload(task_id, raw_files, prefix="m")
+    # ---- 三类参考图落盘（resume 时一步到位：直接从 FormData 上传）----
+    ref_paths: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
+    if mannequin_files or scene_files or outfit_files:
+        from wellflow.app.utils.image_store import save_upload as _save
+        _pairs = [
+            ("mannequin", mannequin_files),
+            ("scene", scene_files),
+            ("outfit", outfit_files),
+        ]
+        for k, files in _pairs:
+            if files:
+                raw = [(f.filename or k, await f.read(), f.content_type) for f in files]
+                ref_paths[k] = _save(task_id, raw, prefix=k[0])
+        print(f"[resume] 📎 三类参考图落盘: "
+              f"mannequin={len(ref_paths['mannequin'])}, scene={len(ref_paths['scene'])}, outfit={len(ref_paths['outfit'])}",
+              flush=True)
 
     # ---- 优先用 resume_json（最灵活的通路） ----
     if resume_json:
@@ -532,8 +585,14 @@ async def resume_task(
             raise HTTPException(400, f"resume_json 解析失败: {exc}")
         # 注入通用字段（Form 参数仍可覆盖 json）
         resume_values.setdefault("node", node)
-        if model_image_paths and "model_images" not in resume_values:
-            resume_values["model_images"] = model_image_paths
+        # FormData 上传的三类图 → 注入（resume_json 里没写 reference_images 或某类为空时使用）
+        if any(ref_paths.values()):
+            _existing_refs = resume_values.get("reference_images") or {}
+            resume_values["reference_images"] = {
+                "mannequin": list(_existing_refs.get("mannequin") or ref_paths["mannequin"]),
+                "scene": list(_existing_refs.get("scene") or ref_paths["scene"]),
+                "outfit": list(_existing_refs.get("outfit") or ref_paths["outfit"]),
+            }
     else:
         # ---- 按 node 类型组装 Form 参数 ----
         resume_values: dict[str, Any] = {"node": node}
@@ -572,11 +631,14 @@ async def resume_task(
         if not _is_refine and not _is_redo:
             if node == "c1":
                 resume_values["confirmed_report"] = confirmed_report
-                if model_image_paths:
-                    resume_values["model_images"] = model_image_paths
                 resume_values["ratio"] = ratio
                 if image_model:
                     resume_values["image_model"] = image_model
+                # C1 允许传 mannequin 图
+                if ref_paths.get("mannequin"):
+                    resume_values["reference_images"] = {
+                        "mannequin": ref_paths["mannequin"], "scene": [], "outfit": []
+                    }
             elif node == "c2":
                 if image_model:
                     resume_values["image_model"] = image_model
@@ -597,13 +659,38 @@ async def resume_task(
                         print(f"[resume] C2 收到 per_scheme_count={counts}", flush=True)
                     except ValueError:
                         print(f"[resume] ⚠️ per_scheme_count 解析失败: {_psc}", flush=True)
+                # C2 三类参考图全注入
+                if any(ref_paths.values()):
+                    resume_values["reference_images"] = {
+                        "mannequin": ref_paths["mannequin"],
+                        "scene": ref_paths["scene"],
+                        "outfit": ref_paths["outfit"],
+                    }
             elif node == "c3":
                 if image_model:
                     resume_values["image_model"] = image_model
                 if ratio:
                     resume_values["ratio"] = ratio
+                if any(ref_paths.values()):
+                    resume_values["reference_images"] = {
+                        "mannequin": ref_paths["mannequin"],
+                        "scene": ref_paths["scene"],
+                        "outfit": ref_paths["outfit"],
+                    }
             elif node == "c4":
                 resume_values["decision"] = "confirm"
+
+    # 多套方案必须明确选中；只有一套时可直接确认唯一方案。
+    if node == "c2" and resume_values.get("decision", "confirm") == "confirm":
+        selected = resume_values.get("selected_scheme_indices")
+        if selected is None:
+            schemes = (graph_state.get("node2") or {}).get("schemes") or []
+            if len(schemes) == 1:
+                selected = resume_values["selected_scheme_indices"] = [0]
+        if (not isinstance(selected, list) or len(selected) != 1
+                or type(selected[0]) is not int
+                or not 0 <= selected[0] < len((graph_state.get("node2") or {}).get("schemes") or [])):
+            raise HTTPException(400, "请先查看商拍方案卡片，选 1 套您满意的方案后再点击确认。")
 
     # fire-and-forget DB: 清 interrupt + 写事件
     def _sync_prepare():
@@ -611,22 +698,25 @@ async def resume_task(
             with session_scope() as db:
                 repo2 = TaskRepo(db)
                 repo2.save_interrupt(task_id, None)
+                # 事件 payload 里写 ref_paths 的统计
+                _total_ref = sum(len(v) for v in ref_paths.values())
                 repo2.add_event(
                     task_id, "task_resumed",
                     payload_json={
                         "node": node,
-                        "model_image_count": len(model_image_paths),
+                        "ref_image_count": _total_ref,
                         "action": action,
                         "redo_target": redo_target,
                         "refine_target": refine_target,
                     }
                 )
-                # 模特图路径持久化到 task_image（按 task_id 可查）
-                if node == "c1" and model_image_paths:
-                    repo2.save_images(task_id, [
-                        {"image_type": "model", "storage_uri": p}
-                        for p in model_image_paths
-                    ])
+                # 三类参考图路径持久化到 task_image 表（按 type 分组）
+                if _total_ref:
+                    _to_save: list[dict[str, Any]] = []
+                    for t in ("mannequin", "scene", "outfit"):
+                        for p in ref_paths.get(t) or []:
+                            _to_save.append({"image_type": t, "storage_uri": p})
+                    repo2.save_images(task_id, _to_save)
         except Exception as e:
             print(f"[resume] ⚠️ DB prepare 失败: {e}", flush=True)
 
@@ -767,15 +857,42 @@ async def restart_task(
     if _is_running(task_id):
         raise HTTPException(409, "任务正在执行中，不需要重启")
 
-    # 读 checkpoint 看 graph 当前状态
-    graph_state, snapshot = await _aget_graph_state(task_id)
+    # 读 checkpoint 看 graph 当前状态（graph_state 未用到，仅 snapshot 用于 rt_state 判断）
+    _graph_state, snapshot = await _aget_graph_state(task_id)
     rt_state, rt_age = check_graph_runtime_state(snapshot)
 
     print(f"[restart] task={task_id} phase={task.phase} rt_state={rt_state} age={rt_age}",
           flush=True)
 
     if rt_state == "done":
-        # graph 实际上已经跑完了，只是 DB phase 没同步？让前端重新 get 一次就行
+        # checkpoint 说 graph 已到 END，但 DB phase 可能没同步
+        # （典型根因：persist_phase 之前静默吞异常导致 DB 写入丢失）
+        if task.phase not in (TaskPhase.DONE.value, TaskPhase.FAILED.value):
+            # 🔴 graph→DB 状态脱节！主动 reconcile，让 DB 追上 checkpoint
+            print(
+                f"[restart] 🛠️ task={task_id} 状态脱节 reconcile: "
+                f"checkpoint=done vs db.phase={task.phase}",
+                flush=True,
+            )
+            with session_scope() as db2:
+                repo2 = TaskRepo(db2)
+                repo2.update_phase(task_id, TaskPhase.DONE.value)
+                repo2.save_interrupt(task_id, None)
+            # 返回 SSE 流：先发 reconciled 让前端知道发生了状态修复，
+            # 再发标准的 phase=done 终态事件（前端的 SSE 监听靠 done/error 事件自然关闭）
+            async def _reconcile_event_generator():
+                yield _sse("reconciled", {
+                    "task_id": task_id,
+                    "phase": TaskPhase.DONE.value,
+                    "reconciled": True,
+                    "message": "graph 已完成但 DB 状态未同步，已自动修正为 done。请刷新页面查看结果。",
+                })
+                # 用 phase=done 结束流 —— 让前端的现有终态处理逻辑自然 kick in，
+                # 避免前端因为没收到 done/error 而继续监听直到心跳超时
+                yield _sse("phase", {"phase": "done"})
+
+            return StreamingResponse(_reconcile_event_generator(), media_type="text/event-stream")
+        # DB 也已经是终态 → 真的不需要重启
         raise HTTPException(409, "任务已完成，无需重启")
 
     if rt_state == "paused":
@@ -925,7 +1042,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
                 node1=node1,
                 node2=node2,
                 node3=node3,
-                model_images=[],
+                reference_images={},
                 output_images=[],
                 created_at=to_cn_iso(task.created_at),
                 updated_at=to_cn_iso(task.updated_at),
@@ -979,18 +1096,21 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
                 "schemes": (node2 or {}).get("schemes"),
                 "selected_scheme_indices": (node2 or {}).get("selected_scheme_indices"),
                 "scheme_raw": (node2 or {}).get("scheme_raw"),
+                "thinking_text": (node2 or {}).get("thinking_text"),
             },
             "c3": {
                 "node": "c3",
                 "hint": "请确认生图提示词",
                 "generate_prompts": (node3 or {}).get("generate_prompts"),
                 "prompts_detail": (node3 or {}).get("prompts_detail"),
+                "thinking_text": (node3 or {}).get("thinking_text"),
             },
             "c4": {
                 "node": "c4",
                 "hint": "查看生图结果",
                 "outputs": (node4 or {}).get("outputs"),
                 "failed_items": (node4 or {}).get("failed_items"),
+                "thinking_text": (node4 or {}).get("thinking_text"),
             },
         }
         interrupt_json = node_payload_map.get(graph_current_node)
@@ -1004,8 +1124,8 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             print(f"[get_task] DB interrupt_json.node={task.interrupt_json.get('node')} "
                   f"陈旧，覆盖为 graph_current_node={graph_current_node}", flush=True)
 
-    # 从 task_image 表读出模特图 + 生图成品（按 task_id 查询）
-    model_images: list[dict[str, Any]] = []
+    # 从 task_image 表读出参考图（按 type 分组）+ 生图成品
+    reference_images: dict[str, list[dict[str, Any]]] = {"mannequin": [], "scene": [], "outfit": []}
     output_images: list[dict[str, Any]] = []
     for img in repo.list_images(task_id):
         item: dict[str, Any] = {
@@ -1013,14 +1133,30 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             "storage_uri": img.storage_uri,
             "url": _storage_uri_url(img.storage_uri),
         }
-        if img.image_type == "model":
-            model_images.append(item)
+        t = img.image_type or ""
+        if t in reference_images:
+            reference_images[t].append(item)
+        elif t == "model":  # 兼容老数据里的 "model" type → 归到 mannequin
+            reference_images["mannequin"].append(item)
         else:
             item["shot_id"] = img.shot_id
             item["prompt"] = img.prompt
             item["prompt_index"] = img.prompt_index
-            item["variant_index"] = img.variant_index
             output_images.append(item)
+
+    # 🔍 thinking_text 诊断日志：三处来源的长度全打出来，定位"刷新后 thinking 丢失"根因
+    _db_interrupt_think = (task.interrupt_json or {}).get("thinking_text") if isinstance(task.interrupt_json, dict) else None
+    _final_interrupt_think = interrupt_json.get("thinking_text") if isinstance(interrupt_json, dict) else None
+    print(
+        f"[get_task] 🩺 thinking_text lengths | "
+        f"ckpt_node1={len((node1 or {}).get('thinking_text') or '')}, "
+        f"ckpt_node2={len((node2 or {}).get('thinking_text') or '')}, "
+        f"ckpt_node3={len((node3 or {}).get('thinking_text') or '')}, "
+        f"ckpt_node4={len((node4 or {}).get('thinking_text') or '')}, "
+        f"db_interrupt={len(_db_interrupt_think or '')}, "
+        f"final_interrupt={len(_final_interrupt_think or '')}",
+        flush=True,
+    )
 
     return ok(TaskInfoResponse(
         task_id=task.task_id,
@@ -1033,7 +1169,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         node1=node1,
         node2=node2,
         node3=node3,
-        model_images=model_images,
+        reference_images=reference_images,
         output_images=output_images,
         created_at=to_cn_iso(task.created_at),
         updated_at=to_cn_iso(task.updated_at),
@@ -1062,6 +1198,8 @@ async def delete_task(task_id: str):
 
         # 只有 node1/node2/node3 正在执行时才禁止删除；
         # HITL 等待（c1_confirm / c2_confirm）和终态（done / failed / needs_retry）都允许删
+        # 关键：后端重启后 DB phase 可能陈旧（还停在 input 但 checkpoint 已经 done/paused），
+        # 必须用 checkpoint 状态二次确认是否真在跑
         _ACTIVE_PHASES = {
             TaskPhase.INPUT.value,
             TaskPhase.RESEARCH.value,
@@ -1069,9 +1207,26 @@ async def delete_task(task_id: str):
             TaskPhase.DELIVERY.value,
         }
         if task.phase in _ACTIVE_PHASES:
-            raise HTTPException(
-                409,
-                f"任务正在执行中（phase='{task.phase}'），请等待执行完成或人工确认后再删除",
+            # DB phase 看起来 active → 再看 checkpoint 是不是真在执行
+            _actually_running = True  # 保守默认：读不到 checkpoint 就拦
+            try:
+                from wellflow.app.graph_context import check_graph_runtime_state as _check_rt
+                _, snapshot = await _aget_graph_state(task_id)
+                rt_state, _ = _check_rt(snapshot)
+                # running/stale = 真在跑；done/paused/none = 没有在执行的 graph
+                _actually_running = rt_state in ("running", "stale")
+            except Exception as _ckpt_err:
+                print(f"[delete_task] ⚠️ checkpoint 状态读不到，保守按 DB phase 拦截: {_ckpt_err}", flush=True)
+
+            if _actually_running:
+                raise HTTPException(
+                    409,
+                    f"任务正在执行中（phase='{task.phase}'），请等待执行完成或人工确认后再删除",
+                )
+            print(
+                f"[delete_task] 🛡️ DB phase={task.phase} 但 checkpoint 已停（rt_state={rt_state!r}），"
+                f"允许删除",
+                flush=True,
             )
 
         # 2. 删 DB（所有子表 + 主表）

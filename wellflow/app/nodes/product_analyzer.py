@@ -24,7 +24,7 @@ async def analyze_product(
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node1_reasoning_effort
 
     user_text_parts: list[str] = []
     if user_text:
@@ -52,7 +52,7 @@ async def stream_analyze_product(
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
     pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    effort = reasoning_effort if reasoning_effort is not None else settings.node1_reasoning_effort
 
     user_message_parts: list[str] = []
     if user_text:

@@ -24,8 +24,11 @@ def persist_phase(task_id: str, phase: str, node_name: str) -> None:
                 # 否则前端恢复任务时会误判为「等待确认」而渲染确认按钮
                 repo.save_interrupt(task_id, None)
             repo.add_event(task_id, "phase_change", phase=phase, payload_json={"node": node_name})
-    except Exception:
-        pass
+    except Exception as e:
+        # 🔴 不再静默吞掉——DB phase 持久化失败是 graph→DB 状态脱节的头号根因
+        import traceback as _tb
+        print(f"[persist_phase] ❌ task={task_id} phase={phase} node={node_name} DB 写入失败: {e}", flush=True)
+        _tb.print_exc()
 
 
 def persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str) -> None:
@@ -46,11 +49,16 @@ def persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str)
             event_type = f"graph_interrupt_{node}"
 
             # 按 node 类型提取要持久化的产物字段（去掉 hint/schema 这种非产物字段）
+            # 💭 thinking_text 必须进白名单——前端 /api/conversations/{id}/timeline
+            # 是从 task_event 表读 payload_json 恢复会话的，漏了就刷新后丢失思考过程
             payload_fields = {
-                "c1": ["report"],
-                "c2": ["schemes", "scheme_raw", "generate_prompts"],
-                "c3": ["generate_prompts", "prompts_detail", "prompt_raw"],
-                "c4": ["outputs"],
+                "c1": ["report", "report_sections", "product_insight",
+                       "thinking_text", "report_locked", "report_hash"],
+                "c2": ["schemes", "scheme_raw", "generate_prompts",
+                       "selected_scheme_indices", "thinking_text"],
+                "c3": ["generate_prompts", "prompts_detail", "prompt_raw",
+                       "thinking_text", "per_prompt_size", "image_model"],
+                "c4": ["outputs", "failed_items", "thinking_text"],
             }.get(node, [])
             payload = {k: v for k, v in interrupt_value.items() if k in payload_fields}
             # 总是带上 phase + hint（恢复时有用）
@@ -101,7 +109,6 @@ def persist_outputs(task_id: str, node4: dict[str, Any]) -> None:
             "shot_id": wid,
             "prompt": o.get("prompt"),
             "prompt_index": o.get("prompt_index"),
-            "variant_index": o.get("variant_index"),
         })
 
     # 给 timeline 用的摘要（不重复存原始图片 URL——那在 task_image 表里有）

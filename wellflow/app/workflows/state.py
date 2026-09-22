@@ -173,7 +173,8 @@ class SchemeState(TypedDict, total=False):
 
 
 class PromptState(TypedDict, total=False):
-    model_images: list[str]                 # C1 用户上传的模特图文件路径（可选）
+    # 三类结构化参考图（C2 阶段用户上传，可选；空列表=没传）
+    reference_images: dict[Literal["mannequin", "scene", "outfit"], list[str]]
     ratio: str                              # C1 用户选的画面比例
     image_model: str                        # 生图模型选择
 
@@ -184,7 +185,6 @@ class PromptState(TypedDict, total=False):
 
     # C3 interrupt 后 resume 写入
     per_prompt_size: list[str]              # 每个 prompt 的图片规格，如 ["3:4", "3:4"]
-    compressed_model_images: list[str]      # 模特图 data URI 缓存
     thinking_text: str                      # VLM 深度思考过程文本（多个方案的 thinking 拼接）
 
 

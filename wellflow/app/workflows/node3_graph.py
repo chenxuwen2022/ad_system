@@ -56,8 +56,11 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     per_scheme_count: list[int] = node2.get("per_scheme_count") or [1] * len(selected_indices)
     user_requirement: str = req.get("user_requirement", "")
 
-    # 模特图：C1 interrupt 时写入 node3.model_images
-    model_image_paths: list[str] = node3.get("model_images") or []
+    # 三类参考图：C2 interrupt 时写入 node3.reference_images
+    ref_images: dict[str, list[str]] = node3.get("reference_images") or {}
+    mannequin_paths: list[str] = ref_images.get("mannequin") or []
+    scene_paths: list[str] = ref_images.get("scene") or []
+    outfit_paths: list[str] = ref_images.get("outfit") or []
 
     # 商品图：优先复用 Node1 缓存
     from wellflow.app.utils.image_store import paths_to_data_uris
@@ -68,10 +71,16 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
         product_image_paths: list[str] = req.get("product_images") or []
         product_images = await asyncio.to_thread(paths_to_data_uris, product_image_paths)
 
-    # 模特图：现场压缩（一般不大，to_thread 不阻塞 event loop）
-    model_images = []
-    if model_image_paths:
-        model_images = await asyncio.to_thread(paths_to_data_uris, model_image_paths)
+    # 三类参考图现场压缩
+    mannequin_images = []
+    if mannequin_paths:
+        mannequin_images = await asyncio.to_thread(paths_to_data_uris, mannequin_paths)
+    scene_images = []
+    if scene_paths:
+        scene_images = await asyncio.to_thread(paths_to_data_uris, scene_paths)
+    outfit_images = []
+    if outfit_paths:
+        outfit_images = await asyncio.to_thread(paths_to_data_uris, outfit_paths)
 
     # 过滤出选中的方案
     selected_schemes: list[dict[str, Any]] = [schemes[i] for i in selected_indices if 0 <= i < len(schemes)]
@@ -86,7 +95,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     if not selected_schemes:
         print("[node3] ⚠️ 没有选中的方案，跳过 prompt 生成", flush=True)
         new_node3: dict[str, Any] = {
-            "model_images": model_image_paths,
+            "reference_images": ref_images,
             "generate_prompts": [],
             "prompts_detail": [],
         }
@@ -100,9 +109,13 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
           f"per_scheme_count={per_scheme_count}, "
           f"共 {len(selected_schemes)} 套方案 → {total_prompts} 份 prompt, "
           f"product_images={len(product_images)}, "
-          f"model_images={len(model_images)}(paths={len(model_image_paths)})", flush=True)
+          f"mannequin={len(mannequin_images)}(paths={len(mannequin_paths)}), "
+          f"scene={len(scene_images)}(paths={len(scene_paths)}), "
+          f"outfit={len(outfit_images)}(paths={len(outfit_paths)})", flush=True)
 
-    effort = "low"   # Node1/Node2/Node3 统一 low：开启 thinking 但推理成本可控
+    # reasoning_effort 从 settings.node3_reasoning_effort 读取（默认 low，可配）
+    from wellflow.app.config import settings as _settings
+    effort = _settings.node3_reasoning_effort
 
     t_total = time.time()
     all_prompts: list[str] = []
@@ -143,7 +156,11 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
                 scheme=scheme,
                 product_insight=product_insight,
                 product_images=product_images,
-                model_images=model_images or None,
+                reference_images={
+                    "mannequin": mannequin_images or [],
+                    "scene": scene_images or [],
+                    "outfit": outfit_images or [],
+                },
                 user_requirement=user_requirement,
                 reasoning_effort=effort,
                 variant_index=vi,
@@ -189,10 +206,24 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
             detail = _pg._extract_json(raw_content)
             prompt_text, negative_prompt = _pg._json_to_natural_prompt(detail)
 
+            # 从原始输出里抽 #NAME: xxx，拼成 "方案名 · xxx"
+            subtitle = _pg._extract_prompt_subtitle(raw_content)
+            if subtitle:
+                prompt_name = f"{scheme_name} · {subtitle}"
+            else:
+                # LLM 没按格式输出时的兜底：用 "方案名 · 变体N"
+                prompt_name = (
+                    f"{scheme_name} · 变体{vi + 1}"
+                    if n_variants > 1
+                    else scheme_name
+                )
+
             if task_id:
                 publish(task_id, "prompt_chunk_done", {
                     "scheme_index": scheme_index,
                     "scheme_name": scheme_name,
+                    "prompt_name": prompt_name,
+                    "prompt_subtitle": subtitle,
                     "variant_index": vi,
                     "variant_total": n_variants,
                     "total_chunks": chunk_index,
@@ -209,6 +240,8 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
             all_details.append({
                 "scheme_index": scheme_index,
                 "scheme_name": scheme_name,
+                "prompt_name": prompt_name,
+                "prompt_subtitle": subtitle,
                 "variant_index": vi,
                 "variant_total": n_variants,
                 "prompt": prompt_text,
@@ -234,7 +267,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
 
     # 用全新 dict 返回
     new_node3: dict[str, Any] = {
-        "model_images": model_image_paths,
+        "reference_images": ref_images,
         "generate_prompts": all_prompts,
         "prompts_detail": all_details,
         "prompt_raw": "\n---\n".join(d.get("prompt", "") for d in all_details),

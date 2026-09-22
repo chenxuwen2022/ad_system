@@ -1,0 +1,469 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>图片裂变 · WellFlow</title>
+<style>
+:root{--bg:#0F0F0F;--card:#1A1F14;--card2:#1E2416;--line:#2E3A1E;--green:#CCFF00;--text:#fff;--t2:#C8D4B8;--t3:#8A9A78}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter','Noto Sans SC','PingFang SC',sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+.page{display:grid;grid-template-columns:1fr 1fr;gap:40px;padding:40px;max-width:1200px;margin:0 auto}
+@media(max-width:900px){.page{grid-template-columns:1fr}}
+.left .imgbox{background:#000;border-radius:12px;aspect-ratio:9/12;max-height:560px;display:grid;place-items:center;overflow:hidden;margin-bottom:16px}
+.left .imgbox img{width:100%;height:100%;object-fit:cover}
+.left .title{font-size:18px;font-weight:700;margin-bottom:6px}
+.left .source{color:var(--t3);font-size:13px}
+.right .label{font-size:14px;margin-bottom:10px}
+.sku-select{width:100%;padding:14px 16px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:15px;appearance:none;margin-bottom:12px}
+.btn-new{width:100%;padding:14px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:15px;margin-bottom:24px}
+.steps{color:var(--t3);font-size:13px;margin-bottom:16px}
+.q{font-size:17px;font-weight:700;margin-bottom:16px}
+.opts{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;margin-bottom:14px}
+.opt{padding:12px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:14px;text-align:center;cursor:pointer}
+.opt.on{background:var(--green);color:#000;font-weight:600;border-color:var(--green)}
+.hint{color:var(--t3);font-size:13px;margin-bottom:20px}
+.label2{font-size:14px;margin-bottom:10px}
+textarea{width:100%;min-height:100px;padding:14px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:14px;resize:vertical;margin-bottom:20px}
+.btn-primary{width:100%;padding:16px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--text);font-size:16px;cursor:pointer}
+.btn-primary:hover{border-color:var(--green)}
+.close{position:fixed;top:24px;right:24px;width:40px;height:40px;border-radius:10px;background:var(--card);border:1px solid var(--line);color:var(--t2);font-size:18px;cursor:pointer;display:grid;place-items:center}
+</style>
+</head>
+<body>
+
+<button class="close" onclick="window.close()">✕</button>
+<div class="page">
+  <div class="left">
+    <div class="imgbox" id="previewBox">
+      <img src="" alt="素材预览">
+    </div>
+    <div class="title" id="matTitle">织物触感 | 细节卖点·场景拓量</div>
+    <div class="source">来源：投放素材</div>
+  </div>
+  <div class="right">
+    <div class="label">归属 SKU</div>
+    <select class="sku-select">
+      <option value="">请选择 SKU</option>
+    </select>
+    <button class="btn-new" onclick="showNewSkuForm()">新建 SKU</button>
+    <div id="newSkuForm" style="display:none;margin-bottom:24px">
+      <div style="margin-bottom:16px">
+        <div class="label" style="margin-bottom:8px">系列 *</div>
+        <input type="text" class="sku-select" style="margin-bottom:0">
+      </div>
+      <div style="margin-bottom:16px">
+        <div class="label" style="margin-bottom:8px">货号/款号 *</div>
+        <input type="text" class="sku-select" style="margin-bottom:0">
+      </div>
+      <div style="margin-bottom:16px">
+        <div class="label" style="margin-bottom:8px">商品名称 *</div>
+        <input type="text" class="sku-select" style="margin-bottom:0">
+      </div>
+      <div style="margin-bottom:16px">
+        <div class="label" style="margin-bottom:8px">品牌</div>
+        <input type="text" class="sku-select" style="margin-bottom:0">
+      </div>
+      <div style="margin-bottom:16px">
+        <div class="label" style="margin-bottom:8px">类目</div>
+        <input type="text" class="sku-select" style="margin-bottom:0">
+      </div>
+      <button class="btn-primary" onclick="saveSku()">保存 SKU 并使用</button>
+    </div>
+    <div id="normalArea">
+    <div class="steps">1 选择变化 &nbsp; 2 确认方案 &nbsp; 3 裂变结果</div>
+    <div class="q">希望这张图怎样变化？</div>
+    <div class="opts">
+      <button class="opt on" onclick="selOpt(this)">换动作</button>
+      <button class="opt" onclick="selOpt(this)">换场景</button>
+      <button class="opt" onclick="selOpt(this)">动作+场景</button>
+      <button class="opt" onclick="selOpt(this)">自定义</button>
+    </div>
+    <div class="hint">选择要修改的内容，确认方案后再进行第二轮生图。</div>
+    <div class="label2">补充想法（可选）</div>
+    <textarea placeholder="例如：动作更自然一些"></textarea>
+    </div><button class="btn-primary" onclick="showPlans()">给我出方案</button>
+  </div>
+</div>
+<script>
+let MPATH = new URLSearchParams(location.search).get('path') || '';
+function selOpt(el){
+  document.querySelectorAll('.opt').forEach(o=>o.classList.remove('on'));
+  el.classList.add('on');
+  var ct = el.textContent;
+  var ta = document.querySelector('textarea[placeholder]');
+  if (ta) {
+    if (ct === '换场景') ta.placeholder = '例如：换成有自然光的咖啡馆';
+    else if (ct === '动作+场景') ta.placeholder = '例如：坐在窗边，光线从侧面照入';
+    else if (ct === '自定义') ta.placeholder = '请描述你想要的变化';
+    else ta.placeholder = '例如：动作更自然一些';
+  }
+}
+function showNewSkuForm(){
+  document.getElementById('newSkuForm').style.display = 'block';
+  document.getElementById('normalArea').style.display = 'none';
+}
+async function saveSku(){
+  const inputs = document.querySelectorAll('#newSkuForm input');
+  const series = inputs[0].value.trim();
+  const skuNo = inputs[1].value.trim();
+  const name = inputs[2].value.trim();
+  const brand = inputs[3].value.trim();
+  const category = inputs[4].value.trim();
+  if (!series || !skuNo || !name) {
+    alert('请填写必填项（系列、货号/款号、商品名称）');
+    return;
+  }
+  try {
+    const r = await fetch('/api/skus', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({series, sku_no: skuNo, name, brand, category})
+    });
+    const j = await r.json();
+    if (!j.success) { alert('保存失败：' + (j.error || '')); return; }
+    // 加到下拉框
+    const sel = document.querySelector('.sku-select');
+    const opt = document.createElement('option');
+    opt.value = j.id;
+    opt.textContent = name + ' / ' + skuNo;
+    sel.appendChild(opt);
+    sel.value = j.id;
+    inputs.forEach(i => i.value = '');
+    document.getElementById('newSkuForm').style.display = 'none';
+    document.getElementById('normalArea').style.display = 'block';
+  } catch(e) { alert('请求失败：' + e); }
+}
+
+// 页面加载时拉取 SKU 列表
+window.addEventListener('load', () => {
+  fetch('/api/skus').then(r => r.json()).then(list => {
+    const sel = document.querySelector('.sku-select');
+    list.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s.id;
+      opt.textContent = (s.name || '') + ' / ' + (s.sku_no || '');
+      sel.appendChild(opt);
+    });
+  }).catch(() => {});
+});
+// 从 URL 参数获取素材名和预览图
+const qs = new URLSearchParams(location.search);
+const name = qs.get('name') || '';
+const path = qs.get('path') || '';
+const type = qs.get('type') || '';
+if (name) {
+  const fn = name.replace(/\.[^.]+$/, '');
+  document.getElementById('matTitle').textContent = fn;
+  const url = '/api/uploaded_media/' + encodeURIComponent(path || name);
+  document.querySelector('#previewBox img').src = url;
+}
+</script>
+<!-- 方案确认页面 -->
+<div id="planView" style="display:none;margin-top:40px;border-top:1px solid #2E3A1E;padding-top:30px">
+  <div>
+    <h2 style="font-size:24px;font-weight:700;margin-bottom:20px">确认本轮裂变方案</h2>
+    <p style="color:#8A9A78;font-size:13px;line-height:1.6;margin-bottom:24px">以下为规则生成的方案建议，可直接修改；尚未调用 AI 理解来源图。重新出方案会替换当前建议。</p>
+
+    <!-- 方案 A -->
+    <div style="border:1px solid #CCFF00;border-radius:12px;padding:20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input type="checkbox" checked style="accent-color:#CCFF00;width:18px;height:18px">
+        <span style="font-weight:700;font-size:16px">方案 A · <span class="planType">换动作</span></span>
+      </div>
+      <div style="font-size:14px;margin-bottom:8px" class="planLabel">模特动作</div>
+      <textarea style="width:100%;padding:12px;border-radius:10px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px;resize:vertical">自然站立，一手插兜，视线略侧前方</textarea>
+      <div style="font-size:13px;color:#8A9A78;margin-top:10px">补充要求：</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        <div><div style="font-size:13px;color:#8A9A78;margin-bottom:8px">张数</div><select style="width:100%;padding:10px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff"><option>1 张</option><option>2 张</option><option>3 张</option></select></div>
+        <div><div style="font-size:13px;color:#8A9A78;margin-bottom:8px">比例</div><select style="width:100%;padding:10px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff"><option>原图</option><option>9:16</option><option>3:4</option><option>1:1</option></select></div>
+      </div>
+    </div>
+
+    <!-- 方案 B -->
+    <div style="border:1px solid #2E3A1E;border-radius:12px;padding:20px;margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input type="checkbox" style="accent-color:#CCFF00;width:18px;height:18px">
+        <span style="font-weight:700;font-size:16px">方案 B · <span class="planType">换动作</span></span>
+      </div>
+      <div style="font-size:14px;margin-bottom:8px" class="planLabel">模特动作</div>
+      <textarea style="width:100%;padding:12px;border-radius:10px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px;resize:vertical">正面微笑，双手自然下垂</textarea>
+      <div style="font-size:13px;color:#8A9A78;margin-top:10px">补充要求：</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        <div><div style="font-size:13px;color:#8A9A78;margin-bottom:8px">张数</div><select style="width:100%;padding:10px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff"><option>1 张</option></select></div>
+        <div><div style="font-size:13px;color:#8A9A78;margin-bottom:8px">比例</div><select style="width:100%;padding:10px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff"><option>原图</option></select></div>
+      </div>
+    </div>
+
+    <!-- 方案 C -->
+    <div style="border:1px solid #CCFF00;border-radius:12px;padding:20px;margin-bottom:24px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <input type="checkbox" checked style="accent-color:#CCFF00;width:18px;height:18px">
+        <span style="font-weight:700;font-size:16px">方案 C · <span class="planType">换动作</span></span>
+      </div>
+      <div style="font-size:14px;margin-bottom:8px" class="planLabel">模特动作</div>
+      <textarea style="width:100%;padding:12px;border-radius:10px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px;resize:vertical">身体侧转约 30 度，双手自然垂放</textarea>
+      <div style="font-size:13px;color:#8A9A78;margin-top:10px">补充要求：</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+        <div><div style="font-size:13px;color:#8A9A78;margin-bottom:8px">张数</div><select style="width:100%;padding:10px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff"><option>1 张</option></select></div>
+        <div><div style="font-size:13px;color:#8A9A78;margin-bottom:8px">比例</div><select style="width:100%;padding:10px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff"><option>原图</option></select></div>
+      </div>
+    </div>
+
+    <div style="margin-bottom:16px;color:#C8D4B8">已选 3 套方案，共 3 张</div>
+    <button onclick="doGenerate()" style="width:100%;padding:16px;border-radius:10px;background:#CCFF00;color:#000;font-weight:700;font-size:16px;border:none">确认方案并裂变 3 张</button>
+    <p style="color:#8A9A78;font-size:12px;line-height:1.6;margin-top:12px">本轮为裂变流程演示，未生成新成片；可选择入库/入投放，保存来源参考图与修改方案，携带演示说明。</p>
+  </div>
+</div>
+
+<!-- 裂变结果区域 -->
+<div id="resultView" style="display:none;margin-top:40px;padding-bottom:100px">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+    <h3 style="font-size:18px;font-weight:700;margin:0">会话产出 · 3 份</h3>
+    <button onclick="downloadAll()" style="padding:8px 16px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:13px">批量下载</button>
+  </div>
+  <div style="color:#8A9A78;font-size:13px;margin-bottom:20px">第 1 批 · 图片裂变 · <span id="batchTime"></span></div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-bottom:80px" id="resultCards">
+  </div>
+</div>
+
+<!-- 底部固定工具栏 -->
+<div id="resultToolbar" style="display:none;position:fixed;bottom:0;left:0;right:0;background:#1A1F14;border-top:1px solid #2E3A1E;padding:14px 32px;align-items:center;gap:20px;z-index:9998">
+  <span style="color:#C8D4B8;font-size:14px">已选 <span id="selectedCount">0</span> 份</span>
+  <button onclick="selectAll()" style="padding:6px 14px;border-radius:8px;background:#2E3A1E;color:#fff;font-size:13px">全选</button>
+  <label style="display:flex;align-items:center;gap:6px;color:#fff;font-size:14px"><input type="checkbox" checked style="accent-color:#CCFF00;width:16px;height:16px">入库</label>
+  <label style="display:flex;align-items:center;gap:6px;color:#fff;font-size:14px"><input type="checkbox" checked style="accent-color:#CCFF00;width:16px;height:16px">入投放</label>
+  <div style="flex:1"></div>
+  <button onclick="doSave('入库')" style="padding:8px 20px;border-radius:8px;background:#CCFF00;color:#000;font-size:14px;font-weight:600">入库</button>
+  <span style="color:#8A9A78;font-size:14px">请选择结果</span>
+</div>
+
+<script>
+function showPlans(){
+  document.getElementById('planView').style.display = 'block';
+  document.getElementById('planView').scrollIntoView({behavior:'smooth'});
+  var changeType = document.querySelector('.opt.on') ? document.querySelector('.opt.on').textContent : '换动作';
+  var label = (changeType === '换场景') ? '场景' : (changeType === '动作+场景' ? '动作+场景' : '模特动作');
+  document.querySelectorAll('.planType').forEach(function(el){ el.textContent = changeType; });
+  document.querySelectorAll('.planLabel').forEach(function(el){ el.textContent = label; });
+  var ta = document.querySelector('textarea[placeholder]');
+  if (ta) {
+    if (changeType === '换场景') ta.placeholder = '例如：换成有自然光的咖啡馆';
+    else if (changeType === '动作+场景') ta.placeholder = '例如：坐在窗边，光线从侧面照入';
+    else ta.placeholder = '例如：动作更自然一些';
+  }
+  var extra = ta ? ta.value : '';
+  const tas = document.querySelectorAll('#planView textarea');
+  tas.forEach(t => t.value = 'AI 生成中...');
+  fetch('/api/image_split/generate_plans', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({change_type: changeType, extra: extra})
+  }).then(r => r.json()).then(j => {
+    if (j.success && j.plans) {
+      j.plans.forEach((p, i) => { if (tas[i]) tas[i].value = p; });
+    } else {
+      tas.forEach(t => t.value = j.error || '生成失败');
+    }
+  }).catch(e => {
+    tas.forEach(t => t.value = '请求失败：' + e);
+  });
+}
+async function doGenerate(){
+  const tas = document.querySelectorAll('#planView textarea');
+  const actions = [];
+  tas.forEach(t => actions.push(t.value || ''));
+  const cards = document.getElementById('resultCards');
+  cards.innerHTML = '';
+  const changeType = document.querySelector('.opt.on') ? document.querySelector('.opt.on').textContent : '换动作';
+  const names = ['方案 A · ' + changeType + ' · 第 1 张','方案 B · ' + changeType + ' · 第 1 张','方案 C · ' + changeType + ' · 第 1 张'];
+  const cardEls = [];
+  for (let i = 0; i < 3; i++) {
+    const card = document.createElement('div');
+    card.style.cssText = 'background:#1E2416;border:1px solid #2E3A1E;border-radius:12px;overflow:hidden;padding:16px';
+    var h = '';
+    h += '<div style="display:flex;align-items:flex-start;gap:8px;margin-bottom:14px">';
+    h += '<input type="checkbox" class="res-check" onclick="updateCount()" style="accent-color:#CCFF00;width:18px;height:18px;margin-top:4px;flex-shrink:0">';
+    h += '<div class="imgbox" style="flex:1;aspect-ratio:9/12;background:#000;border-radius:8px;display:grid;place-items:center;color:#8A9A78;font-size:13px">AI 生成中...</div>';
+    h += '</div>';
+    h += '<div style="font-weight:700;font-size:15px;margin-bottom:8px">' + names[i] + '</div>';
+    h += '<div style="font-size:12.5px;color:#C8D4B8;line-height:1.6;margin-bottom:14px">动作：' + (actions[i]||'') + '</div>';
+    h += '<button onclick="openDetail(' + i + ')" style="width:100%;padding:10px;border-radius:8px;background:#2E3A1E;color:#fff;font-size:14px;margin-bottom:10px">查看详情</button>';
+    card.innerHTML = h;
+    cards.appendChild(card);
+    cardEls.push(card);
+  }
+  document.getElementById('batchTime').textContent = new Date().toLocaleString('zh-CN');
+  document.getElementById('resultView').style.display = 'block';
+  document.getElementById('resultToolbar').style.display = 'flex';
+  document.getElementById('resultView').scrollIntoView({behavior:'smooth'});
+  for (let i = 0; i < 3; i++) {
+    const box = cardEls[i].querySelector('.imgbox');
+    try {
+      const r = await fetch('/api/image_split/generate_image', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({source_path: MPATH, action: actions[i], change_type: changeType})
+      });
+      const j = await r.json();
+      if (j.success) {
+        box.innerHTML = '<img src="' + j.url + '" style="width:100%;height:100%;object-fit:cover">';
+      } else {
+        box.innerHTML = '<span style="color:#EA6668;font-size:12px;padding:10px">生成失败<br>' + (j.error||'') + '</span>';
+      }
+    } catch(e) {
+      box.innerHTML = '<span style="color:#EA6668;font-size:12px">请求失败：' + e + '</span>';
+    }
+  }
+}
+function selectAll(){
+  document.querySelectorAll('.res-check').forEach(c => c.checked = true);
+  updateCount();
+}
+function updateCount(){
+  var n = document.querySelectorAll('.res-check:checked').length;
+  document.getElementById('selectedCount').textContent = n;
+}
+function downloadAll(){
+  var checked = document.querySelectorAll('.res-check:checked');
+  if (checked.length === 0) { alert('请先选择要下载的素材'); return; }
+  var hasImg = true;
+  var urls = [];
+  for (var i = 0; i < checked.length; i++) {
+    var card = checked[i].closest('div[style*="border-radius:12px"]');
+    var img = card ? card.querySelector('.imgbox img') : null;
+    if (!img || img.src.indexOf('AI 生成中') >= 0) { hasImg = false; break; }
+    urls.push(img.src);
+  }
+  if (!hasImg) { alert('选中的素材还未生成完成，请等待生成完成后再下载'); return; }
+  urls.forEach(function(url, i){
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = '裂变图_' + (i+1) + '.jpg';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+}
+async function doSave(mode){
+  var checked = document.querySelectorAll('.res-check:checked');
+  if (checked.length === 0) { alert('请先选择要' + mode + '的素材'); return; }
+  // 检查是否已生成图片
+  var hasImg = true;
+  for (var i = 0; i < checked.length; i++) {
+    var card = checked[i].closest('div[style*="border-radius:12px"]');
+    var img = card ? card.querySelector('.imgbox img') : null;
+    if (!img || img.src.indexOf('AI 生成中') >= 0) { hasImg = false; break; }
+  }
+  if (!hasImg) { alert('选中的素材还未生成完成，请等待生成完成后再' + mode); return; }
+  var changeType = document.querySelector('.opt.on') ? document.querySelector('.opt.on').textContent : '换动作';
+  var actionText = document.querySelectorAll('#planView textarea');
+  var saved = 0;
+  for (var i = 0; i < checked.length; i++) {
+    var card = checked[i].closest('div[style*="border-radius:12px"]');
+    var img = card ? card.querySelector('.imgbox img') : null;
+    var action = actionText[i] ? actionText[i].value : '';
+    try {
+      var r = await fetch('/api/image_split/save', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          source_path: MPATH,
+          action: action,
+          change_type: changeType,
+          result_url: img ? img.src : '',
+          sku_id: 0,
+          mode: mode
+        })
+      });
+      var j = await r.json();
+      if (j.success) saved++;
+    } catch(e) {}
+  }
+  alert('已' + mode + ' ' + saved + ' 条素材');
+}
+function keepDraft(){
+  document.getElementById('draftBar').style.display = 'none';
+}
+function discardDraft(){
+  if (confirm('确定放弃草稿并关闭？')) window.close();
+}
+function continueEdit(){
+  document.getElementById('draftBar').style.display = 'none';
+}
+</script>
+<div id="detailModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:10000;overflow-y:auto">
+  <div style="max-width:1100px;margin:30px auto;padding:0 20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+      <h2 style="font-size:22px;font-weight:700;margin:0" id="detailTitle">方案 C · 换动作 · 第 1 张</h2>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:40px">
+      <div>
+        <div style="color:#8A9A78;font-size:13px;line-height:1.8">
+          裂变演示 · 未生成新成片，入库保存来源参考图<br>
+          代数未知<br>
+          SKU：<span id="detailSku">白色亚麻衬衫</span><br>
+          会话：白色亚麻衬衫 · 图片裂变<br>
+          来源参考：尚未生成新成片<br>
+          <b style="color:#fff;font-size:15px" id="detailPlanName">方案 C · 换动作</b><br>
+          动作：<span id="detailAction">身体侧转约 30 度，双手自然垂放</span><br>
+          <span style="color:#CCFF00">▼</span> 原生成提示词<br>
+          <span style="color:#8A9A78">无原始提示词记录</span>
+        </div>
+        <div style="margin-top:20px;background:#1A1F14;border:1px solid #2E3A1E;border-radius:12px;padding:12px;display:inline-block">
+          <img id="detailSrcImg" src="" style="width:120px;height:150px;object-fit:cover;border-radius:8px;display:block;margin-bottom:8px">
+          <div style="color:#fff;font-size:13px">织物触感 | 细节卖点 · 场景拓量</div>
+        </div>
+        <div style="margin-top:20px;display:flex;gap:10px">
+          <button id="prevBtn" onclick="prevDetail()" style="padding:10px 20px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px">上一份</button>
+          <button id="nextBtn" onclick="nextDetail()" style="padding:10px 20px;border-radius:8px;background:#1A1F14;border:1px solid #2E3A1E;color:#fff;font-size:14px">下一份</button>
+        </div>
+      </div>
+      <div>
+        <img id="detailBigImg" src="" style="width:100%;max-height:600px;object-fit:contain;border-radius:12px">
+      </div>
+    </div>
+
+  </div>
+</div>
+<script>
+var detailIdx = 0;
+function openDetail(idx){
+  detailIdx = idx;
+  renderDetail();
+  document.getElementById('detailModal').style.display = 'block';
+  document.body.style.overflow = 'hidden';
+}
+function renderDetail(){
+  var idx = detailIdx;
+  var ct = document.querySelector('.opt.on') ? document.querySelector('.opt.on').textContent : '换动作';
+  var names = ['方案 A · ' + ct + ' · 第 1 张','方案 B · ' + ct + ' · 第 1 张','方案 C · ' + ct + ' · 第 1 张'];
+  var actionText = document.querySelectorAll('#planView textarea');
+  document.getElementById('detailTitle').textContent = names[idx];
+  document.getElementById('detailPlanName').textContent = names[idx];
+  document.getElementById('detailAction').textContent = actionText[idx] ? actionText[idx].value : '';
+  var cardImgs = document.querySelectorAll('#resultCards .imgbox img');
+  if (cardImgs[idx]) {
+    document.getElementById('detailBigImg').src = cardImgs[idx].src;
+    document.getElementById('detailSrcImg').src = cardImgs[idx].src;
+  }
+  // 按钮状态
+  var prevBtn = document.getElementById('prevBtn');
+  var nextBtn = document.getElementById('nextBtn');
+  if (idx === 0) { prevBtn.style.opacity = '0.4'; prevBtn.style.cursor = 'not-allowed'; }
+  else { prevBtn.style.opacity = '1'; prevBtn.style.cursor = 'pointer'; }
+  if (idx === 2) { nextBtn.style.opacity = '0.4'; nextBtn.style.cursor = 'not-allowed'; }
+  else { nextBtn.style.opacity = '1'; nextBtn.style.cursor = 'pointer'; }
+}
+function prevDetail(){
+  if (detailIdx > 0) { detailIdx--; renderDetail(); }
+}
+function nextDetail(){
+  if (detailIdx < 2) { detailIdx++; renderDetail(); }
+}
+function closeDetail(){
+  document.getElementById('detailModal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+</script>
+</body>
+</html>
