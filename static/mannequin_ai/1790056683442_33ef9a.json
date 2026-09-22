@@ -1,0 +1,1 @@
+{"task_id": "1790056683442_33ef9a", "task_type": "fine_tune", "status": "done", "step": "queued", "input_uri": "uploads/1790056450020_b4087b/outputs/gen-1.png", "prompt": "把人变成黑种人，头发设置长一点", "generate_model": "gpt-image-2", "session_id": "1790056683442_33ef9a", "mannequin_id": 16, "error": "", "pid": "97191", "image_uri": "uploads/1790056683442_33ef9a/outputs/tuned.png"}

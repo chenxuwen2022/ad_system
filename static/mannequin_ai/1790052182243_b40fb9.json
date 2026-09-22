@@ -1,0 +1,1 @@
+{"task_id": "1790052182243_b40fb9", "task_type": "fine_tune", "status": "done", "step": "queued", "input_uri": "uploads/1790051521366_c62467/outputs/gen-1.png", "prompt": "变成黑人", "generate_model": "gpt-image-2", "session_id": "1790052182243_b40fb9", "error": "", "pid": "91857", "image_uri": "uploads/1790052182243_b40fb9/outputs/tuned.png"}

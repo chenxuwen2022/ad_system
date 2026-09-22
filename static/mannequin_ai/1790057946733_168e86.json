@@ -1,0 +1,1 @@
+{"task_id": "1790057946733_168e86", "task_type": "fine_tune", "status": "done", "step": "queued", "input_uri": "uploads/1790057871940_ecb0f7/outputs/tuned.png", "prompt": "变成亚洲黄种人", "generate_model": "gpt-image-2", "session_id": "1790057946733_168e86", "mannequin_id": 17, "error": "", "pid": "97884", "image_uri": "uploads/1790057946733_168e86/outputs/tuned.png"}

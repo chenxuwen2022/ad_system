@@ -1,0 +1,1 @@
+{"task_id": "1790054184193_0efa39", "task_type": "fine_tune", "status": "done", "step": "queued", "input_uri": "uploads/1790050213070_eedbf7/outputs/gen-1.png", "prompt": "改成黑色短发,保持五官一致", "generate_model": "qwen-image-3.0", "session_id": "1790054184193_0efa39", "mannequin_id": 11, "error": "", "pid": "95290", "image_uri": "uploads/1790054184193_0efa39/outputs/tuned.png"}
