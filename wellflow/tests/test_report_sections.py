@@ -14,12 +14,13 @@ from wellflow.app.prompt.report_sections import (
 )
 
 SAMPLE_REPORT = """## 服饰类产品信息识别报告
+**品牌名称**：示例品牌 / Example
 **产品类型**：服装-上装-针织衫
-**产品规格**：修身版型、羊毛混纺
+**版型与规格**：修身版型、羊毛混纺
 **核心卖点**：柔软亲肤、利落廓形
 **目标受众**：25-35 岁都市女性
 **品牌调性**：极简、克制、高级
-**产品细节**：罗纹领口、细密针脚
+**正面结构**：罗纹领口、细密针脚
 **设计风格**：现代通勤风
 **场景推荐**：咖啡厅-慵懒午后
 **补充说明**：克重需补充"""
@@ -41,6 +42,31 @@ class ParseReportFieldsTest(unittest.TestCase):
         fields = parse_report_fields(SAMPLE_REPORT)
         self.assertNotIn("## 服饰类产品信息识别报告", fields)
 
+    def test_parses_numbered_selling_points_below_empty_field_header(self):
+        report = """## 服饰类产品信息识别报告
+**产品工艺**：需补充
+**核心卖点**：
+
+1. 联名设计 / Collaboration
+2. 红色扎染 / Red Tie-Dye
+3. 可调节袖口（推断） / Adjustable Cuffs
+
+**设计风格**：街头风
+---NEXT---
+请核对报告。"""
+        fields = parse_report_fields(report)
+        self.assertEqual(
+            fields["核心卖点"],
+            "1. 联名设计 / Collaboration\n2. 红色扎染 / Red Tie-Dye\n"
+            "3. 可调节袖口（推断） / Adjustable Cuffs",
+        )
+        self.assertEqual(fields["设计风格"], "街头风")
+        self.assertNotIn("请核对报告。", fields.values())
+        self.assertEqual(
+            build_report_sections(report)["selling_points"],
+            [{"label": "核心卖点", "value": fields["核心卖点"]}],
+        )
+
 
 class BuildReportSectionsTest(unittest.TestCase):
     def test_groups_fields_into_stable_keys(self):
@@ -48,6 +74,7 @@ class BuildReportSectionsTest(unittest.TestCase):
         self.assertEqual(
             sections["positioning"],
             [
+                {"label": "品牌名称", "value": "示例品牌 / Example"},
                 {"label": "产品类型", "value": "服装-上装-针织衫"},
                 {"label": "品牌调性", "value": "极简、克制、高级"},
                 {"label": "设计风格", "value": "现代通勤风"},
@@ -56,8 +83,8 @@ class BuildReportSectionsTest(unittest.TestCase):
         self.assertEqual(
             sections["details"],
             [
-                {"label": "产品规格", "value": "修身版型、羊毛混纺"},
-                {"label": "产品细节", "value": "罗纹领口、细密针脚"},
+                {"label": "版型与规格", "value": "修身版型、羊毛混纺"},
+                {"label": "正面结构", "value": "罗纹领口、细密针脚"},
             ],
         )
         self.assertEqual(
@@ -88,9 +115,14 @@ class PromptCoverageTest(unittest.TestCase):
         registered = {name for names in SECTION_FIELDS.values() for name in names}
         registered.update(SECTION_IGNORED_FIELDS)
         missing = template_fields - registered
+        stale = registered - template_fields
         self.assertFalse(
             missing,
             f"prompt 模板字段未在 report_sections 映射中登记: {sorted(missing)}",
+        )
+        self.assertFalse(
+            stale,
+            f"report_sections 映射含当前 prompt 模板中不存在的字段: {sorted(stale)}",
         )
 
 

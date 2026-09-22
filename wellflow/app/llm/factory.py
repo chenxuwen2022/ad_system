@@ -1,7 +1,7 @@
 """LLM/VLM 客户端工厂。
 
 业务层只通过这个模块拿客户端，不 import 具体网关实现。
-统一走 new-api 中转网关（局域网 192.168.110.254），渠道分发由 new-api 后台配置。
+统一走 .env 配置的 new-api 中转网关，渠道分发由 new-api 后台配置。
 """
 
 from __future__ import annotations
@@ -60,5 +60,5 @@ def get_llm_client(
         base_url=settings.newapi_base_url,
         api_key=settings.newapi_api_key,
         timeout=timeout,
-        proxy_url=None,  # new-api 在局域网，不走代理
+        proxy_url=None,  # 网关直连，不走本机代理
     )

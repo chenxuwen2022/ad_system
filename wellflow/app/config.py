@@ -10,10 +10,10 @@ _REPO_ROOT = _PROJECT_ROOT.parent
 
 class Settings(BaseSettings):
     # ------------------------------------------------------------------
-    # 网关 —— 统一走 new-api 中转网关（局域网 192.168.110.254）
+    # 网关 —— 统一走 new-api 中转网关，地址由环境配置决定
     # 业务层所有 VLM / 文本 LLM / 生图请求都经由 new-api，渠道分发由 new-api 后台配置。
     # ------------------------------------------------------------------
-    newapi_base_url: str = "http://192.168.110.254/v1"
+    newapi_base_url: str  # ← .env 的 NEWAPI_BASE_URL 提供，包含 /v1
     newapi_api_key: str | None = None              # ← .env 提供
     newapi_admin_access_token: str | None = None    # 管理员面板 PAT，不是模型调用 API Key
 
