@@ -187,7 +187,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     """根据用户指令修改完整商拍报告正文。"""
     from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
-    from wellflow.app.prompt.constant import PLANNING_AGENT_SYSTEM_PROMPT
+    from wellflow.app.prompt.constant import REFINE_NODE2_SCHEMES_SYSTEM_PROMPT
     from wellflow.app.event_bus import publish
     from wellflow.app.nodes.planning_scheme import split_scheme_reports
 
@@ -208,13 +208,9 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
         for i, report in enumerate(reports)
     )
     async for item in client.stream_chat(
-        system=PLANNING_AGENT_SYSTEM_PROMPT,
+        system=REFINE_NODE2_SCHEMES_SYSTEM_PROMPT,
         user=(f"【原商拍策划方案列表】\n{previous}\n\n"
-              f"【本轮修改指令】\n{instruction}\n\n"
-              "请按修改指令输出更新后的完整方案列表，不要输出 JSON。"
-              "每套方案用单独一行 ===SCHEME 1: 方案名称=== 开头，随后是完整正文；"
-              "从 1 连续编号。方案数量根据本轮修改指令确定，"
-              "与首次生成的默认方案数量无关。不要输出列表以外的说明。"),
+              f"【本轮修改指令】\n{instruction}"),
         reasoning_effort=settings.text_reasoning_effort,
     ):
         text = item.get("text", "") if isinstance(item, dict) else item
