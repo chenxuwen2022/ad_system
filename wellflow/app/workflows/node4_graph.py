@@ -218,7 +218,7 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
               f"prompt({len(prompt)}chars)={prompt[:60]}...", flush=True)
         try:
             result = await generate_single_image(
-                prompt=prompt, size=size, ref_data_uris=refs,
+                prompt=prompt, size=size, ref_data_uris=refs, log_id=wid,
             )
             dt = time.time() - t0
             url = result.data_uri or result.url

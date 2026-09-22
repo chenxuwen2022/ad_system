@@ -301,7 +301,7 @@ class BaseLLMClient(ABC):
               f"proxy={proxy or '(直连)'}", flush=True)
         print(f"[llm]   prompt: {_prompt_preview}", flush=True)
 
-        MAX_RETRIES = 2
+        MAX_RETRIES = 0  # 生图失败交给模型链立即切换，不在当前模型等待重试
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)
 
         # ---------- AsyncClient 建在循环外，重试时复用连接池 ----------
@@ -421,8 +421,8 @@ class BaseLLMClient(ABC):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        MAX_RETRIES = 2
-        RATE_LIMIT_RETRIES = 3
+        MAX_RETRIES = 0  # 生图失败交给模型链立即切换
+        RATE_LIMIT_RETRIES = 0
         RATE_LIMIT_BACKOFF = (15.0, 30.0, 60.0)
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError,
                      httpx.ConnectTimeout, httpx.ReadTimeout)
@@ -547,7 +547,7 @@ class BaseLLMClient(ABC):
               f"refs={len(refs) if refs else 0} size={size} quality=high n={n}", flush=True)
         print(f"[llm-edits]   prompt: {_prompt_preview}", flush=True)
 
-        MAX_RETRIES = 2
+        MAX_RETRIES = 0  # 生图失败交给模型链立即切换，不在当前模型等待重试
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError,
                      httpx.ConnectTimeout, httpx.ReadTimeout)
         RETRYABLE_STATUS = {429, 500, 502, 503, 504}

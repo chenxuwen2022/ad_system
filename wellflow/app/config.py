@@ -73,7 +73,6 @@ class Settings(BaseSettings):
     llm_timeout: float = 60.0                     # VLM / 文本 LLM 超时（秒）
     image_timeout: float = 180.0                   # 生图超时（秒）
 
-    image_max_per_call: int = 3                    # 单次 VLM / 生图调用最多携带图片张数
     image_single_compress_threshold_mb: float = 1.5  # 单张图片超过此值触发渐进压缩（raw bytes）
 
     mannequins_gen_concurrency: int = 3           # 模特库 并行生图并发上限（Semaphore），越大越快但易触发 429

@@ -27,7 +27,7 @@ from wellflow.app.llm.base import ImageGenResult, InsufficientCreditsError
 async def get_image_models() -> list[str]:
     """从 new-api 渠道 node4_image_channel_id 拉取 image 能力的模型列表。
 
-    拉取失败或返回空时，回退到 settings.node4_image_models_fallback 硬编码链。
+    动态模型排在前面，配置的备用模型接在后面，避免单模型故障时无处降级。
     """
     from wellflow.app.api.model_options import fetch_model_options
 
@@ -39,10 +39,9 @@ async def get_image_models() -> list[str]:
         print(f"[image-gen-service] ⚠️ 从 channel_id={channel_id} 拉 image 模型失败，用兜底链: {exc}", flush=True)
         models = []
 
-    if not models:
-        return list(settings.node4_image_models_fallback)
-
-    return models
+    # 渠道配置可能只返回一个模型；此时仅在拉取失败时使用备用链会让
+    # 上游偶发 502 直接变成整批生图失败。保留动态顺序并去重。
+    return list(dict.fromkeys([*models, *settings.node4_image_models_fallback]))
 
 
 def _short_model_name(model: str) -> str:
@@ -59,6 +58,7 @@ async def generate_single_image(
     prompt: str,
     size: str,
     ref_data_uris: list[str] | None = None,
+    log_id: str = "image-gen",
 ) -> ImageGenResult:
     """单次生图 —— 永远 n=1，动态拉取 image 模型列表逐个尝试。
 
@@ -80,7 +80,8 @@ async def generate_single_image(
     errors: list[str] = []
     credits_exc: InsufficientCreditsError | None = None
 
-    for model in chain:
+    for index, model in enumerate(chain):
+        print(f"[{log_id}] 🎨 开始生图 model={model} ({index + 1}/{len(chain)})", flush=True)
         try:
             client = get_llm_client("image", model_override=model)
             result = await client.generate_image(
@@ -90,13 +91,21 @@ async def generate_single_image(
                 response_format="b64_json",
                 extra_params={"image_refs": refs},
             )
+            print(f"[{log_id}] ✅ 生图成功 model={model}", flush=True)
             return result  # 成功直接返回，不再尝试后续降级模型
         except InsufficientCreditsError as exc:
             # ⚠️ 额度不足：记下来，继续试下一个模型（不同模型可能路由到不同 channel）
             errors.append(f"{model}: InsufficientCreditsError — {exc.upstream_message[:200]}")
             credits_exc = exc
+            reason = f"InsufficientCreditsError: {exc.upstream_message[:200]}"
         except Exception as exc:
             errors.append(f"{model}: {type(exc).__name__} — {str(exc)[:200]}")
+            reason = f"{type(exc).__name__}: {str(exc)[:200]}"
+
+        if index + 1 < len(chain):
+            print(f"[{log_id}] 🔄 模型切换 {model} → {chain[index + 1]}，原因: {reason}", flush=True)
+        else:
+            print(f"[{log_id}] ❌ 模型链已耗尽，最后模型={model}，原因: {reason}", flush=True)
 
     # 全链失败
     if credits_exc is not None:

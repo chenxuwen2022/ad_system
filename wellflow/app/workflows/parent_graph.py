@@ -563,7 +563,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c4",
         "phase": "c4_review",
-        "hint": "查看生图结果，可选择增量编辑或确认归档",
+        "hint": "",
         "outputs": node4.get("outputs", []),
         "failed_items": node4.get("failed_items", []),
         "reference_images": req.get("product_images", []),

@@ -714,17 +714,15 @@ async def resume_task(
                         "refine_target": refine_target,
                     }
                 )
-                # 三类参考图路径持久化到 task_image 表（按 type 分组）
-                if _total_ref:
-                    _to_save: list[dict[str, Any]] = []
-                    for t in ("mannequin", "scene", "outfit"):
-                        for p in ref_paths.get(t) or []:
-                            _to_save.append({"image_type": t, "storage_uri": p})
-                    repo2.save_images(task_id, _to_save)
+                # resume_json 中是预先上传的路径，也必须持久化供刷新恢复。
+                repo2.save_reference_images(
+                    task_id, resume_values.get("reference_images") or ref_paths,
+                )
         except Exception as e:
             print(f"[resume] ⚠️ DB prepare 失败: {e}", flush=True)
 
-    asyncio.get_event_loop().run_in_executor(None, _sync_prepare)
+    # 先写入参考图，再启动 graph；刷新请求才能稳定读到刚提交的图片。
+    await asyncio.to_thread(_sync_prepare)
 
     # 注册 event_bus queue + 启动 graph
     from wellflow.app.event_bus import drain_and_subscribe
@@ -1111,7 +1109,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             },
             "c4": {
                 "node": "c4",
-                "hint": "查看生图结果",
+                "hint": "",
                 "outputs": (node4 or {}).get("outputs"),
                 "failed_items": (node4 or {}).get("failed_items"),
                 "thinking_text": (node4 or {}).get("thinking_text"),
@@ -1149,6 +1147,20 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             item["prompt"] = img.prompt
             item["prompt_index"] = img.prompt_index
             output_images.append(item)
+
+    # 兼容修复前已通过 resume_json 提交、但尚未写入 task_image 的任务。
+    saved_refs = {
+        (kind, item["storage_uri"])
+        for kind, items in reference_images.items()
+        for item in items
+    }
+    checkpoint_refs = (node3 or {}).get("reference_images") or {}
+    for kind in reference_images:
+        for uri in checkpoint_refs.get(kind) or []:
+            if not isinstance(uri, str) or not uri or (kind, uri) in saved_refs:
+                continue
+            saved_refs.add((kind, uri))
+            reference_images[kind].append({"storage_uri": uri, "url": _storage_uri_url(uri)})
 
     # 🔍 thinking_text 诊断日志：三处来源的长度全打出来，定位"刷新后 thinking 丢失"根因
     _db_interrupt_think = (task.interrupt_json or {}).get("thinking_text") if isinstance(task.interrupt_json, dict) else None

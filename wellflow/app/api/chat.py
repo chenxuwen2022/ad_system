@@ -1028,7 +1028,7 @@ async def chat(
 
                         # 合成 interrupt payload（复用 tasks.py 的模式）
                         _hint_map = {"c1": "请查看商品分析报告", "c2": "请选择商拍方案",
-                                     "c3": "请确认生图提示词", "c4": "请查看生图结果"}
+                                     "c3": "请确认生图提示词", "c4": ""}
                         _interrupt: dict[str, Any] = {"node": _current_after, "hint": _hint_map.get(_current_after, "")}
                         if _current_after == "c1":
                             _interrupt.update({
@@ -1696,6 +1696,12 @@ async def _handle_resume(
             resume_values["decision"] = "confirm"
 
     print(f"[chat] resume_values node={node}: {list(resume_values.keys())}", flush=True)
+
+    if node in ("c1", "c2", "c3") and resume_values.get("reference_images"):
+        def _save_references():
+            with session_scope() as db:
+                TaskRepo(db).save_reference_images(task_id, resume_values["reference_images"])
+        await asyncio.to_thread(_save_references)
 
     def _clear_interrupt():
         try:
