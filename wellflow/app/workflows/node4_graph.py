@@ -2,12 +2,12 @@
 
 两源输入：
   - node1.compressed_images: Node 1 已压缩好的商品图 data URI（**优先复用，避免重复 PIL**）
-  - node3.model_images:       C1 interrupt 用户上传的模特图（文件路径列表，可选，Node4 现场转一次 data URI）
+  - node3.reference_images: 三类参考图 {"mannequin": [...], "scene": [...], "outfit": [...]}（文件路径，Node4 现场转 data URI）
   - node3.generate_prompts:  Node 3 prompt_generation 产出的 prompt 数组
   - node3.per_prompt_size:   C3 interrupt 用户选的每套 prompt 的图片规格（如 ["3:4", "3:4"]）
 
 完整流程（2 节点，子图内部 2 边）：
-  1. _prepare:  组装 work_items（一 prompt 一 item，N 强制 =1）+ 转一次模特图 data URI
+  1. _prepare:  组装 work_items（一 prompt 一 item，N 强制 =1）+ 统一转一次所有参考图 data URI
   2. _run_gen:  并发逐 work_item 独立调 LLM /images/generations → 写 outputs/failed_items
 
 ⚠️ 新语义：per_prompt_count 已彻底删除。Node4 不再有批量 n>1 概念，
@@ -77,7 +77,7 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
     🔑 data URI 策略（与 Node2/Node3 一致）：
       - 商品图：优先复用 node1.compressed_images（Node1 已压缩好的 data URI 缓存），
         只有在缓存缺失时才用 request.product_images 现场转。
-      - 模特图：node3.model_images 是用户上传的文件路径，Node4 首次用到，现场转一次。
+      - 三类参考图：node3.reference_images 是用户上传的文件路径，Node4 首次用到，现场统一转一次。
     """
     import asyncio
     import time as _time
@@ -103,19 +103,23 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
             product_uris = await asyncio.to_thread(paths_to_data_uris, product_paths)
             print(f"[node4] prepare: 商品图缓存缺失，现场转 data URI {len(product_paths)} 张，耗时 {_time.time() - _t0:.2f}s", flush=True)
 
-    # ---- 模特图：首次用到，现场转一次 data URI ----
-    model_paths: list[str] = node3.get("model_images") or []
-    _t1 = _time.time()
-    model_uris: list[str] = []
-    if model_paths:
-        model_uris = await asyncio.to_thread(paths_to_data_uris, model_paths)
+    # ---- 三类参考图：首次用到，现场统一转一次 data URI ----
+    ref_images: dict[str, list[str]] = node3.get("reference_images") or {}
+    mannequin_paths = ref_images.get("mannequin") or []
+    scene_paths = ref_images.get("scene") or []
+    outfit_paths = ref_images.get("outfit") or []
 
-    all_ref_uris = [*product_uris, *model_uris]
+    _t1 = _time.time()
+    mannequin_uris = await asyncio.to_thread(paths_to_data_uris, mannequin_paths) if mannequin_paths else []
+    scene_uris = await asyncio.to_thread(paths_to_data_uris, scene_paths) if scene_paths else []
+    outfit_uris = await asyncio.to_thread(paths_to_data_uris, outfit_paths) if outfit_paths else []
+
+    all_ref_uris = [*product_uris, *mannequin_uris, *scene_uris, *outfit_uris]
 
     _t2 = _time.time()
     print(f"[node4]  prepare 开始 task={task_id[:8]}: "
           f"商品图 {len(product_uris)} 张(缓存={bool(product_uris)}), "
-          f"模特图 {len(model_paths)} 张, "
+          f"mannequin {len(mannequin_paths)}, scene {len(scene_paths)}, outfit {len(outfit_paths)}, "
           f"data URI 转换耗时 {_t2 - _t1:.2f}s", flush=True)
 
     # ---- 读 Node 3 的 generate_prompts ----

@@ -129,7 +129,7 @@ def _langgraph_config(task_id: str):
 
 
 # ---------------------------------------------------------------------------
-# 图片分类规则：images → (product_images, model_images)
+# 图片分类规则：images → (product_images, ref_images)
 # ---------------------------------------------------------------------------
 
 # 第二层关键词：命中则覆盖上下文路由
@@ -154,44 +154,48 @@ def classify_images(
     has_task: bool,
     current_node: str | None,
     message: str = "",
-) -> tuple[list[UploadFile], list[UploadFile]]:
-    """把统一的 images 列表分流为 (product_images, model_images)。
+) -> tuple[list[UploadFile], dict[str, list[UploadFile]]]:
+    """把统一的 images 列表分流为 (product_images, ref_images)。
+
+    ref_images = {"mannequin": [...], "scene": [...], "outfit": [...]}
+    这里只区分 product vs 其他；其他默认归 mannequin（旧前端自动上传逻辑保留）。
+    新前端应直接按 type 分组后通过 resume_json.reference_images 显式传入，不走这里。
 
     三层优先级：
-      1. message 关键词覆盖（命中 PRODUCT → 全部 product；命中 MODEL → 全部 model）
-      2. 上下文路由（无 task → product；有 task + c1/c2/c3 → model）
-      3. 兜底 → model_images
-
-    不做 VLM 视觉分类（v1），保持零延迟。
+      1. message 关键词覆盖（命中 PRODUCT → 全部 product；命中 MODEL → 全部 mannequin）
+      2. 上下文路由（无 task → product；有 task + c1/c2/c3 → ref_images.mannequin）
+      3. 兜底 → ref_images.mannequin
     """
     if not images:
-        return [], []
+        return [], {"mannequin": [], "scene": [], "outfit": []}
 
     msg = message.strip()
+    _empty_ref: dict[str, list[UploadFile]] = {"mannequin": [], "scene": [], "outfit": []}
 
     # 第二层：关键词覆盖
     if _match_any(msg, _PRODUCT_KEYWORDS):
         print(f"[classify_images] 关键词覆盖 → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        return list(images), _empty_ref
     if _match_any(msg, _MODEL_KEYWORDS):
-        print(f"[classify_images] 关键词覆盖 → model ({len(images)} 张)", flush=True)
-        return [], list(images)
+        print(f"[classify_images] 关键词覆盖 → mannequin ({len(images)} 张)", flush=True)
+        ref_mannequin = {"mannequin": list(images), "scene": [], "outfit": []}
+        return [], ref_mannequin
 
     # 第一层：上下文路由
     if not has_task:
         print(f"[classify_images] 无任务 → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        return list(images), _empty_ref
     if current_node in ("c1", "c2"):
-        # C1/C2 阶段用户上传的图默认为商品参考图（可追加替换商品图）
         print(f"[classify_images] 上下文 c={current_node} → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        return list(images), _empty_ref
     if current_node in ("c3", "c4"):
-        print(f"[classify_images] 上下文 c={current_node} → model ({len(images)} 张)", flush=True)
-        return [], list(images)
+        print(f"[classify_images] 上下文 c={current_node} → mannequin ({len(images)} 张)", flush=True)
+        ref_mannequin = {"mannequin": list(images), "scene": [], "outfit": []}
+        return [], ref_mannequin
 
     # 兜底
     print(f"[classify_images] 兜底 → product ({len(images)} 张)", flush=True)
-    return list(images), []
+    return list(images), _empty_ref
 
 
 async def _aget_snapshot(task_id: str) -> tuple[Any, dict[str, Any] | None]:
@@ -400,7 +404,7 @@ async def chat(
     completed_mask = [False] * 6
     existing_report = ""
     existing_schemes: list = []
-    existing_model_images: list[str] = []
+    existing_ref_images: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
 
     # conversation 关联解析：
     # 1) 前端显式传了 conversation_id → 用它
@@ -452,9 +456,9 @@ async def chat(
             # c2 的可选项是 schemes（方案），不是 prompts —— 历史上误读 node2.generate_prompts
             # （该字段属于 node3），导致 existing_schemes 永远为空，"默认全选"退化成"全不选"
             existing_schemes = list(graph_state.get("node2", {}).get("schemes", []) or [])
-            existing_model_images = list(graph_state.get("node3", {}).get("model_images", []) or [])
+            existing_ref_images = graph_state.get("node3", {}).get("reference_images") or existing_ref_images
         print(f"[chat] 上下文: task={t_id} node={current_node} completed={completed_mask}"
-              f" model_images_in_state={len(existing_model_images)}"
+              f" ref_images={existing_ref_images}"
               f" conversation={resolved_conv_id}", flush=True)
 
     # ------------------------------------------------------------------
@@ -532,7 +536,7 @@ async def chat(
                 return StreamingResponse(_dup_sse(), media_type="text/event-stream")
 
     # 🔑 统一 images → 后端判断分流
-    product_images, model_images = classify_images(
+    product_images, ref_images = classify_images(
         images, has_task=has_task, current_node=current_node, message=message,
     )
 
@@ -1163,9 +1167,9 @@ async def chat(
             else:
                 async for ev in _pipe(_handle_resume(
                     _dispatch_intent, t_id or '', current_node, intent_result,
-                    message, model_images, product_images,
+                    message, ref_images, product_images,
                     existing_report, existing_schemes,
-                    existing_model_images, graph,
+                    existing_ref_images, graph,
                     selected_scheme_indices=selected_scheme_indices,
                     graph_state=graph_state,
                 )):
@@ -1462,11 +1466,11 @@ async def _handle_resume(
     current_node: str | None,
     intent_result: dict[str, Any],
     message: str,
-    model_images: list[UploadFile],
+    ref_images: dict[str, list[UploadFile]],
     product_images: list[UploadFile] | None,
     existing_report: str,
     existing_schemes: list,
-    existing_model_images: list[str],
+    existing_ref_images: dict[str, list[str]],
     graph,
     *,
     selected_scheme_indices: str | None = None,
@@ -1484,10 +1488,13 @@ async def _handle_resume(
 
     q = await drain_and_subscribe(task_id)
 
-    model_image_paths: list[str] = []
-    if model_images:
-        raw = [(f.filename or "model", await f.read(), f.content_type) for f in model_images]
-        model_image_paths = save_upload(task_id, raw, prefix="m")
+    # —— 三类参考图落盘 ——
+    ref_paths: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
+    for k in ("mannequin", "scene", "outfit"):
+        files = ref_images.get(k) or []
+        if files:
+            raw = [(f.filename or k, await f.read(), f.content_type) for f in files]
+            ref_paths[k] = save_upload(task_id, raw, prefix=k[0])
 
     # 处理 product_images（仅在关键词覆盖时出现，比如 redo→node1 换商品图）
     product_image_paths: list[str] = []
@@ -1520,8 +1527,9 @@ async def _handle_resume(
             resume_values["confirmed_report"] = existing_report
             # 🔴 版本绑定：把当前报告的 hash 原样带回，_c1_confirm_report 会校验
             resume_values["report_hash"] = _current_report_hash
-        if model_image_paths:
-            resume_values["model_images"] = model_image_paths
+        # C1 允许传 mannequin 图（前端自动补）
+        if ref_paths.get("mannequin"):
+            resume_values["reference_images"] = {"mannequin": ref_paths["mannequin"], "scene": [], "outfit": []}
         resume_values.setdefault("ratio", "9:16竖版")
         resume_values.setdefault("count", 3)
 
@@ -1574,8 +1582,13 @@ async def _handle_resume(
                 yield _sse("done", {"phase": "c2_select"})
                 return
             resume_values["selected_scheme_indices"] = indices
-        if model_image_paths:
-            resume_values["model_images"] = model_image_paths
+        # C2 阶段三类参考图全注入
+        if any(ref_paths.values()):
+            resume_values["reference_images"] = {
+                "mannequin": ref_paths.get("mannequin") or [],
+                "scene": ref_paths.get("scene") or [],
+                "outfit": ref_paths.get("outfit") or [],
+            }
 
     elif node == "c3":
         # ── edit_and_confirm_c3：用户想微调/修改提示词 → 走 refine 路径 ──
@@ -1613,8 +1626,12 @@ async def _handle_resume(
 
             # 若意图分类器把 c3 纯选择判成了 select_topics（新增意图），
             # selected_prompt_indices 已在上面填好；confirm_current 则默认全选。
-            if model_image_paths:
-                resume_values["model_images"] = model_image_paths
+            if any(ref_paths.values()):
+                resume_values["reference_images"] = {
+                    "mannequin": ref_paths.get("mannequin") or [],
+                    "scene": ref_paths.get("scene") or [],
+                    "outfit": ref_paths.get("outfit") or [],
+                }
 
             # 给用户一条可读的选择确认 —— 前端会直接展示这条 message 事件
             _spi = resume_values.get("selected_prompt_indices")

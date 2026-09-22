@@ -696,9 +696,8 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     return {
         "phase": "c3_confirm",
         "node3": {
-            "model_images": node3_state.get("model_images", []),
-            "ratio": node3_state.get("ratio"),
-            "image_model": node3_state.get("image_model"),
+            # reference_images / ratio / image_model 等会被 LangGraph reducer 自动从 state 里保留，
+            # 这里只写 refine 要改动的字段（prompt 文本 + 详情 + 清空 thinking）
             "generate_prompts": new_prompts,
             "prompts_detail": new_details,
             "prompt_raw": "\n---\n".join(new_prompts),

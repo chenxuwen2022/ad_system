@@ -26,7 +26,7 @@
   decision="redo"      → 仅 C4 redo→node4 保留（Node4 是生图 API，无文本产物可 refine）
 
 HITL resume 数据：
-  C1  resume: confirmed_report | decision("confirm"|"refine") + refine_instruction + model_images/ratio
+  C1  resume: confirmed_report | decision("confirm"|"refine") + refine_instruction + reference_images/ratio
   C2  resume: selected_scheme_indices + per_scheme_count | decision("confirm"|"refine") + refine_instruction
   C3  resume: edited_prompts + selected_prompt_indices + per_prompt_size | decision("confirm"|"refine") + refine_instruction
   C4  resume: decision("confirm"|"redo") + redo_target("node4") | decision("refine") + refine_instruction + refine_target
@@ -307,9 +307,12 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
         flush=True,
     )
 
-    model_images = interrupt_value.get("model_images")
-    if model_images:
-        new_node3["model_images"] = model_images
+    # —— 参考图：C1 也可以上传 mannequin 图（可选），scene/outfit 留到 C2 ——
+    new_refs = dict(node3.get("reference_images") or {"mannequin": [], "scene": [], "outfit": []})
+    incoming_refs = interrupt_value.get("reference_images") or {}
+    if "mannequin" in incoming_refs:
+        new_refs["mannequin"] = list(incoming_refs["mannequin"])
+    new_node3["reference_images"] = new_refs
 
     ratio = interrupt_value.get("ratio")
     if ratio:
@@ -351,7 +354,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         "hint": f"请查看并微调这套最终商拍方案。确认后会基于它生成 {{_settings.node3_variants_per_scheme_default}} 份差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
-        "model_images": node3.get("model_images", []),
+        "reference_images": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
         "thinking_text": state.get("node2", {}).get("thinking_text", ""),
     })
 
@@ -417,9 +420,12 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     image_model = interrupt_value.get("image_model")
     if image_model:
         new_node3["image_model"] = image_model
-    model_images = interrupt_value.get("model_images")
-    if model_images:
-        new_node3["model_images"] = model_images
+    incoming_refs = interrupt_value.get("reference_images") or {}
+    new_node3["reference_images"] = {
+        "mannequin": list(incoming_refs.get("mannequin") or new_node3.get("reference_images", {}).get("mannequin") or []),
+        "scene": list(incoming_refs.get("scene") or []),
+        "outfit": list(incoming_refs.get("outfit") or []),
+    }
 
     return {"phase": "c2_select", "node2": new_node2, "node3": new_node3,
             "confirmations": {"c2": True}, "_redo_target": None}
@@ -451,7 +457,7 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         "hint": "请确认每套方案的最终提示词，可编辑后继续生图",
         "generate_prompts": state.get("node3", {}).get("generate_prompts", []),
         "prompts_detail": state.get("node3", {}).get("prompts_detail", []),
-        "model_images": state.get("node3", {}).get("model_images", []),
+        "reference_images": state.get("node3", {}).get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
         "thinking_text": state.get("node3", {}).get("thinking_text", ""),
     })
 
@@ -528,9 +534,12 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     image_model = interrupt_value.get("image_model")
     if image_model:
         new_node3["image_model"] = image_model
-    model_images = interrupt_value.get("model_images")
-    if model_images:
-        new_node3["model_images"] = model_images
+    incoming_refs = interrupt_value.get("reference_images") or {}
+    new_node3["reference_images"] = {
+        "mannequin": list(incoming_refs.get("mannequin") or new_node3.get("reference_images", {}).get("mannequin") or []),
+        "scene": list(incoming_refs.get("scene") or new_node3.get("reference_images", {}).get("scene") or []),
+        "outfit": list(incoming_refs.get("outfit") or new_node3.get("reference_images", {}).get("outfit") or []),
+    }
 
     return {"phase": "c3_confirm", "node3": new_node3,
             "confirmations": {"c3": True}, "_redo_target": None}
@@ -565,7 +574,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         "outputs": node4.get("outputs", []),
         "failed_items": node4.get("failed_items", []),
         "reference_images": req.get("product_images", []),
-        "model_images": node3.get("model_images", []),
+        "reference_images_node3": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
         "generate_prompts": node3.get("generate_prompts", []),
         "thinking_text": node4.get("thinking_text", ""),
     })

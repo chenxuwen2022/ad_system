@@ -440,7 +440,6 @@ async def resume_task(
     # action: "confirm" | "refine" | "redo"(仅 C4 redo→node4 保留)
     action: str = Form(default="confirm"),
     image_model: str | None = Form(default=None),
-    model_images: list[UploadFile] = File(default_factory=list),
     selected_scheme_indices: str | None = Form(default=None),
     # redo_target: C4 阶段可选，仅 redo 模式生效
     redo_target: str | None = Form(default=None),
@@ -448,6 +447,10 @@ async def resume_task(
     refine_instruction: str | None = Form(default=None),
     refine_target: str | None = Form(default=None),
     resume_json: str | None = Form(default=None),
+    # 三类参考图（一步到位：直接在 resume 请求里把图传过来）
+    mannequin_files: list[UploadFile] = File(default_factory=list),
+    scene_files: list[UploadFile] = File(default_factory=list),
+    outfit_files: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
     import json as _json
@@ -555,12 +558,22 @@ async def resume_task(
                 "请重试当前节点，不允许跳过向下流转。",
             )
 
-    # model_images 落盘（C1 专用）
-    model_image_paths: list[str] = []
-    if model_images:
-        raw_files = [(f.filename or "model", await f.read(), f.content_type) for f in model_images]
-        from wellflow.app.utils.image_store import save_upload
-        model_image_paths = save_upload(task_id, raw_files, prefix="m")
+    # ---- 三类参考图落盘（resume 时一步到位：直接从 FormData 上传）----
+    ref_paths: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
+    if mannequin_files or scene_files or outfit_files:
+        from wellflow.app.utils.image_store import save_upload as _save
+        _pairs = [
+            ("mannequin", mannequin_files),
+            ("scene", scene_files),
+            ("outfit", outfit_files),
+        ]
+        for k, files in _pairs:
+            if files:
+                raw = [(f.filename or k, await f.read(), f.content_type) for f in files]
+                ref_paths[k] = _save(task_id, raw, prefix=k[0])
+        print(f"[resume] 📎 三类参考图落盘: "
+              f"mannequin={len(ref_paths['mannequin'])}, scene={len(ref_paths['scene'])}, outfit={len(ref_paths['outfit'])}",
+              flush=True)
 
     # ---- 优先用 resume_json（最灵活的通路） ----
     if resume_json:
@@ -572,8 +585,14 @@ async def resume_task(
             raise HTTPException(400, f"resume_json 解析失败: {exc}")
         # 注入通用字段（Form 参数仍可覆盖 json）
         resume_values.setdefault("node", node)
-        if model_image_paths and "model_images" not in resume_values:
-            resume_values["model_images"] = model_image_paths
+        # FormData 上传的三类图 → 注入（resume_json 里没写 reference_images 或某类为空时使用）
+        if any(ref_paths.values()):
+            _existing_refs = resume_values.get("reference_images") or {}
+            resume_values["reference_images"] = {
+                "mannequin": list(_existing_refs.get("mannequin") or ref_paths["mannequin"]),
+                "scene": list(_existing_refs.get("scene") or ref_paths["scene"]),
+                "outfit": list(_existing_refs.get("outfit") or ref_paths["outfit"]),
+            }
     else:
         # ---- 按 node 类型组装 Form 参数 ----
         resume_values: dict[str, Any] = {"node": node}
@@ -612,11 +631,14 @@ async def resume_task(
         if not _is_refine and not _is_redo:
             if node == "c1":
                 resume_values["confirmed_report"] = confirmed_report
-                if model_image_paths:
-                    resume_values["model_images"] = model_image_paths
                 resume_values["ratio"] = ratio
                 if image_model:
                     resume_values["image_model"] = image_model
+                # C1 允许传 mannequin 图
+                if ref_paths.get("mannequin"):
+                    resume_values["reference_images"] = {
+                        "mannequin": ref_paths["mannequin"], "scene": [], "outfit": []
+                    }
             elif node == "c2":
                 if image_model:
                     resume_values["image_model"] = image_model
@@ -637,11 +659,24 @@ async def resume_task(
                         print(f"[resume] C2 收到 per_scheme_count={counts}", flush=True)
                     except ValueError:
                         print(f"[resume] ⚠️ per_scheme_count 解析失败: {_psc}", flush=True)
+                # C2 三类参考图全注入
+                if any(ref_paths.values()):
+                    resume_values["reference_images"] = {
+                        "mannequin": ref_paths["mannequin"],
+                        "scene": ref_paths["scene"],
+                        "outfit": ref_paths["outfit"],
+                    }
             elif node == "c3":
                 if image_model:
                     resume_values["image_model"] = image_model
                 if ratio:
                     resume_values["ratio"] = ratio
+                if any(ref_paths.values()):
+                    resume_values["reference_images"] = {
+                        "mannequin": ref_paths["mannequin"],
+                        "scene": ref_paths["scene"],
+                        "outfit": ref_paths["outfit"],
+                    }
             elif node == "c4":
                 resume_values["decision"] = "confirm"
 
@@ -651,22 +686,25 @@ async def resume_task(
             with session_scope() as db:
                 repo2 = TaskRepo(db)
                 repo2.save_interrupt(task_id, None)
+                # 事件 payload 里写 ref_paths 的统计
+                _total_ref = sum(len(v) for v in ref_paths.values())
                 repo2.add_event(
                     task_id, "task_resumed",
                     payload_json={
                         "node": node,
-                        "model_image_count": len(model_image_paths),
+                        "ref_image_count": _total_ref,
                         "action": action,
                         "redo_target": redo_target,
                         "refine_target": refine_target,
                     }
                 )
-                # 模特图路径持久化到 task_image（按 task_id 可查）
-                if node == "c1" and model_image_paths:
-                    repo2.save_images(task_id, [
-                        {"image_type": "model", "storage_uri": p}
-                        for p in model_image_paths
-                    ])
+                # 三类参考图路径持久化到 task_image 表（按 type 分组）
+                if _total_ref:
+                    _to_save: list[dict[str, Any]] = []
+                    for t in ("mannequin", "scene", "outfit"):
+                        for p in ref_paths.get(t) or []:
+                            _to_save.append({"image_type": t, "storage_uri": p})
+                    repo2.save_images(task_id, _to_save)
         except Exception as e:
             print(f"[resume] ⚠️ DB prepare 失败: {e}", flush=True)
 
@@ -992,7 +1030,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
                 node1=node1,
                 node2=node2,
                 node3=node3,
-                model_images=[],
+                reference_images={},
                 output_images=[],
                 created_at=to_cn_iso(task.created_at),
                 updated_at=to_cn_iso(task.updated_at),
@@ -1074,8 +1112,8 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             print(f"[get_task] DB interrupt_json.node={task.interrupt_json.get('node')} "
                   f"陈旧，覆盖为 graph_current_node={graph_current_node}", flush=True)
 
-    # 从 task_image 表读出模特图 + 生图成品（按 task_id 查询）
-    model_images: list[dict[str, Any]] = []
+    # 从 task_image 表读出参考图（按 type 分组）+ 生图成品
+    reference_images: dict[str, list[dict[str, Any]]] = {"mannequin": [], "scene": [], "outfit": []}
     output_images: list[dict[str, Any]] = []
     for img in repo.list_images(task_id):
         item: dict[str, Any] = {
@@ -1083,8 +1121,11 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             "storage_uri": img.storage_uri,
             "url": _storage_uri_url(img.storage_uri),
         }
-        if img.image_type == "model":
-            model_images.append(item)
+        t = img.image_type or ""
+        if t in reference_images:
+            reference_images[t].append(item)
+        elif t == "model":  # 兼容老数据里的 "model" type → 归到 mannequin
+            reference_images["mannequin"].append(item)
         else:
             item["shot_id"] = img.shot_id
             item["prompt"] = img.prompt
@@ -1116,7 +1157,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         node1=node1,
         node2=node2,
         node3=node3,
-        model_images=model_images,
+        reference_images=reference_images,
         output_images=output_images,
         created_at=to_cn_iso(task.created_at),
         updated_at=to_cn_iso(task.updated_at),
