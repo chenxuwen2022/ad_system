@@ -159,7 +159,7 @@ class SchemeState(TypedDict, total=False):
     schemes: list[dict[str, Any]]          # 多套方案载体，每套包含 report_text
     scheme_raw: str                         # VLM 原始报告文本
     selected_scheme_indices: list[int]      # C2 用户选定的方案索引（新链路通常只有 1 套被锁）
-    per_scheme_count: list[int]             # C2 每套选中方案要生成几份 prompt，默认 [5]
+    per_scheme_count: list[int]             # 前端为每套选中方案指定的 prompt 数量
     thinking_text: str                      # VLM 深度思考过程文本
 
 

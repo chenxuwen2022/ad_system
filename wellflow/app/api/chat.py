@@ -1581,6 +1581,12 @@ async def _handle_resume(
                 yield _sse("done", {"phase": "c2_select"})
                 return
             resume_values["selected_scheme_indices"] = indices
+            # 输入框确认不携带前端 promptCount；引导用户通过方案卡片提交数量。
+            yield _sse("message", {
+                "text": "请在商拍方案卡片中确认所选方案，以提交要生成的提示词数量。",
+            })
+            yield _sse("done", {"phase": "c2_select"})
+            return
         # C2 阶段三类参考图全注入
         if any(ref_paths.values()):
             resume_values["reference_images"] = {

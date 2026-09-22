@@ -691,6 +691,10 @@ async def resume_task(
                 or type(selected[0]) is not int
                 or not 0 <= selected[0] < len((graph_state.get("node2") or {}).get("schemes") or [])):
             raise HTTPException(400, "请先查看商拍方案卡片，选 1 套您满意的方案后再点击确认。")
+        counts = resume_values.get("per_scheme_count")
+        if (not isinstance(counts, list) or len(counts) != len(selected)
+                or any(type(count) is not int or count < 1 for count in counts)):
+            raise HTTPException(400, "请由前端提交所选方案的提示词数量 per_scheme_count。")
 
     # fire-and-forget DB: 清 interrupt + 写事件
     def _sync_prepare():

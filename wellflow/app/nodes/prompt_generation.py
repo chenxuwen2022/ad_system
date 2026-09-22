@@ -25,7 +25,7 @@ import re
 from typing import Any
 
 from wellflow.app.llm.model_pool import get_model_pool
-from wellflow.app.prompt.constant import GENERATE_IMAGE_PROMPT
+from wellflow.app.prompt.constant import GENERATE_PROMPT_FOR_IMAGE
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +90,7 @@ def _extract_prompt_subtitle(raw_text: str, max_chars: int = 6) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 把 GENERATE_IMAGE_PROMPT 的 14 维 JSON schema 一字不差拼成自然语言 prompt
+# 把 GENERATE_PROMPT_FOR_IMAGE 的 14 维 JSON schema 一字不差拼成自然语言 prompt
 #
 # 严格按 schema 字段顺序拼接，覆盖全部 56 个字段路径：
 #
@@ -259,7 +259,7 @@ async def stream_generate_prompt(
     pool = get_model_pool()
     effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
 
-    system_prompt = GENERATE_IMAGE_PROMPT
+    system_prompt = GENERATE_PROMPT_FOR_IMAGE
 
     # user message：把商拍报告正文 + 识别报告 + 用户需求喂给 VLM
     scheme_index = scheme.get("scheme_index", "?")
@@ -384,7 +384,7 @@ async def generate_prompt_for_scheme(
     pool = get_model_pool()
     effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
 
-    system_prompt = GENERATE_IMAGE_PROMPT
+    system_prompt = GENERATE_PROMPT_FOR_IMAGE
 
     scheme_index = scheme.get("scheme_index")
     scheme_name = scheme.get("scheme_name", f"方案{scheme_index}")

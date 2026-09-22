@@ -334,12 +334,10 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
       decision="refine"   → 纯 text LLM 增量修改商拍方案（不走 VLM 重跑）
     """
     from langgraph.types import interrupt
-    from wellflow.app.config import settings as _settings
     from wellflow.app.event_bus import publish
 
     task_id = state.get("task_id", "")
     node3 = state.get("node3", {})
-    n_variants = int(_settings.node3_variants_per_scheme_default)
 
     if task_id:
         publish(task_id, "phase", {"phase": "c2_select"})
@@ -347,7 +345,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c2",
         "phase": "c2_select",
-        "hint": f"请从商拍策划方案列表中选定一套。确认后将生成 {n_variants} 份差异化生图提示词",
+        "hint": "请从商拍策划方案列表中选定一套。确认后将按前端设置生成差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
         "reference_images": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
@@ -397,19 +395,14 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         return {"phase": "c2_select"}
     new_node2["selected_scheme_indices"] = selected
 
-    # per_scheme_count 固定默认 [n_variants]，允许前端覆盖
+    # 提示词数量完全由前端随选中方案提交；后端不设置默认值。
     counts = interrupt_value.get("per_scheme_count")
     n_selected = len(new_node2["selected_scheme_indices"])
-    if counts and isinstance(counts, list):
-        counts = [max(1, int(c)) for c in counts]
-        if len(counts) >= n_selected:
-            new_node2["per_scheme_count"] = counts[:n_selected]
-        elif counts:
-            new_node2["per_scheme_count"] = counts + [n_variants] * (n_selected - len(counts))
-        else:
-            new_node2["per_scheme_count"] = [n_variants] * n_selected
-    else:
-        new_node2["per_scheme_count"] = [n_variants] * n_selected
+    if (not isinstance(counts, list) or len(counts) != n_selected
+            or any(type(c) is not int or c < 1 for c in counts)):
+        print(f"[c2_select] ⚠️ 无效 per_scheme_count: {counts!r}", flush=True)
+        return {"phase": "c2_select"}
+    new_node2["per_scheme_count"] = counts
     print(f"[c2_select] ✅ selected={new_node2['selected_scheme_indices']} "
           f"per_scheme_count={new_node2['per_scheme_count']}", flush=True)
 

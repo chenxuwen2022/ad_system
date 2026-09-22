@@ -53,7 +53,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     schemes: list[dict[str, Any]] = node2.get("schemes", [])
     selected_indices: list[int] = node2.get("selected_scheme_indices") or list(range(len(schemes)))
     # 每套选中方案要生成几份 prompt —— 新链路由 C2 写入 node2.per_scheme_count
-    per_scheme_count: list[int] = node2.get("per_scheme_count") or [1] * len(selected_indices)
+    per_scheme_count: list[int] = node2.get("per_scheme_count") or []
     user_requirement: str = req.get("user_requirement", "")
 
     # 三类参考图：C2 interrupt 时写入 node3.reference_images
@@ -85,12 +85,9 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     # 过滤出选中的方案
     selected_schemes: list[dict[str, Any]] = [schemes[i] for i in selected_indices if 0 <= i < len(schemes)]
 
-    # 规整 per_scheme_count 长度
-    if len(per_scheme_count) < len(selected_schemes):
-        per_scheme_count = per_scheme_count + [1] * (len(selected_schemes) - len(per_scheme_count))
-    else:
-        per_scheme_count = per_scheme_count[:len(selected_schemes)]
-    per_scheme_count = [max(1, int(c)) for c in per_scheme_count]
+    if (len(per_scheme_count) != len(selected_schemes)
+            or any(type(c) is not int or c < 1 for c in per_scheme_count)):
+        raise ValueError("Node3 缺少有效的前端 per_scheme_count")
 
     if not selected_schemes:
         print("[node3] ⚠️ 没有选中的方案，跳过 prompt 生成", flush=True)

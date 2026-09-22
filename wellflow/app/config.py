@@ -43,11 +43,6 @@ class Settings(BaseSettings):
     # 首次生成的候选商拍方案数量；微调时不据此增删方案。
     node2_scheme_count_default: int = 3
 
-    # ====== Node3 ======
-    # C2 用户锁定 1 套方案后，Node3 围绕这一套生成几份差异化 prompt（每份 = 1 张生图）。
-    # 新链路下固定为 3 —— C3 用户从 3 份里挑 1~3 份生图。
-    node3_variants_per_scheme_default: int = 3
-
     # ====== Node4 ======
     node4_gen_concurrency: int = 3                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
     node4_image_channel_id: int = 4                # new-api 生图渠道 ID
