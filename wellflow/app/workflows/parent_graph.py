@@ -348,7 +348,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c2",
         "phase": "c2_select",
-        "hint": "请查看并微调这套最终商拍方案。确认后会基于它生成 5 份差异化生图提示词",
+        "hint": f"请查看并微调这套最终商拍方案。确认后会基于它生成 {{_settings.node3_variants_per_scheme_default}} 份差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
         "model_images": node3.get("model_images", []),

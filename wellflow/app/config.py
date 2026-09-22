@@ -46,8 +46,8 @@ class Settings(BaseSettings):
 
     # ====== Node3 ======
     # C2 用户锁定 1 套方案后，Node3 围绕这一套生成几份差异化 prompt（每份 = 1 张生图）。
-    # 新链路下固定为 5 —— C3 用户从 5 份里挑 1~5 份生图。
-    node3_variants_per_scheme_default: int = 5
+    # 新链路下固定为 3 —— C3 用户从 3 份里挑 1~3 份生图。
+    node3_variants_per_scheme_default: int = 3
 
     # ====== Node4 ======
     node4_gen_concurrency: int = 3                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
