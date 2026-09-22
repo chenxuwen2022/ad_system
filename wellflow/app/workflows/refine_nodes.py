@@ -41,10 +41,13 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
     from wellflow.app.prompt.constant import REFINE_NODE1_REPORT_SYSTEM_PROMPT
     from wellflow.app.event_bus import publish
+    from wellflow.app.workflows.report_progress import ReportProgressStream, split_report_progress
 
     task_id = state.get("task_id", "")
     refine_instruction = state.get("_refine_instruction", "").strip()
     old_report: str = state.get("node1", {}).get("product_insight", "") or ""
+    # 历史报告可能把识别进度误存为正文，微调时只提供真正的报告。
+    old_progress, old_report = split_report_progress(old_report)
 
     # —— 锁定守卫（第一行就查，避免已锁定后还白白调 LLM）——
     if bool((state.get("node1") or {}).get("report_locked")):
@@ -104,6 +107,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     # --- 流式消费（reasoning_effort="close" → 不会有 thinking 通道） ---
     full_report_parts: list[str] = []
     content_chunk_index = 0
+    report_stream = ReportProgressStream()
 
     async for item in client.stream_chat(
         system=REFINE_NODE1_REPORT_SYSTEM_PROMPT,
@@ -126,10 +130,18 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
             # close 模式下不应该有 thinking，但防御性跳过
             continue
 
+        _, text = report_stream.feed(text)
+        if not text:
+            continue
         full_report_parts.append(text)
         content_chunk_index += 1
         publish(task_id, "report_chunk", {"chunk": text, "index": content_chunk_index, "node": "node1"})
 
+    remaining = report_stream.finish()
+    if remaining:
+        full_report_parts.append(remaining)
+        content_chunk_index += 1
+        publish(task_id, "report_chunk", {"chunk": remaining, "index": content_chunk_index, "node": "node1"})
     raw_report = "".join(full_report_parts)
     used_model = CLASSIFIER_MODEL
 
@@ -159,9 +171,8 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
             # 保留 VLM 缓存图、input_analysis；refine 只改文本
             "compressed_images": state.get("node1", {}).get("compressed_images", []),
             "input_analysis": state.get("node1", {}).get("input_analysis"),
-            # refine 阶段走 deepseek-v4-flash + reasoning_effort="close"，
-            # 不产生 thinking；旧的 VLM 思考文本已失效，清空避免前端误展示
-            "thinking_text": "",
+            # 微调不会重新识别图片，保留首次生成时的识别进度。
+            "thinking_text": old_progress or state.get("node1", {}).get("thinking_text", ""),
         },
         "_refine_target": None,
         "_refine_instruction": None,

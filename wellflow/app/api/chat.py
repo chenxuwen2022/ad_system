@@ -373,6 +373,8 @@ async def chat(
     marketing_goal: str = Form(default="acquisition"),
     # c2 界面 checkbox 选中的方案索引（逗号分隔，如 "0,2"），前端输入框发消息时带上
     selected_scheme_indices: str | None = Form(default=None),
+    scheme_prompt_counts: str | None = Form(default=None),
+    reference_images: str | None = Form(default=None),
     # 前端 dispatch 层回传：用户显式指定要微调哪一步（node1/node2/node3）
     # 仅作 LLM 意图分类的"强引导"上下文，绝不绕过 LLM
     selected_finetuning_target: str | None = Form(default=None),
@@ -440,17 +442,19 @@ async def chat(
 
         # ---------- 从 state 取产物 ----------
         if graph_state:
-            # completed_mask 仅用作 LLM 分类的上下文 hint（告知已跑过哪些 step），
-            # 不是业务逻辑，这里内联 3 行简单推导避免从旧关键词模块 import。
+            # 六位依次表示 node1 产物/c1 确认、node2 产物/c2 确认、
+            # node3 产物/c3 确认；确认位必须读取 checkpoint 中的确认记录。
             completed_mask = [False] * 6
+            confirmations = graph_state.get("confirmations") or {}
             if graph_state.get("node1", {}).get("product_insight"):
                 completed_mask[0] = True
+            completed_mask[1] = bool(confirmations.get("c1"))
             if graph_state.get("node2", {}).get("schemes") or current_node in ("c2", "c3", "c4"):
                 completed_mask[2] = True
+            completed_mask[3] = bool(confirmations.get("c2"))
             if graph_state.get("node3", {}).get("outputs") or current_node == "c3":
                 completed_mask[4] = True
-            if graph_state.get("node3", {}).get("outputs"):
-                completed_mask[5] = True
+            completed_mask[5] = bool(confirmations.get("c3"))
 
             existing_report = str(graph_state.get("node1", {}).get("product_insight", "") or "")
             # c2 的可选项是 schemes（方案），不是 prompts —— 历史上误读 node2.generate_prompts
@@ -1170,6 +1174,8 @@ async def chat(
                     existing_report, existing_schemes,
                     existing_ref_images, graph,
                     selected_scheme_indices=selected_scheme_indices,
+                    scheme_prompt_counts=scheme_prompt_counts,
+                    reference_images_json=reference_images,
                     graph_state=graph_state,
                 )):
                     yield ev
@@ -1473,6 +1479,8 @@ async def _handle_resume(
     graph,
     *,
     selected_scheme_indices: str | None = None,
+    scheme_prompt_counts: str | None = None,
+    reference_images_json: str | None = None,
     graph_state: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
@@ -1556,6 +1564,13 @@ async def _handle_resume(
                     if part.isdigit():
                         indices.append(int(part))
             if not indices:
+                # 自然语言中的“方案1”是用户可见的第 1 套，内部索引为 0。
+                explicit = re.search(r"方案\s*([1-9]\d*)|第\s*([1-9]\d*)\s*套", message)
+                if explicit:
+                    idx = int(explicit.group(1) or explicit.group(2)) - 1
+                    if 0 <= idx < len(existing_schemes):
+                        indices = [idx]
+            if not indices:
                 selected = intent_result.get("selected_indices")
                 if selected == "all":
                     indices = list(range(len(existing_schemes)))
@@ -1581,19 +1596,35 @@ async def _handle_resume(
                 yield _sse("done", {"phase": "c2_select"})
                 return
             resume_values["selected_scheme_indices"] = indices
-            # 输入框确认不携带前端 promptCount；引导用户通过方案卡片提交数量。
-            yield _sse("message", {
-                "text": "请在商拍方案卡片中确认所选方案，以提交要生成的提示词数量。",
-            })
-            yield _sse("done", {"phase": "c2_select"})
-            return
+            try:
+                all_counts = json_mod.loads(scheme_prompt_counts or "[]")
+                counts = [all_counts[idx] for idx in indices]
+                if any(type(count) is not int or count < 1 for count in counts):
+                    raise ValueError("无效数量")
+            except (ValueError, TypeError, IndexError):
+                yield _sse("message", {"text": "未收到所选方案的提示词数量，请在方案卡片中确认。"})
+                yield _sse("done", {"phase": "c2_select"})
+                return
+            resume_values["per_scheme_count"] = counts
+            print(f"[chat] c2 输入框确认 selected={indices} per_scheme_count={counts}", flush=True)
         # C2 阶段三类参考图全注入
-        if any(ref_paths.values()):
-            resume_values["reference_images"] = {
-                "mannequin": ref_paths.get("mannequin") or [],
-                "scene": ref_paths.get("scene") or [],
-                "outfit": ref_paths.get("outfit") or [],
-            }
+        supplied_refs: dict[str, Any] = {}
+        if reference_images_json:
+            try:
+                parsed_refs = json_mod.loads(reference_images_json)
+                if isinstance(parsed_refs, dict):
+                    supplied_refs = parsed_refs
+            except (ValueError, TypeError):
+                pass
+        references_for_resume: dict[str, list[str]] = {}
+        for kind in ("mannequin", "scene", "outfit"):
+            submitted = supplied_refs.get(kind)
+            saved = existing_ref_images.get(kind)
+            values = submitted if isinstance(submitted, list) else saved
+            references_for_resume[kind] = [
+                uri for uri in (values or []) if isinstance(uri, str) and uri
+            ] + list(ref_paths.get(kind) or [])
+        resume_values["reference_images"] = references_for_resume
 
     elif node == "c3":
         # ── edit_and_confirm_c3：用户想微调/修改提示词 → 走 refine 路径 ──
