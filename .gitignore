@@ -62,6 +62,7 @@ static/scene_ai/
 *.webm
 static/assets/
 static/outfit_ai/
+static/mannequin_ai/
 assets_data/*.bak_*
 static/*.html
 
@@ -74,3 +75,4 @@ data/cache/
 **/data/cache/
 
 .git_broken_bak/
+task_state/

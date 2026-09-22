@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wellflow.app.api.utils import ok, to_cn_iso
 from wellflow.app.config import settings
 from wellflow.app.database import get_db_async, session_scope, AsyncSessionLocal
-from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image
+from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image, spawn_heartbeat
 from wellflow.app.llm.factory import get_llm_client
 from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.repositories.scene_repo import SceneRepo
@@ -45,7 +45,7 @@ from wellflow.app.schemas.scene_schemas import (
 router = APIRouter(prefix="/scene", tags=["场景库"])
 
 REPO_ROOT = Path(__file__).resolve().parents[3]          # 仓库根
-TASK_DIR = REPO_ROOT / "static" / "scene_ai"             # 处理任务状态文件(已 gitignore)
+TASK_DIR = REPO_ROOT / "task_state" / "scene_ai"        # 处理任务状态文件(私有目录,不对外公开)
 
 # ---------------------------------------------------------------------------
 # 场景五维标签枚举(与 demo 口径一致;打标校验用)
@@ -321,6 +321,7 @@ async def _run_scene_task(task: dict, raw: bytes) -> None:
     """
     sid = task.get("session_id") or "scene"
     scene_id = task.get("scene_id")
+    spawn_heartbeat(_task_store(), task["task_id"])
 
     async def fail(err: str) -> None:
         task["status"] = "failed"

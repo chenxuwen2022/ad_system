@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wellflow.app.api.utils import ok, to_cn_iso
 from wellflow.app.config import settings
 from wellflow.app.database import get_db, get_db_async, session_scope, AsyncSessionLocal
-from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image
+from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image, spawn_heartbeat
 from wellflow.app.llm.factory import get_llm_client
 from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.repositories.outfit_repo import OutfitRepo
@@ -50,7 +50,7 @@ from wellflow.app.schemas.outfit_schemas import (
 router = APIRouter(prefix="/outfit", tags=["穿搭库"])
 
 REPO_ROOT = Path(__file__).resolve().parents[3]          # 仓库根(api/ -> app/ -> wellflow/ -> 根)
-TASK_DIR = REPO_ROOT / "static" / "outfit_ai"            # 拆解任务状态文件(已 gitignore)
+TASK_DIR = REPO_ROOT / "task_state" / "outfit_ai"       # 拆解任务状态文件(私有目录,不对外公开)
 DEMO_ITEM_DIR = REPO_ROOT / "static" / "assets" / "outfit-demo"
 SAMPLE_PHOTO = DEMO_ITEM_DIR / "original.png"
 
@@ -562,6 +562,7 @@ async def _run_extract(task: dict, raw: bytes, mode: str):
     """
     sid = task.get("session_id") or "outfit"
     outfit_id = task.get("outfit_id")
+    spawn_heartbeat(_task_store(), task["task_id"])
 
     async def fail(err: str) -> None:
         task["status"] = "failed"
@@ -860,6 +861,7 @@ async def _run_generate(task: dict, raw: bytes, body) -> None:
     """
     sid = task["session_id"]
     outfit_id = task["outfit_id"]
+    spawn_heartbeat(_task_store(), task["task_id"])
 
     async def fail(step_label: str, e: Exception) -> None:
         task["status"] = "failed"

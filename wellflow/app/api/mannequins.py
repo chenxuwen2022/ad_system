@@ -811,7 +811,7 @@ def _mq_task_store():
     from pathlib import Path as _Path
     from wellflow.app.utils.async_task_lib import TaskStore
     return TaskStore(
-        _Path(__file__).resolve().parents[3] / "static" / "mannequin_ai",
+        _Path(__file__).resolve().parents[3] / "task_state" / "mannequin_ai",
         row_id_field="mannequin_id",
         mark_row_failed=_mq_mark_failed_sync,
     )
@@ -893,6 +893,8 @@ async def _run_mannequin_async(task: dict) -> None:
     from wellflow.app.models.mannequin_models import Mannequin as _M, MannequinTag as _MT
 
     store = _mq_task_store()
+    from wellflow.app.utils.async_task_lib import spawn_heartbeat
+    spawn_heartbeat(store, task["task_id"])
     mannequin_id = task.get("mannequin_id")
 
     async def fail(err: str) -> None:
@@ -1200,6 +1202,8 @@ async def _mq_async_fine_tune(image_uri: str, prompt: str, model: str,
 async def _run_async_step(task: dict) -> None:
     """生成路径异步步骤执行器(按 task_type 分发;复用共享任务设施)。"""
     store = _mq_task_store()
+    from wellflow.app.utils.async_task_lib import spawn_heartbeat
+    spawn_heartbeat(store, task["task_id"])
 
     async def fail(err: str) -> None:
         task["status"] = "failed"
