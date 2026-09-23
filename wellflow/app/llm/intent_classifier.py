@@ -181,7 +181,7 @@ INTENT = Literal[
     "start_task",              # 无任务 → 开新任务
     "confirm_current",         # c1/c2/c3 通用确认（好的/继续/就这样/ok）
     "confirm_generation",      # 仅 c4：确认生图结果（满意/保存/结束）
-    "redo_blocked",            # 用户想完全重做/回到某一步 → 一律拦，引导用微调
+    "redo_blocked",            # 已锁定报告或目标不明的重做请求
     "edit",                    # 微调/修改某层产物（配合 refine_target）
     "select_topics",           # 仅 c2：选方案（全选/用第1个）
     "skip_forward",            # 试图跳过工作流步骤 → 一律拦
@@ -202,8 +202,20 @@ ALLOWED_INTENTS: set[str] = {
 
 
 # ---------------------------------------------------------------------------
-# 主入口 —— 全 LLM 分类，无关键词短路、无 UI 旁路
+# 主入口 —— 图片阶段明确的重生短句确定路由，其余交给 LLM
 # ---------------------------------------------------------------------------
+
+def is_image_regeneration_request(message: str) -> bool:
+    """Recognize short image rerun requests, never edits to upstream products."""
+    import re
+    text = re.sub(r"[\s，。！!？?、]", "", message).strip()
+    return bool(re.fullmatch(
+        r"(?:请|帮我|请帮我|我想|我要)?(?:"
+        r"(?:重新|再次|再)(?:生成|生|出)(?:(?:几|一|两|二|三|四|五|六|[1-9]\d*)张)?(?:图片|图像|图)?"
+        r"|再来(?:几|一|两|二|三|四|五|六|[1-9]\d*)张(?:图片|图)?"
+        r"|重做(?:图片|图)|重跑node4)(?:吧|一下)?", text, re.IGNORECASE,
+    ))
+
 
 async def classify(
     message: str,
@@ -221,6 +233,12 @@ async def classify(
     graph_state_brief: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
+    if (has_task and current_node == "c4"
+            and selected_finetuning_target in (None, "node4")
+            and is_image_regeneration_request(message)):
+        return {"intent": "edit", "refine_target": "node4",
+                "refine_instruction": message, "selected_indices": None,
+                "blocked_step": None, "reasoning": "图片结果阶段明确要求再次生图"}
     try:
         result = await _classify_via_llm(
             message,

@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from wellflow.app.models.asset_models import ProductSku, ProductImage
 from wellflow.app.models.task_models import Task, TaskEvent, TaskImage
 from wellflow.app.repositories.conversation_repo import ConversationRepo
 from wellflow.app.schemas.asset_schemas import ArchiveGeneratedImages
+
+logger = logging.getLogger(__name__)
 
 
 def image_key(url: str) -> str:
@@ -63,7 +66,11 @@ def save_ad_image(sku_id: int, url: str) -> str:
         if not relative.startswith("uploads/"):
             raise ValueError("生成图片路径无效")
         path = (root / relative.removeprefix("uploads/")).resolve()
-        if root not in path.parents or path.stat().st_size > limit:
+        if root not in path.parents:
+            raise ValueError("生成图片路径无效")
+        if not path.is_file():
+            raise HTTPException(409, "生成图片文件在当前服务中不存在，无法入库。请确认生图和入库使用同一服务，或检查图片存储是否共享")
+        if path.stat().st_size > limit:
             raise ValueError("生成图片路径或大小无效")
         raw = path.read_bytes()
     if not raw or len(raw) > limit:
@@ -258,4 +265,6 @@ async def archive_generated_images(sku_id: int, request: ArchiveGeneratedImages)
         except HTTPException:
             raise
         except Exception as exc:
+            logger.exception("SKU image archive failed: sku_id=%s task_id=%s conversation_id=%s",
+                             sku_id, request.task_id, request.conversation_id)
             raise HTTPException(503, "图片入库处理暂未完成，请重试；已关联到该商品的图片会自动跳过") from exc

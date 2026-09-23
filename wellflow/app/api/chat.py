@@ -229,9 +229,9 @@ def _extract_interrupt_value(chunk: Any) -> dict[str, Any] | None:
     return getattr(interrupt_obj, "value", None)
 
 
-async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None):
+async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None, restart_images=False):
     from wellflow.app.workflow_execution import launch_graph
-    return await launch_graph(task_id, graph, config, initial_state=initial_state, command=command)
+    return await launch_graph(task_id, graph, config, initial_state=initial_state, command=command, restart_images=restart_images)
 
 
 
@@ -434,7 +434,7 @@ async def chat(
     _PHASE_CN_MAP = {"node1": "c1_confirm", "node2": "c2_select",
                      "node3": "c3_confirm", "node4": "c4_review"}
     _TARGET_CN_MAP = {"node1": "报告", "node2": "方案", "node3": "提示词", "node4": "生图"}
-    if has_task and graph_state and message:
+    if has_task and graph_state and message and current_node != "c4" and graph_state.get("phase") != "done":
         from wellflow.app.workflows.state import get_node_refine_history
         _FALLBACK_NODE = {"c1": "node1", "c2": "node2",
                           "c3": "node3", "c4": "node4"}
@@ -552,7 +552,7 @@ async def chat(
         intent_result = await classify(
             message,
             has_task=has_task,
-            current_node=current_node,
+            current_node="c4" if graph_state and graph_state.get("phase") == "done" else current_node,
             completed_mask=completed_mask,
             has_images=len(images) > 0 or (not has_task and sku_id is not None),
             selected_finetuning_target=selected_finetuning_target,
@@ -850,8 +850,8 @@ async def chat(
                 # fall through 到运行状态守卫检查后继续 dispatch
             else:
                 # node1 锁定守卫应该已拦截；这里兜底
-                _msg = _node1_locked_message() if _node1_locked_here else \
-                    "当前步骤已完成，如需重新开始请新建任务。"
+                _msg = (_node1_locked_message() if _node1_locked_here and _refine_tgt == "node1"
+                        else "你想重新生成图片，还是调整方案或提示词？请说明要修改的内容。")
                 print(f"[chat] 🛡️ redo_blocked → {_msg}", flush=True)
                 chunk = _sse("message", {"text": _msg})
                 await _persist_sse_text(chunk, known_task_id=t_id)
@@ -924,7 +924,7 @@ async def chat(
             if has_task and _dispatch_intent in _NEEDS_RUNTIME_CHECK:
                 from wellflow.app.graph_context import check_graph_runtime_state
                 _rt_state, _rt_age = check_graph_runtime_state(snapshot)
-                if _rt_state == "done":
+                if _rt_state == "done" and not (_dispatch_intent == "edit" and intent_result.get("refine_target") == "node4"):
                     yield _sse("message", {"text": "任务已入库，请创建新任务继续创作。"})
                     yield _sse("done", {"phase": "done"})
                     return
@@ -972,7 +972,7 @@ async def chat(
                     # 🔴 重复检测按 node 隔离 —— 只看 _target（即将 refine 的那个 node）自己的历史
                     _history = get_node_refine_history(graph_state, _target)
                     print(f"[chat] 🔍 重复检测(target={_target}): instruction={_instruction[:60]} | per-node_history={_history}", flush=True)
-                    if _history and normalize_instruction(_instruction) == normalize_instruction(_history[-1]):
+                    if _target != "node4" and _history and normalize_instruction(_instruction) == normalize_instruction(_history[-1]):
                         if not _is_last_refine_succeeded(graph_state, _target):
                             # 指令重复，但上一轮 refine 没成功（产物为空）→ 放行让它重新跑
                             print(f"[chat] 🔄 指令重复但上一轮 refine 未成功（target={_target} 产物为空），放行", flush=True)
@@ -1171,6 +1171,15 @@ async def _handle_backward(
     from wellflow.app.workflow_status import checkpoint_view
     current_snapshot, _ = await _aget_snapshot(task_id)
     current_phase, current_interrupt = checkpoint_view(current_snapshot)
+    if current_phase == "done" and redo_target == "node4":
+        if product_images:
+            raise HTTPException(409, "重新生图不能更换已分析的商品图，请新建任务更换商品")
+        q = await _start_graph(task_id, graph, _langgraph_config(task_id), restart_images=True)
+        yield _sse("resume_ack", {"task_id": task_id, "node": "c4",
+                                  "message": "好的，保留原方案和提示词，重新生成一批图片。"})
+        async for ev in _stream_queue(task_id, q):
+            yield ev
+        return
     if not current_interrupt:
         raise HTTPException(409, "当前没有可修改的暂停点，请刷新任务")
     interrupt_node = current_interrupt["node"]
