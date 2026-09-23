@@ -2,7 +2,7 @@
 
 子图概览：
   Node1 (子图)  — do_analyze: VLM 多模态流式识别 → Markdown 报告
-  Node2 (子图)  — planning_scheme: VLM 产出 N 套 12 维商拍方案 JSON
+  Node2 (子图)  — planning_scheme: VLM 产出完整商拍策划报告正文
   Node3 (子图)  — prompt_generation: 按选中方案循环调 VLM → N 条最终生图 prompt
   Node4 (子图)  — prepare → run_generation → archive: 并发调 LLM 生图 + 归档
 
@@ -334,12 +334,10 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
       decision="refine"   → 纯 text LLM 增量修改商拍方案（不走 VLM 重跑）
     """
     from langgraph.types import interrupt
-    from wellflow.app.config import settings as _settings
     from wellflow.app.event_bus import publish
 
     task_id = state.get("task_id", "")
     node3 = state.get("node3", {})
-    n_variants = int(_settings.node3_variants_per_scheme_default)
 
     if task_id:
         publish(task_id, "phase", {"phase": "c2_select"})
@@ -347,7 +345,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c2",
         "phase": "c2_select",
-        "hint": f"请查看商拍方案，明确选择 1 套后确认。将基于所选方案生成 {n_variants} 份差异化生图提示词",
+        "hint": "请从商拍策划方案列表中选定一套。确认后将按前端设置生成差异化生图提示词",
         "schemes": state.get("node2", {}).get("schemes", []),
         "scheme_raw": state.get("node2", {}).get("scheme_raw", ""),
         "reference_images": node3.get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
@@ -397,19 +395,14 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         return {"phase": "c2_select"}
     new_node2["selected_scheme_indices"] = selected
 
-    # per_scheme_count 固定默认 [n_variants]，允许前端覆盖
+    # 提示词数量完全由前端随选中方案提交；后端不设置默认值。
     counts = interrupt_value.get("per_scheme_count")
     n_selected = len(new_node2["selected_scheme_indices"])
-    if counts and isinstance(counts, list):
-        counts = [max(1, int(c)) for c in counts]
-        if len(counts) >= n_selected:
-            new_node2["per_scheme_count"] = counts[:n_selected]
-        elif counts:
-            new_node2["per_scheme_count"] = counts + [n_variants] * (n_selected - len(counts))
-        else:
-            new_node2["per_scheme_count"] = [n_variants] * n_selected
-    else:
-        new_node2["per_scheme_count"] = [n_variants] * n_selected
+    if (not isinstance(counts, list) or len(counts) != n_selected
+            or any(type(c) is not int or c < 1 for c in counts)):
+        print(f"[c2_select] ⚠️ 无效 per_scheme_count: {counts!r}", flush=True)
+        return {"phase": "c2_select"}
+    new_node2["per_scheme_count"] = counts
     print(f"[c2_select] ✅ selected={new_node2['selected_scheme_indices']} "
           f"per_scheme_count={new_node2['per_scheme_count']}", flush=True)
 
@@ -550,7 +543,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
 
     决策模式：
       decision="confirm"  → 进 finalize 归档
-      decision="redo" + redo_target="node4" → 完全重置 node4.work_items（唯一保留的完全重做）
+      decision="redo" + redo_target="node4" → 无论上一轮是否失败，都重新生成全部图片
                                                Node4 是生图 API，没有可"增量编辑"的文本产物
       decision="refine"   → 纯 text LLM 增量编辑。refine_target 为 "node2" 或 "node3"
     """
@@ -570,7 +563,8 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c4",
         "phase": "c4_review",
-        "hint": "查看生图结果，可选择增量编辑或确认归档",
+        "hint": node4.get("generation_summary", ""),
+        "generation_status": node4.get("generation_status"),
         "outputs": node4.get("outputs", []),
         "failed_items": node4.get("failed_items", []),
         "reference_images": req.get("product_images", []),
@@ -636,14 +630,8 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
             "_refine_selected_indices": None,
         }
 
-    # redo→node4：只重置 work_items 状态 + 清 outputs/failed_items
-    print(f"[c4_review] 🔄 redo → Node4（重置 work_items）", flush=True)
-    new_node4 = dict(node4)
-    items = new_node4.get("work_items", [])
-    for it in items:
-        it["status"] = "pending"
-    new_node4["outputs"] = []
-    new_node4["failed_items"] = []
+    from wellflow.app.workflows.node4_graph import prepare_image_redo
+    new_node4 = prepare_image_redo(node4)
     return {
         "phase": "c4_review",
         "node1": node1,

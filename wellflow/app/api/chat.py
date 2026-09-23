@@ -270,6 +270,8 @@ async def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
 async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None):
     import traceback as _tb
     try:
+        from wellflow.app.llm.model_pool import prepare_task_models
+        await prepare_task_models(task_id)
         mark_running(task_id)
         if command is not None:
             stream_iter = graph.astream(command, config=config, stream_mode=["updates"])
@@ -326,6 +328,8 @@ async def _stream_queue(task_id: str, q) -> AsyncGenerator[str, None]:
 
 
 def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
+    if event_type == "message":
+        return _sse("message", event_data)
     if event_type == "phase":
         return _sse("phase", {"phase": event_data.get("phase")})
     if event_type == "interrupt":
@@ -368,11 +372,14 @@ async def chat(
     task_id: str | None = Form(default=None),
     # 新增：conversation 关联（可选，首次可不传；后端会从 task.conversation_id 反查或自动新建）
     conversation_id: str | None = Form(default=None),
+    sku_id: int | None = Form(default=None),
     platform: str = Form(default="taobao"),
     image_type: str = Form(default="ad"),
     marketing_goal: str = Form(default="acquisition"),
     # c2 界面 checkbox 选中的方案索引（逗号分隔，如 "0,2"），前端输入框发消息时带上
     selected_scheme_indices: str | None = Form(default=None),
+    scheme_prompt_counts: str | None = Form(default=None),
+    reference_images: str | None = Form(default=None),
     # 前端 dispatch 层回传：用户显式指定要微调哪一步（node1/node2/node3）
     # 仅作 LLM 意图分类的"强引导"上下文，绝不绕过 LLM
     selected_finetuning_target: str | None = Form(default=None),
@@ -396,6 +403,28 @@ async def chat(
 
     message = _fix_utf8(message).strip()
 
+    # SKU is chosen explicitly; task/conversation identities may not disagree.
+    from wellflow.app.models.asset_models import ProductSku
+    from wellflow.app.models.task_models import Task
+    binding_repo = ConversationRepo(db)
+    bound_task = db.get(Task, task_id) if task_id else None
+    bound_conv = binding_repo.resolve(conversation_id) if conversation_id else None
+    if bound_task and bound_task.conversation_id:
+        task_conv = binding_repo.get(bound_task.conversation_id)
+        if conversation_id and (not bound_conv or bound_conv.conversation_id != bound_task.conversation_id):
+            raise HTTPException(409, "任务不属于当前对话")
+        bound_conv = task_conv
+    if bound_conv:
+        if sku_id is not None and sku_id != bound_conv.sku_id:
+            raise HTTPException(409, "对话关联商品已锁定，请新建对话或先绑定历史对话")
+        sku_id = bound_conv.sku_id
+    if sku_id is not None and db.get(ProductSku, sku_id) is None:
+        raise HTTPException(404, "关联商品不存在")
+    if not bound_conv and sku_id is None:
+        raise HTTPException(422, "请先选择 SKU 商品")
+
+    if bound_task and bound_task.phase == "archive_pending":
+        raise HTTPException(409, "图片入库待完成，请用原选择重试入库")
     has_task = bool(task_id)
     t_id: str | None = None
     current_node: str | None = None
@@ -440,17 +469,19 @@ async def chat(
 
         # ---------- 从 state 取产物 ----------
         if graph_state:
-            # completed_mask 仅用作 LLM 分类的上下文 hint（告知已跑过哪些 step），
-            # 不是业务逻辑，这里内联 3 行简单推导避免从旧关键词模块 import。
+            # 六位依次表示 node1 产物/c1 确认、node2 产物/c2 确认、
+            # node3 产物/c3 确认；确认位必须读取 checkpoint 中的确认记录。
             completed_mask = [False] * 6
+            confirmations = graph_state.get("confirmations") or {}
             if graph_state.get("node1", {}).get("product_insight"):
                 completed_mask[0] = True
+            completed_mask[1] = bool(confirmations.get("c1"))
             if graph_state.get("node2", {}).get("schemes") or current_node in ("c2", "c3", "c4"):
                 completed_mask[2] = True
+            completed_mask[3] = bool(confirmations.get("c2"))
             if graph_state.get("node3", {}).get("outputs") or current_node == "c3":
                 completed_mask[4] = True
-            if graph_state.get("node3", {}).get("outputs"):
-                completed_mask[5] = True
+            completed_mask[5] = bool(confirmations.get("c3"))
 
             existing_report = str(graph_state.get("node1", {}).get("product_insight", "") or "")
             # c2 的可选项是 schemes（方案），不是 prompts —— 历史上误读 node2.generate_prompts
@@ -594,9 +625,10 @@ async def chat(
             has_task=has_task,
             current_node=current_node,
             completed_mask=completed_mask,
-            has_images=len(images) > 0,
+            has_images=len(images) > 0 or (not has_task and sku_id is not None),
             selected_finetuning_target=selected_finetuning_target,
             graph_state_brief=_state_brief,
+            task_id=t_id,
         )
         intent = intent_result.get("intent", "chat_outside")
         print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
@@ -753,6 +785,7 @@ async def chat(
                 conversation_id=conv_id_for_this_turn,
                 title="新对话",  # 占位，repo 会用 hint 覆盖
                 title_hint=_title_hint,
+                sku_id=sku_id,
             )
             print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title_hint=start_task", flush=True)
         else:
@@ -764,6 +797,7 @@ async def chat(
                     conversation_id=conv_id_for_this_turn,
                     title="新对话",
                     title_hint=_title_hint,
+                    sku_id=sku_id,
                 )
                 print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
 
@@ -981,6 +1015,9 @@ async def chat(
                         if graph is None:
                             raise RuntimeError("LangGraph 未初始化")
                         config = _langgraph_config(t_id)
+                        # 服务重启后进程内 task 模型缓存已丢失；恢复 graph 前统一重建一次。
+                        from wellflow.app.llm.model_pool import prepare_task_models
+                        await prepare_task_models(t_id)
                         async for _chunk in graph.astream(None, config, stream_mode="updates"):
                             pass
                         print(f"[chat] ✅ astream(None) 续跑完成", flush=True)
@@ -1024,7 +1061,7 @@ async def chat(
 
                         # 合成 interrupt payload（复用 tasks.py 的模式）
                         _hint_map = {"c1": "请查看商品分析报告", "c2": "请选择商拍方案",
-                                     "c3": "请确认生图提示词", "c4": "请查看生图结果"}
+                                     "c3": "请确认生图提示词", "c4": ""}
                         _interrupt: dict[str, Any] = {"node": _current_after, "hint": _hint_map.get(_current_after, "")}
                         if _current_after == "c1":
                             _interrupt.update({
@@ -1170,6 +1207,8 @@ async def chat(
                     existing_report, existing_schemes,
                     existing_ref_images, graph,
                     selected_scheme_indices=selected_scheme_indices,
+                    scheme_prompt_counts=scheme_prompt_counts,
+                    reference_images_json=reference_images,
                     graph_state=graph_state,
                 )):
                     yield ev
@@ -1200,8 +1239,18 @@ async def _handle_start_task(
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
-    if not product_images:
-        yield _sse("message", {"text": "请上传至少 1 张商品图片再开始。"})
+    sku_paths: list[str] = []
+    if not product_images and conversation_id:
+        from wellflow.app.models.asset_models import ProductImage
+        from sqlalchemy import select
+        with session_scope() as db:
+            conv = ConversationRepo(db).get(conversation_id)
+            if conv and conv.sku_id:
+                sku_paths = list(db.scalars(select(ProductImage.storage_uri).where(
+                    ProductImage.sku_id == conv.sku_id, ProductImage.image_type == "product",
+                ).order_by(ProductImage.sort_order, ProductImage.id)))
+    if not product_images and not sku_paths:
+        yield _sse("message", {"text": "该商品还没有商品图，请上传至少 1 张商品图片再开始。"})
         yield _sse("done", {"phase": "done"})
         return
 
@@ -1209,8 +1258,8 @@ async def _handle_start_task(
     q = await drain_and_subscribe(task_id)
 
     raw_files = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
-    product_image_paths = save_upload(task_id, raw_files, prefix="p")
-    image_names = [f.filename for f in product_images]
+    product_image_paths = save_upload(task_id, raw_files, prefix="p") if raw_files else sku_paths
+    image_names = [f.filename for f in product_images] if raw_files else [p.rsplit("/", 1)[-1] for p in sku_paths]
 
     # 生成简短 description 供前端历史列表展示
     _desc = message.strip()[:30]
@@ -1224,8 +1273,8 @@ async def _handle_start_task(
         "marketing_goal": marketing_goal,
         "product_link": None,
         "image_model": None,
-        "image_count": len(product_images),
-        "has_images": len(product_images) > 0,
+        "image_count": len(product_image_paths),
+        "has_images": bool(product_image_paths),
         "has_text": bool(message),
         "product_image_names": image_names,
         "product_images": product_image_paths,
@@ -1403,15 +1452,10 @@ async def _handle_backward(
             cmd = Command(goto=exec_node, update=update_dict)
             print(f"[backward] 🎯 graph已END → refine→{redo_target} goto={exec_node}, instruction={_instruction}", flush=True)
         else:
-            # redo node4：完全重置 work_items + 清 outputs（保持原有逻辑）
+            # redo node4：无论上一轮是否失败，都重新生成全部图片
             redo_target_cleanup: dict[str, dict[str, Any]] = {}
-            new_node4 = dict(node4)
-            items = new_node4.get("work_items", []) or []
-            for it in items:
-                if isinstance(it, dict):
-                    it["status"] = "pending"
-            new_node4["outputs"] = []
-            new_node4["failed_items"] = []
+            from wellflow.app.workflows.node4_graph import prepare_image_redo
+            new_node4 = prepare_image_redo(node4)
             redo_target_cleanup = {"node4": new_node4, "phase": "c4_review"}
             update_dict = {**redo_target_cleanup, **cmd_update} if cmd_update else redo_target_cleanup
             exec_node = _EXEC_NODE_OF_TARGET.get(redo_target, redo_target)
@@ -1473,6 +1517,8 @@ async def _handle_resume(
     graph,
     *,
     selected_scheme_indices: str | None = None,
+    scheme_prompt_counts: str | None = None,
+    reference_images_json: str | None = None,
     graph_state: dict[str, Any] | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
@@ -1556,6 +1602,13 @@ async def _handle_resume(
                     if part.isdigit():
                         indices.append(int(part))
             if not indices:
+                # 自然语言中的“方案1”是用户可见的第 1 套，内部索引为 0。
+                explicit = re.search(r"方案\s*([1-9]\d*)|第\s*([1-9]\d*)\s*套", message)
+                if explicit:
+                    idx = int(explicit.group(1) or explicit.group(2)) - 1
+                    if 0 <= idx < len(existing_schemes):
+                        indices = [idx]
+            if not indices:
                 selected = intent_result.get("selected_indices")
                 if selected == "all":
                     indices = list(range(len(existing_schemes)))
@@ -1581,13 +1634,35 @@ async def _handle_resume(
                 yield _sse("done", {"phase": "c2_select"})
                 return
             resume_values["selected_scheme_indices"] = indices
+            try:
+                all_counts = json_mod.loads(scheme_prompt_counts or "[]")
+                counts = [all_counts[idx] for idx in indices]
+                if any(type(count) is not int or count < 1 for count in counts):
+                    raise ValueError("无效数量")
+            except (ValueError, TypeError, IndexError):
+                yield _sse("message", {"text": "未收到所选方案的提示词数量，请在方案卡片中确认。"})
+                yield _sse("done", {"phase": "c2_select"})
+                return
+            resume_values["per_scheme_count"] = counts
+            print(f"[chat] c2 输入框确认 selected={indices} per_scheme_count={counts}", flush=True)
         # C2 阶段三类参考图全注入
-        if any(ref_paths.values()):
-            resume_values["reference_images"] = {
-                "mannequin": ref_paths.get("mannequin") or [],
-                "scene": ref_paths.get("scene") or [],
-                "outfit": ref_paths.get("outfit") or [],
-            }
+        supplied_refs: dict[str, Any] = {}
+        if reference_images_json:
+            try:
+                parsed_refs = json_mod.loads(reference_images_json)
+                if isinstance(parsed_refs, dict):
+                    supplied_refs = parsed_refs
+            except (ValueError, TypeError):
+                pass
+        references_for_resume: dict[str, list[str]] = {}
+        for kind in ("mannequin", "scene", "outfit"):
+            submitted = supplied_refs.get(kind)
+            saved = existing_ref_images.get(kind)
+            values = submitted if isinstance(submitted, list) else saved
+            references_for_resume[kind] = [
+                uri for uri in (values or []) if isinstance(uri, str) and uri
+            ] + list(ref_paths.get(kind) or [])
+        resume_values["reference_images"] = references_for_resume
 
     elif node == "c3":
         # ── edit_and_confirm_c3：用户想微调/修改提示词 → 走 refine 路径 ──
@@ -1649,6 +1724,12 @@ async def _handle_resume(
                 yield _chunk
 
     elif node == "c4":
+        if intent != "redo_generation":
+            yield _sse("message", {"text": "请在图片结果中勾选需要的图片，点击入库保存到关联 SKU。"})
+            from wellflow.app.services.sku_archive import with_image_keys
+            payload = with_image_keys((graph_state or {}).get("node4") or {})
+            yield _sse("interrupt", {**payload, "node": "c4", "phase": "c4_review", "hint": "请选择图片后入库"})
+            return
         # C4 独占 confirm_generation / redo_generation 两个意图。
         # 统一走 decision + redo_target（graph 的 _c4_review_result 读这两个字段）。
         if intent == "redo_generation":
@@ -1659,6 +1740,12 @@ async def _handle_resume(
             resume_values["decision"] = "confirm"
 
     print(f"[chat] resume_values node={node}: {list(resume_values.keys())}", flush=True)
+
+    if node in ("c1", "c2", "c3") and resume_values.get("reference_images"):
+        def _save_references():
+            with session_scope() as db:
+                TaskRepo(db).save_reference_images(task_id, resume_values["reference_images"])
+        await asyncio.to_thread(_save_references)
 
     def _clear_interrupt():
         try:

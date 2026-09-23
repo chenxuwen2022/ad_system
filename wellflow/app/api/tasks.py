@@ -150,8 +150,10 @@ async def _start_graph(task_id: str, graph, config, initial_state=None, resume_v
     """后台启动 LangGraph，异常转成 SSE error 事件。"""
     from wellflow.app.event_bus import publish as _eb, cleanup as _eb_cleanup, mark_running, mark_done
     import traceback as _tb
+    from wellflow.app.llm.model_pool import prepare_task_models
     mark_running(task_id)
     try:
+        await prepare_task_models(task_id)
         if resume_values is not None:
             stream_iter = graph.astream(
                 Command(resume=resume_values), config=config,
@@ -460,6 +462,9 @@ async def resume_task(
     if not task:
         raise HTTPException(404, f"task {task_id} 不存在")
 
+    if task.phase == "archive_pending":
+        raise HTTPException(409, "图片入库待完成，请用原选择重试入库")
+
     # 终态守卫：确认入库（done）后禁止任何 redo / resume
     if task.phase == TaskPhase.DONE.value:
         raise HTTPException(409, "任务已确认入库，禁止任何重做操作")
@@ -680,6 +685,9 @@ async def resume_task(
             elif node == "c4":
                 resume_values["decision"] = "confirm"
 
+    if node == "c4" and resume_values.get("decision", "confirm") == "confirm":
+        raise HTTPException(409, "请在图片结果中勾选图片，并通过 SKU 入库按钮确认")
+
     # 多套方案必须明确选中；只有一套时可直接确认唯一方案。
     if node == "c2" and resume_values.get("decision", "confirm") == "confirm":
         selected = resume_values.get("selected_scheme_indices")
@@ -691,6 +699,10 @@ async def resume_task(
                 or type(selected[0]) is not int
                 or not 0 <= selected[0] < len((graph_state.get("node2") or {}).get("schemes") or [])):
             raise HTTPException(400, "请先查看商拍方案卡片，选 1 套您满意的方案后再点击确认。")
+        counts = resume_values.get("per_scheme_count")
+        if (not isinstance(counts, list) or len(counts) != len(selected)
+                or any(type(count) is not int or count < 1 for count in counts)):
+            raise HTTPException(400, "请由前端提交所选方案的提示词数量 per_scheme_count。")
 
     # fire-and-forget DB: 清 interrupt + 写事件
     def _sync_prepare():
@@ -710,17 +722,15 @@ async def resume_task(
                         "refine_target": refine_target,
                     }
                 )
-                # 三类参考图路径持久化到 task_image 表（按 type 分组）
-                if _total_ref:
-                    _to_save: list[dict[str, Any]] = []
-                    for t in ("mannequin", "scene", "outfit"):
-                        for p in ref_paths.get(t) or []:
-                            _to_save.append({"image_type": t, "storage_uri": p})
-                    repo2.save_images(task_id, _to_save)
+                # resume_json 中是预先上传的路径，也必须持久化供刷新恢复。
+                repo2.save_reference_images(
+                    task_id, resume_values.get("reference_images") or ref_paths,
+                )
         except Exception as e:
             print(f"[resume] ⚠️ DB prepare 失败: {e}", flush=True)
 
-    asyncio.get_event_loop().run_in_executor(None, _sync_prepare)
+    # 先写入参考图，再启动 graph；刷新请求才能稳定读到刚提交的图片。
+    await asyncio.to_thread(_sync_prepare)
 
     # 注册 event_bus queue + 启动 graph
     from wellflow.app.event_bus import drain_and_subscribe
@@ -849,6 +859,8 @@ async def restart_task(
             },
         )
 
+    if task.phase == "archive_pending":
+        raise HTTPException(409, "请重试完成图片入库，不能重启任务")
     # 终态不能重启
     if task.phase in (TaskPhase.DONE.value, TaskPhase.FAILED.value):
         raise HTTPException(409, f"任务已 {task.phase}，无法重启")
@@ -1048,9 +1060,9 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
                 updated_at=to_cn_iso(task.updated_at),
             ))
 
-    # ── Step A: enrich node1.report_sections（历史 task 可能没有这个字段）───
+    # ── Step A: 从报告正文重建四块，兼容历史任务及旧解析器遗漏的多行字段 ───
     # 放在最前面——后面 graph_current_node 推出来的 c1 需要用它合成 interrupt
-    if isinstance(node1, dict) and "report_sections" not in node1:
+    if isinstance(node1, dict):
         from wellflow.app.prompt.report_sections import build_report_sections
         insight = node1.get("product_insight", "") or ""
         if insight:
@@ -1107,7 +1119,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             },
             "c4": {
                 "node": "c4",
-                "hint": "查看生图结果",
+                "hint": "",
                 "outputs": (node4 or {}).get("outputs"),
                 "failed_items": (node4 or {}).get("failed_items"),
                 "thinking_text": (node4 or {}).get("thinking_text"),
@@ -1123,6 +1135,8 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             interrupt_json = {**interrupt_json, "node": graph_current_node}
             print(f"[get_task] DB interrupt_json.node={task.interrupt_json.get('node')} "
                   f"陈旧，覆盖为 graph_current_node={graph_current_node}", flush=True)
+    if interrupt_json is not None and interrupt_json.get("node") == "c1" and isinstance(node1, dict):
+        interrupt_json = {**interrupt_json, "report_sections": node1.get("report_sections")}
 
     # 从 task_image 表读出参考图（按 type 分组）+ 生图成品
     reference_images: dict[str, list[dict[str, Any]]] = {"mannequin": [], "scene": [], "outfit": []}
@@ -1144,6 +1158,20 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             item["prompt_index"] = img.prompt_index
             output_images.append(item)
 
+    # 兼容修复前已通过 resume_json 提交、但尚未写入 task_image 的任务。
+    saved_refs = {
+        (kind, item["storage_uri"])
+        for kind, items in reference_images.items()
+        for item in items
+    }
+    checkpoint_refs = (node3 or {}).get("reference_images") or {}
+    for kind in reference_images:
+        for uri in checkpoint_refs.get(kind) or []:
+            if not isinstance(uri, str) or not uri or (kind, uri) in saved_refs:
+                continue
+            saved_refs.add((kind, uri))
+            reference_images[kind].append({"storage_uri": uri, "url": _storage_uri_url(uri)})
+
     # 🔍 thinking_text 诊断日志：三处来源的长度全打出来，定位"刷新后 thinking 丢失"根因
     _db_interrupt_think = (task.interrupt_json or {}).get("thinking_text") if isinstance(task.interrupt_json, dict) else None
     _final_interrupt_think = interrupt_json.get("thinking_text") if isinstance(interrupt_json, dict) else None
@@ -1158,6 +1186,9 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         flush=True,
     )
 
+    from wellflow.app.services.sku_archive import with_image_keys
+    if interrupt_json:
+        interrupt_json = with_image_keys(interrupt_json)
     return ok(TaskInfoResponse(
         task_id=task.task_id,
         phase=task.phase,
@@ -1195,6 +1226,9 @@ async def delete_task(task_id: str):
         task = repo.get(task_id)
         if not task:
             raise HTTPException(404, f"task {task_id} 不存在")
+
+        if task.phase == "archive_pending":
+            raise HTTPException(409, "请先重试完成图片入库，再删除任务")
 
         # 只有 node1/node2/node3 正在执行时才禁止删除；
         # HITL 等待（c1_confirm / c2_confirm）和终态（done / failed / needs_retry）都允许删
@@ -1235,6 +1269,8 @@ async def delete_task(task_id: str):
     # 3. 删磁盘文件（uploads/{task_id}/）
     from wellflow.app.utils.image_store import delete_task_files
     delete_task_files(task_id)
+    from wellflow.app.llm.model_pool import clear_task_models
+    clear_task_models(task_id)
 
     # 4. 删 LangGraph checkpoint（thread_id = task_id）
     cp = get_checkpointer()

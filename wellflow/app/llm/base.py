@@ -5,6 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
+from wellflow.app.llm.channel_audit import schedule_actual_channel
+
 
 class LLMResponse:
     """统一的 LLM 响应。"""
@@ -74,6 +76,14 @@ class InsufficientCreditsError(RuntimeError):
         self.upstream_message = upstream_message
 
 
+class ImageRateLimitError(RuntimeError):
+    """明确被拒绝的生图请求；只由共享生图服务负责限流重试。"""
+
+    def __init__(self, message: str, retry_after: str | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def extract_error_message(status_code: int, text: str) -> str:
     """从网关错误响应里提取干净的 message，供前端原封不动展示。
 
@@ -101,6 +111,12 @@ def extract_error_message(status_code: int, text: str) -> str:
             return str(val)
 
     return raw or f"HTTP {status_code}"
+
+
+def gateway_request_context(response: Any) -> str:
+    """保留可用于 New API 后台查实际渠道的请求 ID。"""
+    request_id = response.headers.get("x-oneapi-request-id")
+    return f" [request_id={request_id}]" if request_id else ""
 
 
 class BaseLLMClient(ABC):
@@ -171,8 +187,7 @@ class BaseLLMClient(ABC):
         ...
 
     # ------------------------------------------------------------------
-    # 图像生成 —— 只走 /v1/responses 端点
-    #   支持多参考图（input_image blocks）、高清编辑、统一协议
+    # 图像生成 —— 按模型和参考图选择端点
     #   每张图一次调用；批量通过上层 node3 的并行池实现
     # ------------------------------------------------------------------
 
@@ -190,7 +205,7 @@ class BaseLLMClient(ABC):
 
         - GPT Image 图生图（有参考图）→ /v1/images/edits multipart（默认），
           参考图作为多个同名 image 字段；可通过 image_gpt_edit_endpoint 切到 /v1/responses。
-        - GPT Image 文生图（无参考图）→ /v1/responses + image_generation tool。
+        - GPT Image 文生图（无参考图）→ /v1/images/generations JSON。
         - 非 GPT 模型（qwen/doubao 等）→ /v1/images/generations JSON，
           参考图通过 reference_images 字段传递。
         """
@@ -205,50 +220,24 @@ class BaseLLMClient(ABC):
                     if val and not refs:
                         refs = list(val) if isinstance(val, list) else [val]
 
-        # ---------- 🔑 按模型名分流 ----------
+        # 非 GPT 模型或无参考图时，统一走 generations。
         model_name = getattr(self, "model", "")
         is_gpt_image = "gpt-image" in model_name.lower()
+        if not is_gpt_image or not refs:
+            return await self._generate_image_via_generations(
+                prompt=prompt, refs=refs, size=size, n=n,
+                response_format=response_format, extra_params=extra_params,
+            )
 
-        # GPT edit 模式端点选择（默认 "edits"，可配成 "responses"）
-        gpt_edit_endpoint = getattr(settings, "image_gpt_edit_endpoint", "edits")
-
-        # ═══════════════════════════════════════════════════════════════════════════
-        # 分流规则：**全部直接用用户指定的模型**，不再换模型名
-        #
-        #  ① GPT + 有 refs + 默认配置       → /v1/images/edits multipart
-        #                                      gpt-image-2 原生 edit 端点，
-        #                                      参考图作为多个同名 image 文件字段
-        #
-        #  ② GPT + 无 refs（纯文生图）      → /v1/images/generations JSON
-        #                                      gpt-image-2 原生 generations，
-        #                                      不需要 gpt-5.4-mini 当大脑
-        #
-        #  ③ 非 GPT 模型（qwen/doubao 等） → /v1/images/generations JSON
-        #                                      参考图通过 reference_images 字段传递
-        #
-        #  ④ GPT edit + 强制 responses     → /v1/responses + image_generation
-        #     （image_gpt_edit_endpoint    tool (action=edit)
-        #       = "responses" 时）           ⚠️ 仅这个分支需要 llm_model_responses
-        # ═══════════════════════════════════════════════════════════════════════════
-
-        # ── ① GPT 图生图（有 refs）→ edits multipart（默认路径）──
-        if is_gpt_image and refs and gpt_edit_endpoint != "responses":
+        # GPT 图生图默认走 edits，只有显式配置 responses 时才继续向下执行。
+        if getattr(settings, "image_gpt_edit_endpoint", "edits") != "responses":
             return await self._generate_image_via_edits(
                 prompt=prompt, refs=refs, size=size, n=n,
                 response_format=response_format,
             )
 
-        # ── ④ GPT 图生图 + 强制 responses → responses + image_generation tool ──
-        if is_gpt_image and refs and gpt_edit_endpoint == "responses":
-            # 只有这个分支需要额外的 responses 端点配置
-            from wellflow.app.llm.factory import _strip_provider
-            top_model = _strip_provider(getattr(settings, "llm_model_responses", "gpt-5.4-mini"))
-        else:
-            # ── ② + ③ GPT 纯文生图 / 非 GPT / 其他 → generations JSON ──
-            return await self._generate_image_via_generations(
-                prompt=prompt, refs=refs, size=size, n=n,
-                response_format=response_format, extra_params=extra_params,
-            )
+        from wellflow.app.llm.factory import _strip_provider
+        top_model = _strip_provider(getattr(settings, "llm_model_responses", "gpt-5.4-mini"))
 
         # ---------- 从 config 读取速度/质量参数（调高质量→慢，调低→快）----------
         quality = settings.image_gen_quality
@@ -301,7 +290,7 @@ class BaseLLMClient(ABC):
               f"proxy={proxy or '(直连)'}", flush=True)
         print(f"[llm]   prompt: {_prompt_preview}", flush=True)
 
-        MAX_RETRIES = 2
+        MAX_RETRIES = 0  # 生图失败交给模型链立即切换，不在当前模型等待重试
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout)
 
         # ---------- AsyncClient 建在循环外，重试时复用连接池 ----------
@@ -321,6 +310,7 @@ class BaseLLMClient(ABC):
                         headers=headers,
                         json=payload,
                     )
+                    schedule_actual_channel(resp, top_model, "responses")
                     _t_resp = _asyncio.get_event_loop().time()
                     _http_dt = _t_resp - _t_req
                     # 服务端处理时间（从发起到收到完整响应）
@@ -328,15 +318,21 @@ class BaseLLMClient(ABC):
                           f"(status={resp.status_code}, attempt={attempt})", flush=True)
                     if resp.status_code >= 400:
                         err_body = resp.text[:500]
+                        context = gateway_request_context(resp)
                         print(f"[llm] /v1/responses HTTP {resp.status_code}: {err_body}", flush=True)
+                        if resp.status_code == 429:
+                            raise ImageRateLimitError(
+                                extract_error_message(429, resp.text) + context,
+                                resp.headers.get("Retry-After"),
+                            )
                         if resp.status_code == 402:
-                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text))
+                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text) + context)
                         if resp.status_code in (400, 401, 403, 404):
-                            raise RuntimeError(extract_error_message(resp.status_code, resp.text))
+                            raise RuntimeError(extract_error_message(resp.status_code, resp.text) + context)
                         if resp.status_code in (429, 500, 502, 503, 504) and attempt <= MAX_RETRIES:
                             await _asyncio.sleep(1.0 * attempt)
                             continue
-                        raise RuntimeError(extract_error_message(resp.status_code, resp.text))
+                        raise RuntimeError(extract_error_message(resp.status_code, resp.text) + context)
 
                     data = resp.json()
                     break
@@ -421,38 +417,37 @@ class BaseLLMClient(ABC):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        MAX_RETRIES = 2
-        RATE_LIMIT_RETRIES = 3
-        RATE_LIMIT_BACKOFF = (15.0, 30.0, 60.0)
+        MAX_RETRIES = 0  # 生图失败交给模型链立即切换
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError,
                      httpx.ConnectTimeout, httpx.ReadTimeout)
 
         async with httpx.AsyncClient(timeout=settings.image_timeout, proxy=proxy) as client:
             data = None
-            for attempt in range(1, max(MAX_RETRIES, RATE_LIMIT_RETRIES) + 2):
+            for attempt in range(1, MAX_RETRIES + 2):
                 try:
                     resp = await client.post(
                         f"{base_url}/images/generations",
                         headers=headers,
                         json=payload,
                     )
+                    schedule_actual_channel(resp, model_name, "images/generations")
 
                     if resp.status_code >= 400:
                         err_body = resp.text[:500]
+                        context = gateway_request_context(resp)
+                        if resp.status_code == 429:
+                            raise ImageRateLimitError(
+                                extract_error_message(429, resp.text) + context,
+                                resp.headers.get("Retry-After"),
+                            )
                         if resp.status_code == 402:
                             print(f"[llm-generations] ❌ HTTP 402 (credits): {err_body}", flush=True)
-                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text))
-                        if resp.status_code == 429 and attempt <= RATE_LIMIT_RETRIES:
-                            wait = RATE_LIMIT_BACKOFF[min(attempt - 1, len(RATE_LIMIT_BACKOFF) - 1)]
-                            print(f"[llm-generations] ⚠️ 429 限流 (attempt {attempt}/{RATE_LIMIT_RETRIES + 1}): "
-                                  f"{wait:.0f}s 后重试...", flush=True)
-                            await _asyncio.sleep(wait)
-                            continue
+                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text) + context)
                         if resp.status_code in (500, 502, 503, 504) and attempt <= MAX_RETRIES:
                             await _asyncio.sleep(1.0 * attempt)
                             continue
                         print(f"[llm-generations] ❌ HTTP {resp.status_code}: {err_body}", flush=True)
-                        raise RuntimeError(extract_error_message(resp.status_code, resp.text))
+                        raise RuntimeError(extract_error_message(resp.status_code, resp.text) + context)
 
                     data = resp.json()
                     break
@@ -490,8 +485,6 @@ class BaseLLMClient(ABC):
 
     # ------------------------------------------------------------------
     # 图像生成 —— /v1/images/edits multipart（GPT Image 图生图专用）
-    #   gpt-image-2 原生编辑端点：参考图作为多个同名「image」文件字段上传，
-    #   不认 JSON reference_images。
     # ------------------------------------------------------------------
 
     async def _generate_image_via_edits(
@@ -547,7 +540,7 @@ class BaseLLMClient(ABC):
               f"refs={len(refs) if refs else 0} size={size} quality=high n={n}", flush=True)
         print(f"[llm-edits]   prompt: {_prompt_preview}", flush=True)
 
-        MAX_RETRIES = 2
+        MAX_RETRIES = 0  # 生图失败交给模型链立即切换，不在当前模型等待重试
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError,
                      httpx.ConnectTimeout, httpx.ReadTimeout)
         RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -563,15 +556,22 @@ class BaseLLMClient(ABC):
                         data=data,
                         files=files if files else None,
                     )
+                    schedule_actual_channel(resp, model_name, "images/edits")
                     if resp.status_code >= 400:
                         err_body = resp.text[:500]
+                        context = gateway_request_context(resp)
                         print(f"[llm-edits] ❌ HTTP {resp.status_code}: {err_body}", flush=True)
+                        if resp.status_code == 429:
+                            raise ImageRateLimitError(
+                                extract_error_message(429, resp.text) + context,
+                                resp.headers.get("Retry-After"),
+                            )
                         if resp.status_code == 402:
-                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text))
+                            raise InsufficientCreditsError(extract_error_message(resp.status_code, resp.text) + context)
                         if resp.status_code in RETRYABLE_STATUS and attempt <= MAX_RETRIES:
                             await _asyncio.sleep(1.0 * attempt)
                             continue
-                        raise RuntimeError(f"/v1/images/edits HTTP {resp.status_code}: {err_body}")
+                        raise RuntimeError(f"/v1/images/edits HTTP {resp.status_code}: {err_body}{context}")
                     body = resp.json()
                     break
                 except retryable as exc:

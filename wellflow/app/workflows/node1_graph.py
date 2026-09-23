@@ -5,10 +5,7 @@
   - effort == "close" / "medium" / "high" → 流式 stream_analyze_product
 流式路径下每个 delta token 立即 publish 到 SSE event_bus，前端实时逐字输出。
 
-💭 Thinking 策略（2026-09-21 对齐 node2/node3）：
-  直接把模型原始 reasoning_content 按 token 流推给 thinking_chunk SSE 事件，
-  不做任何格式约束或派生。这样 thinking 面板会**先于**报告正文出现，
-  真正反映"模型在思考时用户在看什么"。
+Node1 的思考面板只展示模型输出的简短识别进度，不展示原始 reasoning_content。
 """
 
 from __future__ import annotations
@@ -17,6 +14,7 @@ import time
 from typing import Any
 
 from wellflow.app.nodes import input_analyzer
+from wellflow.app.workflows.report_progress import ReportProgressStream
 
 
 def build_graph():
@@ -52,8 +50,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     关键：VLM 用 stream_chat_with_images，每个 token delta 立即 publish SSE，
     前端 TTFB = LLM 首 token 延迟（通常 < 1s），而不是等完整报告生成完。
 
-    💭 thinking：reasoning_content 直接按 token 推 thinking_chunk SSE，
-    和 content 通道（report_chunk）并行独立，前端先看"思考中"再看报告。
+    content 中标题前的识别进度进入 thinking_chunk，标题起的正文进入 report_chunk。
 
     🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被 C1 确认并锁定，
     当前任务内不得再重新生成 —— 直接跳过，返回原 node1 状态不变。
@@ -108,20 +105,21 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     t0 = time.time()
     full_report_parts: list[str] = []
     content_chunk_index = 0
-    think_parts: list[str] = []  # 💭 原始 reasoning_content 累积
+    progress_parts: list[str] = []
     think_chunk_index = 0
+    report_stream = ReportProgressStream()
     first_content_ts = None
     first_think_ts = None
 
     print(f"[node1] 📌 reasoning_effort={effort} → 流式 stream_analyze_product", flush=True)
 
     # ── 流式消费 ──────────────────────────────────────────────────────
-    # reasoning_content → 直接推 thinking_chunk SSE（和 node2/node3 完全一致）
-    # content          → 推 report_chunk SSE
+    # 忽略原始 reasoning_content；content 的标题前缀作为识别进度展示。
     async for item in product_analyzer.stream_analyze_product(
         images=images,
         user_text=user_text,
         reasoning_effort=effort,
+        task_id=task_id,
     ):
         if not item:
             continue
@@ -136,18 +134,19 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             continue
 
         if item_type == "thinking":
-            # 💭 原始 reasoning_content → 直接推，不做任何格式转化
-            if first_think_ts is None:
-                first_think_ts = time.time()
-                print(f"[node1] 💭 首 thinking token 到达 TTFB={first_think_ts - t0:.2f}s", flush=True)
-            think_parts.append(text)
-            think_chunk_index += 1
-            publish(task_id, "thinking_chunk", {
-                "chunk": text,
-                "index": think_chunk_index,
-                "node": "node1",
-            })
+            continue
         else:
+            progress, text = report_stream.feed(text)
+            if progress:
+                if first_think_ts is None:
+                    first_think_ts = time.time()
+                progress_parts.append(progress)
+                think_chunk_index += 1
+                publish(task_id, "thinking_chunk", {
+                    "chunk": progress, "index": think_chunk_index, "node": "node1",
+                })
+            if not text:
+                continue
             # ── content 通道 ─────────────────────────────────────────
             if first_content_ts is None:
                 first_content_ts = time.time()
@@ -161,8 +160,13 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             publish(task_id, "report_chunk", {"chunk": text, "index": content_chunk_index, "node": "node1"})
 
     # ── 后处理 ──────────────────────────────────────────────────────────
+    remaining = report_stream.finish()
+    if remaining:
+        full_report_parts.append(remaining)
+        content_chunk_index += 1
+        publish(task_id, "report_chunk", {"chunk": remaining, "index": content_chunk_index, "node": "node1"})
     full_report = "".join(full_report_parts)
-    full_thinking = "".join(think_parts)
+    full_thinking = "".join(progress_parts)
     report_body, next_actions = _split_next_actions(full_report)
 
     # 归一化为稳定 key 的四块结构（前端"重点洞察"面板只认这个，不认 prompt 字段名）
@@ -201,7 +205,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             "next_actions": next_actions,
             # 🔁 缓存已压缩的商品图 data URIs，供 Node2 复用（避免重复 PIL 压缩 ~1.2s）
             "compressed_images": images,
-            # 💭 持久化 thinking 原文（未格式化），刷新后前端可恢复展示
+            # 仅持久化识别进度，刷新后前端可恢复展示。
             "thinking_text": full_thinking or "",
         },
     }

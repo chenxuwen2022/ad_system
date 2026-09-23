@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, JSON, Integer, Boolean
+from sqlalchemy import BIGINT, DateTime, ForeignKey, String, Text, JSON, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from wellflow.app.database import Base
@@ -110,6 +110,9 @@ class Conversation(Base):
     __tablename__ = "conversation"
 
     conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    sku_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("product_sku.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     # 短 ID（conversation_id 去掉 '-' 后的前 12 位），用于兼容前端用短格式 URL 查询
     conversation_id_short: Mapped[str] = mapped_column(String(12), nullable=False, unique=True)
     title: Mapped[str] = mapped_column(String(128), default="新对话")

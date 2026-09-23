@@ -16,7 +16,7 @@ import re
 
 from wellflow.app.config import settings
 from typing import Any, Literal
-from wellflow.app.prompt.constant import CLASSIFIER_SYSTEM
+from wellflow.app.prompt.registry import get_active_prompt
 
 # 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
 # （Node1/2/3 的 refine 纯文本微调也复用同一模型，见 workflows/refine_nodes.py）
@@ -223,6 +223,7 @@ async def classify(
     # chat.py 外部会先调 summarize_graph_state(graph_state) 生成精选摘要
     # 再通过这个参数喂进来，让 LLM 知道每层产物"长什么样"
     graph_state_brief: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     try:
         result = await _classify_via_llm(
@@ -234,6 +235,7 @@ async def classify(
             product_description=product_description,
             selected_finetuning_target=selected_finetuning_target,
             graph_state_brief=graph_state_brief,
+            task_id=task_id,
         )
         # refine_target 兜底：若 LLM 没给但明显有编辑意图，用当前 cX 对应 node
         if not result.get("refine_target") and result.get("intent") not in (
@@ -309,8 +311,8 @@ async def _classify_via_llm(
     product_description: str | None,
     selected_finetuning_target: str | None = None,
     graph_state_brief: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
-    from wellflow.app.llm.factory import get_llm_client
 
     ctx_lines = [
         f"has_task={has_task}",
@@ -340,15 +342,23 @@ async def _classify_via_llm(
         "请返回意图分类 JSON。"
     )
 
-    client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
-    resp = await client.chat(
-        system=CLASSIFIER_SYSTEM,
-        user=user_prompt,
-        response_format={"type": "json_object"},
-        temperature=0.2,
-        reasoning_effort=settings.text_reasoning_effort,
-    )
-    used_model = CLASSIFIER_MODEL
+    if task_id:
+        from wellflow.app.llm.model_pool import get_model_pool
+        resp, used_model = await get_model_pool(task_id=task_id).chat(
+            system=get_active_prompt("intent_classifier"), user=user_prompt,
+            response_format={"type": "json_object"}, temperature=0.2,
+            reasoning_effort=settings.text_reasoning_effort,
+        )
+    else:
+        # 新任务的第一次分类发生在 task_id 生成前；任务创建后会立即预加载目录。
+        from wellflow.app.llm.factory import get_llm_client
+        client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
+        resp = await client.chat(
+            system=get_active_prompt("intent_classifier"), user=user_prompt,
+            response_format={"type": "json_object"}, temperature=0.2,
+            reasoning_effort=settings.text_reasoning_effort,
+        )
+        used_model = CLASSIFIER_MODEL
 
     try:
         data = json.loads(resp.content.strip())

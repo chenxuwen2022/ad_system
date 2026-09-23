@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from sqlalchemy import (
-    BIGINT, ForeignKey, String, Text, Integer, DateTime, Index, UniqueConstraint,
+    BIGINT, ForeignKey, String, Text, Integer, DateTime, Index, UniqueConstraint, CheckConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -118,6 +118,8 @@ class ProductImage(Base):
     sku_id: Mapped[int] = mapped_column(
         BIGINT, ForeignKey("product_sku.id", ondelete="CASCADE"), nullable=False,
     )
+    image_type: Mapped[str] = mapped_column(String(16), nullable=False, default="product", server_default="product")
+    source_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     category: Mapped[str] = mapped_column(String(32), nullable=False)  # 正面/侧面/背面/...
     storage_uri: Mapped[str] = mapped_column(String(512), nullable=False)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -126,6 +128,8 @@ class ProductImage(Base):
     sku: Mapped[ProductSku] = relationship("ProductSku", back_populates="images")
 
     __table_args__ = (
+        CheckConstraint("image_type IN ('product', 'ad')", name="ck_product_image_type"),
+        Index("ix_product_image_type", "sku_id", "image_type"),
         Index("ix_product_image_sku", "sku_id"),
         Index("ix_product_image_cat", "sku_id", "category"),
     )

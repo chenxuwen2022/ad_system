@@ -19,6 +19,7 @@ from wellflow.app.llm.base import (
     InsufficientCreditsError,
     extract_error_message,
 )
+from wellflow.app.llm.channel_audit import schedule_actual_channel
 
 
 def _apply_reasoning_control(payload: dict[str, Any], model: str, reasoning_effort: str) -> None:
@@ -229,6 +230,7 @@ class NewApiGateway(BaseLLMClient):
                         headers=self._build_headers(),
                         json=payload,
                     )
+                    schedule_actual_channel(resp, self.model, "chat/completions")
                     if resp.status_code in self.RETRYABLE_STATUS and attempt < self.MAX_RETRIES:
                         last_exc = httpx.HTTPStatusError(str(resp.status_code), request=resp.request, response=resp)
                         continue
@@ -369,6 +371,7 @@ class NewApiGateway(BaseLLMClient):
 
                         async for item in _flush():
                             yield item
+                        schedule_actual_channel(resp, self.model, "chat/completions:stream")
                 return
             except retryable as e:
                 last_exc = e

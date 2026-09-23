@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -10,10 +10,10 @@ _REPO_ROOT = _PROJECT_ROOT.parent
 
 class Settings(BaseSettings):
     # ------------------------------------------------------------------
-    # 网关 —— 统一走 new-api 中转网关（局域网 192.168.110.254）
+    # 网关 —— 统一走 new-api 中转网关，地址由环境配置决定
     # 业务层所有 VLM / 文本 LLM / 生图请求都经由 new-api，渠道分发由 new-api 后台配置。
     # ------------------------------------------------------------------
-    newapi_base_url: str = "http://192.168.110.254/v1"
+    newapi_base_url: str  # ← .env 的 NEWAPI_BASE_URL 提供，包含 /v1
     newapi_api_key: str | None = None              # ← .env 提供
     newapi_admin_access_token: str | None = None    # 管理员面板 PAT，不是模型调用 API Key
 
@@ -40,22 +40,16 @@ class Settings(BaseSettings):
     text_reasoning_effort: str = "close"
 
     # ====== Node2 ======
-    # Node2 默认生成 3 套风格迥异的候选方案，供 C2 阶段让用户挑选 1 套确认。
-    # 最终进入 Node3 时只保留用户选中的那 1 套，围绕它生成 5 份差异化 prompt。
+    # 首次生成的候选商拍方案数量；微调时不据此增删方案。
     node2_scheme_count_default: int = 3
 
-    # ====== Node3 ======
-    # C2 用户锁定 1 套方案后，Node3 围绕这一套生成几份差异化 prompt（每份 = 1 张生图）。
-    # 新链路下固定为 3 —— C3 用户从 3 份里挑 1~3 份生图。
-    node3_variants_per_scheme_default: int = 3
-
     # ====== Node4 ======
-    node4_gen_concurrency: int = 3                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
+    node4_gen_concurrency: int = Field(default=2, ge=1)                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
+    image_request_concurrency: int = Field(default=2, ge=1)  # 同一进程所有任务共享
+    image_request_interval: float = Field(default=1.0, ge=0)  # 请求启动最小间隔（秒）
+    image_rate_limit_retries: int = Field(default=3, ge=0, le=10)
+    image_retry_deadline: float = Field(default=600.0, gt=0)  # 单个模型排队+重试总时限
     node4_image_channel_id: int = 4                # new-api 生图渠道 ID
-    node4_image_models_fallback: list[str] = [     # 动态拉失败时的硬编码兜底链
-        "qwen-image-3.0",
-        "gpt-image-2",
-    ]
     llm_model_responses: str = "gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
     image_ratio_to_pixel_size_gpt: dict[str, str] = {
         "9:16": "1024x1536",   # 降级：用 3:4 近似 9:16
@@ -79,7 +73,6 @@ class Settings(BaseSettings):
     llm_timeout: float = 60.0                     # VLM / 文本 LLM 超时（秒）
     image_timeout: float = 180.0                   # 生图超时（秒）
 
-    image_max_per_call: int = 3                    # 单次 VLM / 生图调用最多携带图片张数
     image_single_compress_threshold_mb: float = 1.5  # 单张图片超过此值触发渐进压缩（raw bytes）
 
     mannequins_gen_concurrency: int = 3           # 模特库 并行生图并发上限（Semaphore），越大越快但易触发 429
@@ -114,7 +107,6 @@ class Settings(BaseSettings):
     # ====== 穿搭库（outfit）======
     outfit_extract_models: list[str] = [  # 抠图降级链(qwen 优先:2026-09-20 gpt 系网关无渠道,实测 qwen 唯一可用)
         "qwen-image-3.0",
-        "gpt-image-2",
     ]
     outfit_max_items: int = 6              # VLM 单次识别最多提取几件单品
     outfit_extract_concurrency: int = 3    # 抠图并发上限（ThreadPoolExecutor）

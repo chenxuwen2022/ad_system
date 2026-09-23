@@ -5,7 +5,7 @@
 消除 VLM 返回后 interrupt 推送延迟。
 
 批量压缩策略（paths_to_data_uris）：
-  - 最多取前 image_max_per_call 张（超出忽略）
+  - 处理传入的全部图片，不按张数截断
   - 所有非 data URI 统一 PIL → JPEG q=90（格式归一化：PNG/WebP/HEIC 等 → JPEG，消除模型 image_url 兼容性问题）
   - 归一化后若仍 > 1.5MB → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
   - Pillow 不可用时安全降级（原样 base64，风险自负，由 newapi_gateway 重试 + 上层错误处理兜底）
@@ -42,7 +42,6 @@ def _image_constants() -> dict:
     """从 settings 抽取图片处理相关常量（集中一处，便于调整）。"""
     from wellflow.app.config import settings
     return {
-        "MAX_IMAGES_PER_CALL": settings.image_max_per_call,
         "SINGLE_THRESHOLD_RAW_MB": settings.image_single_compress_threshold_mb,
     }
 
@@ -246,13 +245,12 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
 
     规则：
       - 已经是 data URI 的元素直接保留（老任务 checkpoint 兼容）
-      - 最多取前 image_max_per_call 张（config 里配置）
+      - 处理传入的全部图片
       - 所有文件路径一律 PIL → JPEG q=90（格式归一化，消除 PNG/WebP 等模型兼容问题）
       - 归一化后若仍 > 1.5MB raw → 渐进降 quality（90→50），再超限才 resize 长边到 2800px
       - Pillow 不可用时安全降级（原样 base64，风险自负，由 newapi_gateway 重试 + 上层错误处理兜底）
     """
     constants = _image_constants()
-    MAX_IMAGES_PER_CALL = constants["MAX_IMAGES_PER_CALL"]
     SINGLE_THRESHOLD_MB = constants["SINGLE_THRESHOLD_RAW_MB"]
     threshold_bytes = int(SINGLE_THRESHOLD_MB * 1024 * 1024)
 
@@ -266,9 +264,6 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
         if p.startswith("data:"):
             passthrough.append(p)
             continue
-        if len(path_items) >= MAX_IMAGES_PER_CALL:
-            print(f"[image_store] 🪒 忽略第 {MAX_IMAGES_PER_CALL + 1} 张起的图片（上限 {MAX_IMAGES_PER_CALL}）", flush=True)
-            break
         abs_path = _resolve_path(p)
         if not abs_path.exists():
             print(f"[image_store] ⚠️ 路径不存在，跳过: {p}", flush=True)
@@ -398,13 +393,12 @@ def bytes_items_to_data_uris(
     跳过文件落盘环节 —— 交互端点（optimize-prompt / generate / fine-tune / auto-tag）
     读 multipart 的文件字节后直接喂 LLM。
 
-    规则同 paths_to_data_uris：最多取前 image_max_per_call 张，
+    规则同 paths_to_data_uris：处理传入的全部图片，
     所有图片 PIL→JPEG q=90 归一化，超限再渐进压缩。
     """
     import base64 as _b64
 
     constants = _image_constants()
-    MAX_IMAGES_PER_CALL = constants["MAX_IMAGES_PER_CALL"]
     SINGLE_THRESHOLD_MB = constants["SINGLE_THRESHOLD_RAW_MB"]
     threshold_bytes = int(SINGLE_THRESHOLD_MB * 1024 * 1024)
 
@@ -415,7 +409,7 @@ def bytes_items_to_data_uris(
     except ImportError:
         pil_available = False
 
-    for raw, mime in items[:MAX_IMAGES_PER_CALL]:
+    for raw, mime in items:
         orig_mime = mime or "image/jpeg"
 
         if not pil_available:

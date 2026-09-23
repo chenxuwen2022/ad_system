@@ -44,6 +44,7 @@ from wellflow.app.api.mannequins import router as wf_mannequins_router
 from wellflow.app.api.chat import router as wf_chat_router
 from wellflow.app.api.conversations import router as wf_conversations_router
 from wellflow.app.api.model_options import router as wf_model_options_router
+from wellflow.app.api.prompts import router as wf_prompts_router
 from wellflow.app.sse import router as wf_sse_router
 from wellflow.app.config import settings as wf_settings
 from wellflow.app.runtime import (
@@ -111,6 +112,7 @@ app.include_router(wf_tasks_router, prefix="/api")
 app.include_router(wf_products_router, prefix="/api")
 app.include_router(wf_mannequins_router, prefix="/api")
 app.include_router(wf_model_options_router, prefix="/api")
+app.include_router(wf_prompts_router, prefix="/api")
 
 # WellFlow 通用图片上传（不绑定 task，供 SKU/模特/任意素材库先传后提）
 from wellflow.app.api.uploads import router as wf_uploads_router
@@ -215,4 +217,3 @@ if __name__ == "__main__":
 
     # 不要reload，windows下reload会多进程导致sqlite问题
     uvicorn.run("main:app", host="0.0.0.0", port=8000)
-

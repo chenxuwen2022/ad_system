@@ -22,9 +22,31 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from typing import Any
 
-from wellflow.app.llm.image_gen_service import get_image_models, generate_single_image
+from wellflow.app.llm.image_gen_service import (
+    generate_single_image,
+    get_image_models,
+)
+
+
+def prepare_image_redo(node4: dict) -> dict:
+    """用户要求重新生成时，重置本轮全部图片，不复用上一轮结果。"""
+    result = dict(node4)
+    # 覆盖旧 checkpoint 中的补图标记，避免恢复任务时沿用旧行为。
+    result["retry_failed_only"] = False
+    result["work_items"] = [
+        {key: value for key, value in {**item, "status": "pending"}.items() if key != "error"}
+        for item in node4.get("work_items", [])
+    ]
+    result["outputs"] = []
+    result["failed_items"] = []
+    result["generation_status"] = "pending"
+    result["generation_summary"] = ""
+    result["completed_count"] = 0
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +159,9 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
         node4["reference_images"] = all_ref_uris
         return {"phase": "node4_prepare", "node4": node4}
 
+    node4["outputs"] = []
+    node4["failed_items"] = []
+    node4["retry_failed_only"] = False
     # ---- 组装 work_items —— 一 prompt 一 work_item ----
     work_items: list[dict[str, Any]] = []
     shot_names: list[str] = []
@@ -182,82 +207,82 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
         _eb(task_id, "phase", {"phase": "node4_generation"})
 
     node4_in = state.get("node4", {}) or {}
-    work_items = list(node4_in.get("work_items", []) or [])  # 拷贝 list，in-place 状态更新就不会碰 state
+    work_items = [dict(it) for it in node4_in.get("work_items", []) or []]
     cached_ref_uris: list[str] = node4_in.get("reference_images_data_uris") or []
 
     refs = cached_ref_uris  # _prepare 已经保证有 URI；没有就空列表
 
-    pending_items = [it for it in work_items if it.get("status") in ("pending", "redo")]
-    outputs: list[dict[str, Any]] = []
+    pending_items = [it for it in work_items if it.get("status") in ("pending", "redo", "failed")]
+    pending_ids = {it["work_item_id"] for it in pending_items}
+    outputs: list[dict[str, Any]] = [
+        dict(out) for out in node4_in.get("outputs", [])
+        if out.get("work_item_id") not in pending_ids
+    ]
+    retained_count = len(outputs)
     from wellflow.app.config import settings
     WORKERS = settings.node4_gen_concurrency
 
-    # 模型链一次拉取（供日志用），generate_single_image 内部也会自己拉一份
-    try:
-        _plan_models = await get_image_models()
-        _plan_first = _plan_models[0] if _plan_models else "(未指定)"
-    except Exception:
-        _plan_first = "(未指定)"
+    # 当前 task 第一次进入 Node4 时拉取一次；后续图片和 redo 都复用缓存链。
+    _plan_models = await get_image_models(task_id)
+    _plan_first = _plan_models[0]
 
     print(f"[node4] 🏃 run_gen 启动 task={task_id[:8]}: "
-          f"入队 {len(pending_items)} 张, worker={WORKERS}, "
+          f"本轮待生成={len(pending_items)} 张, worker配置上限={WORKERS}, "
           f"计划模型={_plan_first}, 参考图 refs={len(refs)}", flush=True)
 
     queue: asyncio.Queue[dict] = asyncio.Queue()
     for it in pending_items:
         queue.put_nowait(it)
     result_q: asyncio.Queue[tuple[dict, str | None, float]] = asyncio.Queue()
-    _gen_start_t = time.time()
+    _gen_start_t = time.monotonic()
+    from wellflow.app.llm.image_queue_log import ImageQueueLog
+    queue_log = ImageQueueLog(task_id, len(pending_items), min(WORKERS, len(pending_items)))
 
     async def _gen_one(item: dict) -> tuple[dict, str | None, float, str]:
         prompt = item.get("prompt", "")
         size = item.get("size", _ratio_to_size(item.get("ratio", "3:4")))
-        t0 = time.time()
+        t0 = time.monotonic()
         wid = item.get("work_item_id", "?")
-        print(f"[{wid}] 📤 请求发出 size={size} model={_plan_first} refs={len(refs)} "
+        print(f"[{queue_log.prefix} shot={wid}] 准备生图（尚未发请求） size={size} model={_plan_first} refs={len(refs)} "
               f"prompt({len(prompt)}chars)={prompt[:60]}...", flush=True)
         try:
             result = await generate_single_image(
-                prompt=prompt, size=size, ref_data_uris=refs,
+                prompt=prompt, size=size, ref_data_uris=refs, log_id=f"{queue_log.prefix} shot={wid}",
+                task_id=task_id,
+                models=_plan_models,
             )
-            dt = time.time() - t0
+            dt = time.monotonic() - t0
             url = result.data_uri or result.url
             model_label = result.model or _plan_first
             if url:
                 item["status"] = "done"
+                item.pop("error", None)
                 return (item, url, dt, model_label)
             else:
                 item["status"] = "failed"
                 item["error"] = "API 返回无有效图片"
                 return (item, None, dt, model_label)
         except Exception as exc:
-            dt = time.time() - t0
+            dt = time.monotonic() - t0
             item["status"] = "failed"
             item["error"] = str(exc)
             return (item, None, dt, "(失败)")
 
     async def _worker(idx: int) -> None:
         wid = f"worker-{idx}"
-        active = 0
         while True:
             try:
                 item = queue.get_nowait()
             except asyncio.QueueEmpty:
-                if active == 0:
-                    print(f"[{wid}] 🛑 启动后无任务，退出", flush=True)
-                else:
-                    print(f"[{wid}] ⏸️ 队列空（剩余 {queue.qsize()}），退出 —— 累计处理 {active} 张", flush=True)
+                queue_log.worker_exit(wid)
                 return
             shot = item.get("work_item_id", "?")
-            active += 1
+            queue_log.claim(wid, shot)
             item, url, dt, model_used = await _gen_one(item)
-            if url:
-                print(f"[{wid}] ✅ {shot} 完成 {dt:.1f}s model={model_used}  队列剩余 {queue.qsize()}", flush=True)
-            else:
-                print(f"[{wid}] ❌ {shot} 失败 {dt:.1f}s model={model_used} — {item.get('error', '未知错误')[:120]}", flush=True)
+            queue_log.finish(wid, shot, bool(url), dt, model_used, item.get("error", ""))
             await result_q.put((item, url, dt))
 
-    print(f"[node4] 🔀 启动 {min(WORKERS, len(pending_items))} 个 worker "
+    print(f"[node4 {queue_log.prefix}] 🔀 启动 {min(WORKERS, len(pending_items))} 个 worker "
           f"(总入队 {len(pending_items)})", flush=True)
     workers = [asyncio.create_task(_worker(i)) for i in range(min(WORKERS, len(pending_items)))]
     n_done = 0
@@ -265,63 +290,91 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
     n_total = len(pending_items)
     failed_items: list[dict[str, Any]] = []
 
-    for _ in range(n_total):
-        item, url, dt = await result_q.get()
-        shot = item.get("work_item_id", "?")
-        if url:
-            n_done += 1
-            outputs.append({
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "prompt": item.get("prompt", ""),
-                "image_url": url,
-            })
-            _eb(task_id, "node4_image_done", {
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "prompt": item.get("prompt", ""),
-                "image_url": url,
-                "elapsed": round(dt, 1),
-                "n_done": n_done,
-                "n_total": n_total,
-            })
-        else:
-            n_failed += 1
-            if not item.get("error"):
-                item["error"] = "生成异常"
-            err = item.get("error", "")
-            failed_items.append({
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "prompt": item.get("prompt", ""),
-                "error": err,
-            })
-            _eb(task_id, "node4_image_failed", {
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "prompt": item.get("prompt", ""),
-                "error": err,
-                "elapsed": round(dt, 1),
-                "n_done": n_done,
-                "n_total": n_total,
-            })
-        print(f"[队列] {n_done + n_failed}/{n_total}  shot={shot} "
-              f"耗时 {dt:.1f}s  ✅={n_done}  ❌={n_failed}", flush=True)
+    completed = False
+    try:
+        for _ in range(n_total):
+            item, url, dt = await result_q.get()
+            shot = item.get("work_item_id", "?")
+            if url:
+                n_done += 1
+                outputs.append({
+                    "work_item_id": item["work_item_id"],
+                    "prompt_index": item.get("prompt_index", 0),
+                    "prompt": item.get("prompt", ""),
+                    "image_url": url,
+                "image_key": hashlib.sha256(url.encode("utf-8")).hexdigest(),
+                })
+                _eb(task_id, "node4_image_done", {
+                    "work_item_id": item["work_item_id"],
+                    "prompt_index": item.get("prompt_index", 0),
+                    "prompt": item.get("prompt", ""),
+                    "image_url": url,
+                "image_key": hashlib.sha256(url.encode("utf-8")).hexdigest(),
+                    "elapsed": round(dt, 1),
+                    "n_done": n_done + retained_count,
+                    "n_total": len(work_items),
+                })
+            else:
+                n_failed += 1
+                if not item.get("error"):
+                    item["error"] = "生成异常"
+                err = item.get("error", "")
+                failed_items.append({
+                    "work_item_id": item["work_item_id"],
+                    "prompt_index": item.get("prompt_index", 0),
+                    "prompt": item.get("prompt", ""),
+                    "error": err,
+                })
+                _eb(task_id, "node4_image_failed", {
+                    "work_item_id": item["work_item_id"],
+                    "prompt_index": item.get("prompt_index", 0),
+                    "prompt": item.get("prompt", ""),
+                    "error": err,
+                    "elapsed": round(dt, 1),
+                    "n_done": n_done + retained_count,
+                    "n_total": len(work_items),
+                })
 
-    await asyncio.gather(*workers)
 
-    t_all = time.time() - _gen_start_t
-    throughput = n_total / t_all if t_all > 0 else 0
-    print(f"[node4] 🏁 run_gen 完成 task={task_id[:8]}: "
+        await asyncio.gather(*workers)
+        completed = True
+    finally:
+        for worker in workers:
+            if not worker.done():
+                worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        queue_log.close(completed)
+
+    t_all = time.monotonic() - _gen_start_t
+    throughput = n_done / t_all if t_all > 0 else 0
+    print(f"[node4 {queue_log.prefix}] 本轮处理结束: "
           f"成功 {n_done}/{n_total}, 失败 {n_failed} 张, "
-          f"总耗时 {t_all:.1f}s, 吞吐 {throughput:.2f} 张/s", flush=True)
+          f"总耗时 {t_all:.1f}s, 成功图片吞吐 {throughput:.2f} 张/s", flush=True)
 
     # 汇总 phase（原 _archive 的语义，合并到这里）
     if task_id:
         _eb(task_id, "phase", {"phase": "node4_archive"})
 
     node4_out: dict[str, Any] = dict(node4_in)
+    outputs.sort(key=lambda out: out.get("prompt_index", 0))
+    node4_out["work_items"] = work_items
+    node4_out["generation_status"] = (
+        "complete" if work_items and not failed_items
+        and {out.get("work_item_id") for out in outputs if out.get("image_url")}
+        == {item["work_item_id"] for item in work_items}
+        else "partial" if outputs else "failed"
+    )
+    node4_out["requested_count"] = len(work_items)
+    node4_out["completed_count"] = len(outputs)
+    summary = (f"生图全部完成：{len(outputs)}/{len(work_items)} 张。"
+               if node4_out["generation_status"] == "complete" else
+               f"生图未全部完成：{len(outputs)}/{len(work_items)} 张。已保留本轮成功图片；选择重新生成将重新生成全部图片。")
+    node4_out["generation_summary"] = summary
+    if task_id:
+        _eb(task_id, "message", {"text": summary})
     node4_out["outputs"] = outputs
     node4_out["failed_items"] = failed_items
-    print(f"[node4] _archive: {len(outputs)} 个 outputs 已归档", flush=True)
+    print(f"[node4 {queue_log.prefix}] 结果汇总：本轮新增成功={n_done} 张，"
+          f"保留历史结果={retained_count} 张，当前有效图片={len(outputs)}/{len(work_items)}，"
+          f"状态={node4_out['generation_status']}", flush=True)
     return {"phase": "node4_archive", "node4": node4_out}
