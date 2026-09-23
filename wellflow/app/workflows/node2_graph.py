@@ -83,6 +83,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         user_requirement=user_requirement,
         scheme_count=scheme_count,
         reasoning_effort=effort,
+        task_id=task_id,
     ):
         if not item:
             continue

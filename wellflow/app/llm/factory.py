@@ -23,7 +23,7 @@ def _resolve_model(role: ModelRole) -> str:
 def _strip_provider(model: str) -> str:
     """把 "provider/xxx" 格式剥掉 provider 前缀，只保留 "xxx"。
 
-    new-api 自己维护 provider 映射，只认短名（如 gpt-image-2 / gemini-3.7-flash），
+    new-api 自己维护 provider 映射，只认短名（如 gemini-3.7-flash），
     传 provider/xxx 会 404。
     """
     if "/" in model:

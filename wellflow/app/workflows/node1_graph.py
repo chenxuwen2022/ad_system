@@ -119,6 +119,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
         images=images,
         user_text=user_text,
         reasoning_effort=effort,
+        task_id=task_id,
     ):
         if not item:
             continue

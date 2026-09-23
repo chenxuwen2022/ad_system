@@ -62,6 +62,7 @@ async def stream_plan_schemes(
     user_requirement: str = "",
     scheme_count: int | None = None,
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ):
     """流式生成多套商拍方案，yield {"type": "thinking"|"content", "text": "..."}。
 
@@ -69,7 +70,7 @@ async def stream_plan_schemes(
     """
     from wellflow.app.config import settings
 
-    pool = get_model_pool()
+    pool = get_model_pool(task_id=task_id)
     effort = reasoning_effort if reasoning_effort is not None else settings.node2_reasoning_effort
     scheme_count = scheme_count or settings.node2_scheme_count_default
     system_prompt = planning_system_prompt(scheme_count)
@@ -118,6 +119,7 @@ async def plan_schemes(
     user_requirement: str = "",
     scheme_count: int | None = None,
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """非流式生成多套商拍方案。
 
@@ -128,7 +130,7 @@ async def plan_schemes(
     """
     from wellflow.app.config import settings
 
-    pool = get_model_pool()
+    pool = get_model_pool(task_id=task_id)
     effort = reasoning_effort if reasoning_effort is not None else settings.node2_reasoning_effort
     scheme_count = scheme_count or settings.node2_scheme_count_default
     system_prompt = planning_system_prompt(scheme_count)

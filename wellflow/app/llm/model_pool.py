@@ -3,7 +3,7 @@
 模型列表通过 `fetch_model_options(capability=...)` 动态获取，支持 channel_id 渠道过滤、
 preferred_model 偏好优先（优先使用某个模型，失败自动降级到池里其他模型）。
 
-每次调用都会刷新：拉不到 → 直接抛 RuntimeError，让上层走重试或兜底。
+模型列表按 task 缓存：任务启动时拉取一次，Node1～Node3、意图识别和 refine 共用。
 
 所有请求统一走 new-api，渠道分发由 new-api 后台配置。
 """
@@ -90,10 +90,13 @@ class ModelPool:
         capability: str | None = "text",
         channel_id: int | None = None,
         preferred_model: str | None = None,
+        task_id: str | None = None,
     ) -> None:
         self._capability = capability
         self._channel_id = channel_id
         self._preferred_model = preferred_model
+        self._task_id = task_id or "__shared__"
+        self._cache_models = task_id is not None
         self._states: list[_ModelState] = []
         self._refresh_lock = asyncio.Lock()
 
@@ -102,11 +105,12 @@ class ModelPool:
     # ------------------------------------------------------------------
 
     async def _ensure_models(self) -> None:
-        """每次调用都强制从 new-api 拉最新的模型列表。
-
-        注意：**不再保留任何旧列表**。拉不到 / 拉空 → 直接 raise，让上层走 fallback。
-        """
+        """确保任务模型列表已加载；同一 task 生命周期内只请求 New API 一次。"""
+        if self._cache_models and self._states:
+            return
         async with self._refresh_lock:
+            if self._cache_models and self._states:
+                return
             raw_items = await fetch_model_options(
                 self._capability, channel_id=self._channel_id,
             )
@@ -127,9 +131,13 @@ class ModelPool:
             self._states = new_states
             print(
                 f"[model-pool] ✅ 已从 new-api 拉取 {len(self._states)} 个 {self._capability!r} 模型"
-                f" (channel_id={self._channel_id}, preferred={self._preferred_model})",
+                f" (task={self._task_id}, channel_id={self._channel_id}, preferred={self._preferred_model})",
                 flush=True,
             )
+
+    async def prepare(self) -> None:
+        """任务启动阶段预加载模型列表。"""
+        await self._ensure_models()
 
     def _pick_start(self, n: int) -> int:
         """优先选 preferred_model 的 index；没找到则随机起始点。"""
@@ -336,12 +344,43 @@ class ModelPool:
                 raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
             raise RuntimeError("模型池全部不可用")
 
+    async def stream_chat(
+        self, *, system: str, user: str,
+        reasoning_effort: str, extra_params: dict[str, Any] | None = None,
+        response_format: dict[str, Any] | None = None,
+    ):
+        """纯文本流式调用，复用当前 task 已加载的模型列表。"""
+        await self._ensure_models()
+        with self._with_retries_disabled():
+            n = len(self._states)
+            start = self._pick_start(n)
+            last_exc: Exception | None = None
+            for offset in range(n):
+                state = self._next_available((start + offset) % n)
+                if state is None:
+                    break
+                client = self._build_client(state)
+                try:
+                    async for delta in client.stream_chat(
+                        system=system, user=user, reasoning_effort=reasoning_effort,
+                        extra_params=extra_params, response_format=response_format,
+                    ):
+                        yield delta
+                    state.record_success()
+                    return
+                except Exception as exc:
+                    last_exc = exc
+                    state.record_failure()
+            if last_exc:
+                raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
+            raise RuntimeError("模型池全部不可用")
+
 
 # ---------------------------------------------------------------------------
 # 单例 / 工厂
 # ---------------------------------------------------------------------------
 
-_pool_instance: ModelPool | None = None
+_pool_instances: dict[str, ModelPool] = {}
 
 
 def get_model_pool(
@@ -349,8 +388,9 @@ def get_model_pool(
     capability: str | None = "text",
     channel_id: int | None = None,          # None → 从 config.settings.llm_channel_id 读
     preferred_model: str | None = "qwen3.8-flash",
+    task_id: str | None = None,
 ) -> ModelPool:
-    """拿到共享 ModelPool 实例（首次调用按参数创建，后续调用参数变化会重建）。
+    """获取 task 级 ModelPool；未传 task_id 的独立服务沿用共享池。
 
     默认配置：
       - capability='text'  → 拉 text/VLM 模型
@@ -359,25 +399,34 @@ def get_model_pool(
 
     node4 生图走 node4_image_channel_id=4（语义不同，不要复用）。
     """
-    global _pool_instance
-
     channel_id = channel_id or settings.llm_channel_id  # None → config 统一渠道
-
-    need_rebuild = (
-        _pool_instance is None
-        or _pool_instance._capability != capability
-        or _pool_instance._channel_id != channel_id
-        or _pool_instance._preferred_model != preferred_model
-    )
+    key = task_id or "__shared__"
+    pool = _pool_instances.get(key)
+    need_rebuild = pool is None or pool._capability != capability or pool._channel_id != channel_id
     if need_rebuild:
-        _pool_instance = ModelPool(
+        pool = ModelPool(
             capability=capability,
             channel_id=channel_id,
             preferred_model=preferred_model,
+            task_id=task_id,
         )
+        _pool_instances[key] = pool
         print(
             f"[model-pool] 🏗️ 新建 ModelPool: capability={capability}"
-            f" channel_id={channel_id} preferred={preferred_model}",
+            f" task={key} channel_id={channel_id} preferred={preferred_model}",
             flush=True,
         )
-    return _pool_instance
+    return pool
+
+
+async def prepare_task_models(task_id: str) -> ModelPool:
+    """任务启动入口：只在这里预加载一次 text 模型目录。"""
+    pool = get_model_pool(task_id=task_id)
+    await pool.prepare()
+    return pool
+
+
+def clear_task_models(task_id: str) -> None:
+    _pool_instances.pop(task_id, None)
+    from wellflow.app.llm.image_gen_service import clear_task_image_models
+    clear_task_image_models(task_id)

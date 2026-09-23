@@ -270,6 +270,8 @@ async def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
 async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None):
     import traceback as _tb
     try:
+        from wellflow.app.llm.model_pool import prepare_task_models
+        await prepare_task_models(task_id)
         mark_running(task_id)
         if command is not None:
             stream_iter = graph.astream(command, config=config, stream_mode=["updates"])
@@ -326,6 +328,8 @@ async def _stream_queue(task_id: str, q) -> AsyncGenerator[str, None]:
 
 
 def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
+    if event_type == "message":
+        return _sse("message", event_data)
     if event_type == "phase":
         return _sse("phase", {"phase": event_data.get("phase")})
     if event_type == "interrupt":
@@ -601,6 +605,7 @@ async def chat(
             has_images=len(images) > 0,
             selected_finetuning_target=selected_finetuning_target,
             graph_state_brief=_state_brief,
+            task_id=t_id,
         )
         intent = intent_result.get("intent", "chat_outside")
         print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
@@ -985,6 +990,9 @@ async def chat(
                         if graph is None:
                             raise RuntimeError("LangGraph 未初始化")
                         config = _langgraph_config(t_id)
+                        # 服务重启后进程内 task 模型缓存已丢失；恢复 graph 前统一重建一次。
+                        from wellflow.app.llm.model_pool import prepare_task_models
+                        await prepare_task_models(t_id)
                         async for _chunk in graph.astream(None, config, stream_mode="updates"):
                             pass
                         print(f"[chat] ✅ astream(None) 续跑完成", flush=True)
@@ -1409,15 +1417,10 @@ async def _handle_backward(
             cmd = Command(goto=exec_node, update=update_dict)
             print(f"[backward] 🎯 graph已END → refine→{redo_target} goto={exec_node}, instruction={_instruction}", flush=True)
         else:
-            # redo node4：完全重置 work_items + 清 outputs（保持原有逻辑）
+            # redo node4：无论上一轮是否失败，都重新生成全部图片
             redo_target_cleanup: dict[str, dict[str, Any]] = {}
-            new_node4 = dict(node4)
-            items = new_node4.get("work_items", []) or []
-            for it in items:
-                if isinstance(it, dict):
-                    it["status"] = "pending"
-            new_node4["outputs"] = []
-            new_node4["failed_items"] = []
+            from wellflow.app.workflows.node4_graph import prepare_image_redo
+            new_node4 = prepare_image_redo(node4)
             redo_target_cleanup = {"node4": new_node4, "phase": "c4_review"}
             update_dict = {**redo_target_cleanup, **cmd_update} if cmd_update else redo_target_cleanup
             exec_node = _EXEC_NODE_OF_TARGET.get(redo_target, redo_target)

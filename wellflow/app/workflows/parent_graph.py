@@ -543,7 +543,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
 
     决策模式：
       decision="confirm"  → 进 finalize 归档
-      decision="redo" + redo_target="node4" → 完全重置 node4.work_items（唯一保留的完全重做）
+      decision="redo" + redo_target="node4" → 无论上一轮是否失败，都重新生成全部图片
                                                Node4 是生图 API，没有可"增量编辑"的文本产物
       decision="refine"   → 纯 text LLM 增量编辑。refine_target 为 "node2" 或 "node3"
     """
@@ -563,7 +563,8 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
     interrupt_value = interrupt({
         "node": "c4",
         "phase": "c4_review",
-        "hint": "",
+        "hint": node4.get("generation_summary", ""),
+        "generation_status": node4.get("generation_status"),
         "outputs": node4.get("outputs", []),
         "failed_items": node4.get("failed_items", []),
         "reference_images": req.get("product_images", []),
@@ -629,14 +630,8 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
             "_refine_selected_indices": None,
         }
 
-    # redo→node4：只重置 work_items 状态 + 清 outputs/failed_items
-    print(f"[c4_review] 🔄 redo → Node4（重置 work_items）", flush=True)
-    new_node4 = dict(node4)
-    items = new_node4.get("work_items", [])
-    for it in items:
-        it["status"] = "pending"
-    new_node4["outputs"] = []
-    new_node4["failed_items"] = []
+    from wellflow.app.workflows.node4_graph import prepare_image_redo
+    new_node4 = prepare_image_redo(node4)
     return {
         "phase": "c4_review",
         "node1": node1,

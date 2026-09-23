@@ -18,12 +18,13 @@ async def analyze_product(
     images: list[str],
     user_text: str = "",
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ) -> str:
     """非流式 VLM 商品识别，返回原始文本报告。"""
     if not images:
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
-    pool = get_model_pool()
+    pool = get_model_pool(task_id=task_id)
     effort = reasoning_effort if reasoning_effort is not None else settings.node1_reasoning_effort
 
     user_text_parts: list[str] = []
@@ -46,12 +47,13 @@ async def stream_analyze_product(
     images: list[str],
     user_text: str = "",
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ):
     """流式 VLM 商品识别，yield {"type": "thinking"|"content", "text": "..."}。"""
     if not images:
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
-    pool = get_model_pool()
+    pool = get_model_pool(task_id=task_id)
     effort = reasoning_effort if reasoning_effort is not None else settings.node1_reasoning_effort
 
     user_message_parts: list[str] = []

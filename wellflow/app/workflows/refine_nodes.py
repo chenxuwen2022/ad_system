@@ -9,10 +9,10 @@ LLM 做最小必要增量修改，直接产出更新后的完整产物。
     → _cX_confirm_interrupt 识别 decision="refine"
     → 写 _refine_target + _refine_instruction 到 state
     → 路由到对应 refine 节点
-    → refine 节点用 get_llm_client 直连固定模型（纯文本生文本，不传图、不走轮询池）
+    → refine 节点复用当前 task 的 text 模型池（纯文本生成，不重新获取模型列表）
     → 路由回同一个 cX interrupt（用户再次确认）
 
-⚠️ Node4 不做 refine —— Node4 是生图 API（openai/gpt-image-2），没有可"增量修改"的文本产物，
+⚠️ Node4 不做 refine —— Node4 是生图 API，没有可"增量修改"的文本产物，
    所以 C4 redo→node4 仍然是完全重置 work_items 的方式，保持不变。
 """
 
@@ -37,8 +37,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被用户确认并锁定，
     当前任务内不得再修改 —— 直接拒绝，返回 phase=c1_confirm 且不改动 node1 任何字段。
     """
-    from wellflow.app.llm.factory import get_llm_client
-    from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
+    from wellflow.app.llm.model_pool import get_model_pool
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
     from wellflow.app.workflows.report_progress import ReportProgressStream, split_report_progress
@@ -77,7 +76,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node1_refining", "reset_text": True})
 
-    client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
+    pool = get_model_pool(task_id=task_id)
 
     # 多轮 refine 历史（**只取 node1 自己的**——避免 node2/node3 的 refine 指令混进来）
     from wellflow.app.workflows.state import get_node_refine_history
@@ -109,7 +108,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     content_chunk_index = 0
     report_stream = ReportProgressStream()
 
-    async for item in client.stream_chat(
+    async for item in pool.stream_chat(
         system=get_active_prompt("refine_report"),
         user=user_message,
         reasoning_effort=settings.text_reasoning_effort,
@@ -143,7 +142,6 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
         content_chunk_index += 1
         publish(task_id, "report_chunk", {"chunk": remaining, "index": content_chunk_index, "node": "node1"})
     raw_report = "".join(full_report_parts)
-    used_model = CLASSIFIER_MODEL
 
     # 去除可能存在的 ```markdown / ``` 包裹
     raw_report = _strip_code_fence(raw_report)
@@ -185,8 +183,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
 
 async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     """根据用户指令修改完整商拍报告正文。"""
-    from wellflow.app.llm.factory import get_llm_client
-    from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
+    from wellflow.app.llm.model_pool import get_model_pool
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
     from wellflow.app.nodes.planning_scheme import split_scheme_reports
@@ -201,13 +198,13 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
 
     if task_id:
         publish(task_id, "phase", {"phase": "node2_refining", "reset_text": True})
-    client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
+    pool = get_model_pool(task_id=task_id)
     parts: list[str] = []
     previous = "\n\n".join(
         f"===SCHEME {i + 1}: {schemes[i].get('scheme_name') or f'方案{i + 1}'}===\n{report}"
         for i, report in enumerate(reports)
     )
-    async for item in client.stream_chat(
+    async for item in pool.stream_chat(
         system=get_active_prompt("refine_plan"),
         user=(f"【原商拍策划方案列表】\n{previous}\n\n"
               f"【本轮修改指令】\n{instruction}"),
@@ -246,8 +243,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     输入：state.node3.generate_prompts（旧 prompt 列表） + state._refine_instruction
     输出：更新后的 node3.generate_prompts（新 prompt 列表）
     """
-    from wellflow.app.llm.factory import get_llm_client
-    from wellflow.app.llm.intent_classifier import CLASSIFIER_MODEL
+    from wellflow.app.llm.model_pool import get_model_pool
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
 
@@ -266,7 +262,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node3_refining", "reset_text": True})
 
-    client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
+    pool = get_model_pool(task_id=task_id)
     # 给每条旧 prompt 加 [i] 序号前缀，让 LLM 清楚知道边界和总数
     _numbered_old = [f"[{i + 1}] {p}" for i, p in enumerate(old_prompts)]
     old_prompts_text = "\n---PROMPT_SEP---\n".join(_numbered_old)
@@ -304,7 +300,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     raw_parts: list[str] = []
     content_chunk_index = 0
 
-    async for item in client.stream_chat(
+    async for item in pool.stream_chat(
         system=get_active_prompt("refine_image_prompt"),
         user=user_message,
         reasoning_effort=settings.text_reasoning_effort,
@@ -333,7 +329,6 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         })
 
     raw_text = "".join(raw_parts)
-    used_model = CLASSIFIER_MODEL
     raw_text = _strip_code_fence(raw_text)
 
     # 按 "---PROMPT_SEP---" 切分 → 去空 → 清洗

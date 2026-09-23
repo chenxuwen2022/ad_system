@@ -93,6 +93,7 @@ async def stream_generate_prompt(
     user_requirement: str = "",
     prompt_count: int,
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ):
     """一次流式模型调用，返回该方案的全部提示词文本。"""
     from wellflow.app.config import settings
@@ -105,7 +106,7 @@ async def stream_generate_prompt(
         user_requirement=user_requirement,
         prompt_count=prompt_count,
     )
-    pool = get_model_pool()
+    pool = get_model_pool(task_id=task_id)
     effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
     async for delta in pool.stream_chat_with_images(
         system=system, user=user, image_uris=images, reasoning_effort=effort,
@@ -123,6 +124,7 @@ async def generate_prompt_for_scheme(
     user_requirement: str = "",
     prompt_count: int,
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """非流式入口，同样一次调用返回全部提示词。"""
     from wellflow.app.config import settings
@@ -135,7 +137,7 @@ async def generate_prompt_for_scheme(
         user_requirement=user_requirement,
         prompt_count=prompt_count,
     )
-    pool = get_model_pool()
+    pool = get_model_pool(task_id=task_id)
     effort = reasoning_effort if reasoning_effort is not None else settings.node3_reasoning_effort
     response, model = await pool.chat_with_images(
         system=system, user=user, image_uris=images, reasoning_effort=effort,

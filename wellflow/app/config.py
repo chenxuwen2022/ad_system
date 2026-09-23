@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,12 +44,12 @@ class Settings(BaseSettings):
     node2_scheme_count_default: int = 3
 
     # ====== Node4 ======
-    node4_gen_concurrency: int = 3                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
+    node4_gen_concurrency: int = Field(default=2, ge=1)                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
+    image_request_concurrency: int = Field(default=2, ge=1)  # 同一进程所有任务共享
+    image_request_interval: float = Field(default=1.0, ge=0)  # 请求启动最小间隔（秒）
+    image_rate_limit_retries: int = Field(default=3, ge=0, le=10)
+    image_retry_deadline: float = Field(default=600.0, gt=0)  # 单个模型排队+重试总时限
     node4_image_channel_id: int = 4                # new-api 生图渠道 ID
-    node4_image_models_fallback: list[str] = [     # 动态拉失败时的硬编码兜底链
-        "qwen-image-3.0",
-        "gpt-image-2",
-    ]
     llm_model_responses: str = "gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
     image_ratio_to_pixel_size_gpt: dict[str, str] = {
         "9:16": "1024x1536",   # 降级：用 3:4 近似 9:16
@@ -107,7 +107,6 @@ class Settings(BaseSettings):
     # ====== 穿搭库（outfit）======
     outfit_extract_models: list[str] = [  # 抠图降级链(qwen 优先:2026-09-20 gpt 系网关无渠道,实测 qwen 唯一可用)
         "qwen-image-3.0",
-        "gpt-image-2",
     ]
     outfit_max_items: int = 6              # VLM 单次识别最多提取几件单品
     outfit_extract_concurrency: int = 3    # 抠图并发上限（ThreadPoolExecutor）

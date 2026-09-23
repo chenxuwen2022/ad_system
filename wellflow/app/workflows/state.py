@@ -195,6 +195,11 @@ class Node4State(TypedDict, total=False):
     work_items: list[dict[str, Any]]
     outputs: list[dict[str, Any]]
     failed_items: list[dict[str, Any]]
+    retry_failed_only: bool
+    generation_status: str
+    generation_summary: str
+    requested_count: int
+    completed_count: int
     human_review: dict[str, Any]
 
 

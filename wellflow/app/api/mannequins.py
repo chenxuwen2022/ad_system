@@ -467,7 +467,6 @@ async def optimize_prompt(
 )
 async def generate_mannequin_images(
     prompt: str = Form(...),
-    generate_model: str = Form("gpt-image-2"),
     num_output: int = Form(3),
     size: str = Form("1024x1536"),
     ref_images: list[UploadFile] = File(default_factory=list),
@@ -586,7 +585,7 @@ async def fine_tune_mannequin(
     target_image: UploadFile = File(...),
     tune_prompt: str = Form(...),
     original_prompt: str | None = Form(None),
-    generate_model: str = Form("gpt-image-2"),
+    generate_model: str = Form("qwen-image-3.0"),
     size: str = Form("1024x1536"),
     ref_images: list[UploadFile] = File(default_factory=list),
 ):

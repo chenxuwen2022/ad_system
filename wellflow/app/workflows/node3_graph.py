@@ -144,6 +144,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
             user_requirement=user_requirement,
             prompt_count=n_variants,
             reasoning_effort=effort,
+            task_id=task_id,
         ):
             if not item:
                 continue

@@ -150,8 +150,10 @@ async def _start_graph(task_id: str, graph, config, initial_state=None, resume_v
     """后台启动 LangGraph，异常转成 SSE error 事件。"""
     from wellflow.app.event_bus import publish as _eb, cleanup as _eb_cleanup, mark_running, mark_done
     import traceback as _tb
+    from wellflow.app.llm.model_pool import prepare_task_models
     mark_running(task_id)
     try:
+        await prepare_task_models(task_id)
         if resume_values is not None:
             stream_iter = graph.astream(
                 Command(resume=resume_values), config=config,
@@ -1253,6 +1255,8 @@ async def delete_task(task_id: str):
     # 3. 删磁盘文件（uploads/{task_id}/）
     from wellflow.app.utils.image_store import delete_task_files
     delete_task_files(task_id)
+    from wellflow.app.llm.model_pool import clear_task_models
+    clear_task_models(task_id)
 
     # 4. 删 LangGraph checkpoint（thread_id = task_id）
     cp = get_checkpointer()

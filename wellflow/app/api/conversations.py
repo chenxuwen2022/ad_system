@@ -497,6 +497,9 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
 
     # ---- 7. LangGraph checkpoint ----
     if task_ids:
+        from wellflow.app.llm.model_pool import clear_task_models
+        for tid in task_ids:
+            clear_task_models(tid)
         from wellflow.app.runtime import get_checkpointer
         cp = get_checkpointer()
         if cp is not None and hasattr(cp, "adelete_thread"):

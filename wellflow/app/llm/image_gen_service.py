@@ -1,13 +1,13 @@
 """共享生图 service —— 抽自 node4_graph.py，API 端点和 LangGraph 都用它。
 
 提供三块复用逻辑：
-  1. get_image_models()      —— 从 new-api 拉 image 模型列表 + 兜底链
+  1. get_image_models()      —— 从 new-api 拉 image 模型列表
   2. generate_single_image() —— 单次生图（n 强制 =1），支持整条模型链自动降级
   3. is_credits_error()      —— 供上层识别 InsufficientCreditsError 用
 
 ⚠️ 边界声明：
-  - 本模块只负责「选模型 + 调一次 generate_image」，**不**管并发/refs 来源/产物落盘/归档。
-  - 并发由调用方自己管（node4 用 worker queue，API 端点用 Semaphore）。
+  - 本模块只负责「选模型 + 调一次 generate_image」，统一控制进程内生图并发和 429 重试，不管 refs 来源/产物落盘/归档。
+  - 调用方队列之下再经过共享并发限制，避免多个任务的请求叠加。
   - refs 传 data URI 还是 文件路径 → 调用方自己转好 data URI 再传进来。
   - 调底层 .generate_image() 时统一走 extra_params={"image_refs": [...]} 形式，
     与 node4_graph.py 的调用风格保持一致（base.py 内部有 alias 兼容两种写法）。
@@ -15,10 +15,11 @@
 
 from __future__ import annotations
 
-import httpx
+import asyncio
 
 from wellflow.app.config import settings
 from wellflow.app.llm.base import ImageGenResult, InsufficientCreditsError
+from wellflow.app.llm.image_retry import generate_with_rate_limit_retry
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -26,71 +27,43 @@ from wellflow.app.llm.base import ImageGenResult, InsufficientCreditsError
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def get_image_models() -> list[str]:
+_task_image_models: dict[str, list[str]] = {}
+_task_image_locks: dict[str, asyncio.Lock] = {}
+
+
+async def get_image_models(task_id: str | None = None) -> list[str]:
     """从 new-api 渠道 node4_image_channel_id 拉取 image 能力的模型列表。
 
-    动态模型排在前面，配置的备用模型接在后面，避免单模型故障时无处降级。
+    同一 task 只拉取一次；不使用本地硬编码模型兜底。
     """
     from wellflow.app.api.model_options import fetch_model_options
 
-    channel_id = settings.node4_image_channel_id
-    try:
-        opts = await fetch_model_options("image", channel_id=channel_id)
-        models = [_short_model_name(opt.value) for opt in opts]
-    except Exception as exc:
-        print(f"[image-gen-service] ⚠️ 从 channel_id={channel_id} 拉 image 模型失败，用兜底链: {exc}", flush=True)
-        models = []
+    if task_id and task_id in _task_image_models:
+        return list(_task_image_models[task_id])
 
-    # 渠道配置可能只返回一个模型；此时仅在拉取失败时使用备用链会让
-    # 上游偶发 502 直接变成整批生图失败。保留动态顺序并去重。
-    return list(dict.fromkeys([*models, *settings.node4_image_models_fallback]))
+    lock = _task_image_locks.setdefault(task_id, asyncio.Lock()) if task_id else asyncio.Lock()
+    async with lock:
+        if task_id and task_id in _task_image_models:
+            return list(_task_image_models[task_id])
+        channel_id = settings.node4_image_channel_id
+        opts = await fetch_model_options("image", channel_id=channel_id)
+        chain = list(dict.fromkeys(_short_model_name(opt.value) for opt in opts))
+        if not chain:
+            raise RuntimeError(f"New API channel_id={channel_id} 未返回 image 类型模型")
+        print(f"[image-gen-service] ✅ task={task_id or '-'} 首次拉取 channel_id={channel_id} image 模型: {chain}", flush=True)
+        if task_id:
+            _task_image_models[task_id] = chain
+        return list(chain)
+
+
+def clear_task_image_models(task_id: str) -> None:
+    _task_image_models.pop(task_id, None)
+    _task_image_locks.pop(task_id, None)
 
 
 def _short_model_name(model: str) -> str:
     """把 'provider/xxx' 格式剥掉 provider 前缀，只保留 'xxx'。"""
     return model.split("/", 1)[1] if "/" in model else model
-
-
-async def get_image_channel_candidates(models: list[str]) -> dict[str, list[str]]:
-    """读取 New API 渠道配置，供日志展示候选渠道；不将其当成实际路由结果。"""
-    if not settings.newapi_admin_access_token:
-        return {}
-
-    candidates: dict[str, list[str]] = {model: [] for model in models}
-    try:
-        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
-            page = 1
-            while True:
-                response = await client.get(
-                    f"{settings.newapi_admin_base_url.rstrip('/')}/api/channel/",
-                    params={"p": page, "page_size": 100},
-                    headers={"Authorization": f"Bearer {settings.newapi_admin_access_token}"},
-                )
-                response.raise_for_status()
-                body = response.json()
-                if body.get("success") is not True or not isinstance(body.get("data"), dict):
-                    raise ValueError("渠道列表响应格式错误")
-                data = body["data"]
-                items = data.get("items", [])
-                if not isinstance(items, list):
-                    raise ValueError("渠道列表缺少 items")
-                for channel in items:
-                    if not isinstance(channel, dict):
-                        continue
-                    if channel.get("status") != 1:
-                        continue
-                    configured = {_short_model_name(name.strip()) for name in (channel.get("models") or "").split(",")}
-                    label = f"{channel.get('id')}:{channel.get('name') or '未命名'}"
-                    for model in models:
-                        if model in configured:
-                            candidates[model].append(label)
-                if page * 100 >= data.get("total", 0) or not items:
-                    break
-                page += 1
-    except (httpx.HTTPError, ValueError, TypeError) as exc:
-        print(f"[image-gen-service] ⚠️ 读取候选渠道失败: {type(exc).__name__}: {exc}", flush=True)
-        return {}
-    return candidates
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -103,7 +76,8 @@ async def generate_single_image(
     size: str,
     ref_data_uris: list[str] | None = None,
     log_id: str = "image-gen",
-    channel_candidates: dict[str, list[str]] | None = None,
+    task_id: str | None = None,
+    models: list[str] | None = None,
 ) -> ImageGenResult:
     """单次生图 —— 永远 n=1，动态拉取 image 模型列表逐个尝试。
 
@@ -121,17 +95,16 @@ async def generate_single_image(
 
     refs = list(ref_data_uris) if ref_data_uris else []
 
-    chain = await get_image_models()
+    chain = list(models) if models is not None else await get_image_models(task_id)
     errors: list[str] = []
     credits_exc: InsufficientCreditsError | None = None
 
     for index, model in enumerate(chain):
-        candidates = (channel_candidates or {}).get(model, [])
-        channel_info = f" 候选渠道={','.join(candidates)}" if candidates else " 候选渠道=未知"
-        print(f"[{log_id}] 🎨 开始生图 model={model} ({index + 1}/{len(chain)}){channel_info}", flush=True)
+        print(f"[{log_id}] 🎨 开始生图 model={model} ({index + 1}/{len(chain)})", flush=True)
         try:
             client = get_llm_client("image", model_override=model)
-            result = await client.generate_image(
+            result = await generate_with_rate_limit_retry(
+                client, log_id=log_id, task_id=task_id,
                 prompt=prompt,
                 size=size,
                 n=1,
@@ -150,9 +123,9 @@ async def generate_single_image(
             reason = f"{type(exc).__name__}: {str(exc)[:200]}"
 
         if index + 1 < len(chain):
-            print(f"[{log_id}] 🔄 模型切换 {model} → {chain[index + 1]}，{channel_info.strip()}，原因: {reason}", flush=True)
+            print(f"[{log_id}] 🔄 模型切换 {model} → {chain[index + 1]}，原因: {reason}", flush=True)
         else:
-            print(f"[{log_id}] ❌ 模型链已耗尽，最后模型={model}，{channel_info.strip()}，原因: {reason}", flush=True)
+            print(f"[{log_id}] ❌ 模型链已耗尽，最后模型={model}，原因: {reason}", flush=True)
 
     # 全链失败
     if credits_exc is not None:
