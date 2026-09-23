@@ -351,6 +351,8 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
             "_refine_target": "node2",
             "_refine_instruction": refine_instruction,
             "_refine_selected_indices": _refine_sel_idx,
+            "_refine_scheme_count": interrupt_value.get("refine_scheme_count"),
+            "_refine_scheme_source": interrupt_value.get("refine_scheme_source"),
             "_refine_history": build_refine_history_update(prev_history, "node2", refine_instruction),
             "_redo_target": None,
         }
@@ -461,6 +463,8 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
             "_refine_selected_indices": _refine_sel_idx,
+            "_refine_scheme_count": interrupt_value.get("refine_scheme_count"),
+            "_refine_scheme_source": interrupt_value.get("refine_scheme_source"),
             "_refine_history": build_refine_history_update(prev_history, refine_target, refine_instruction),
             "_redo_target": None,
         }
@@ -574,6 +578,8 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
             "_refine_target": refine_target,
             "_refine_instruction": refine_instruction,
             "_refine_selected_indices": _refine_sel_idx,
+            "_refine_scheme_count": interrupt_value.get("refine_scheme_count"),
+            "_refine_scheme_source": interrupt_value.get("refine_scheme_source"),
             "_refine_history": build_refine_history_update(prev_history, refine_target, refine_instruction),
             "_redo_target": None,
         }

@@ -197,22 +197,51 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     if not instruction or not reports or any(not report for report in reports):
         return {"phase": "c2_select"}
 
-    from wellflow.app.workflows.scheme_selection import explicit_scheme_indices, validate_scheme_indices
-    selection = explicit_scheme_indices(instruction)
-    if selection is None:
-        selection = state.get("_refine_selected_indices")
-    if selection is None:
-        selection = node2.get("selected_scheme_indices") or "all"
+    from wellflow.app.workflows.scheme_selection import validate_scheme_indices
+    selection = state.get("_refine_selected_indices")
+    scheme_count = state.get("_refine_scheme_count")
+    source = state.get("_refine_scheme_source")
+    initial_schemes = state.get("initial_schemes") or []
+    if source is None and task_id and not initial_schemes:
+        import asyncio
+        from wellflow.app.workflows.scheme_selection import load_initial_schemes
+        initial_schemes = await asyncio.to_thread(load_initial_schemes, task_id)
+    if selection is None or scheme_count is None or source is None:
+        # Older checkpoints and direct refine entry points still require an intent plan.
+        from wellflow.app.llm.intent_classifier import classify, summarize_graph_state
+        intent = await classify(
+            instruction, has_task=True, current_node="c2",
+            selected_finetuning_target="node2", graph_state_brief=summarize_graph_state({**state, "initial_schemes": initial_schemes}),
+            task_id=task_id or None,
+        )
+        if (intent.get("intent") != "edit" or intent.get("refine_target") != "node2"
+                or intent.get("edit_mode") != "refine"):
+            raise ValueError("未能确定商拍方案微调范围，请明确要修改的方案和数量")
+        selection = intent.get("selected_indices")
+        scheme_count = intent.get("scheme_output_count")
+        source = intent.get("scheme_source")
+    if (not isinstance(selection, list) or not selection
+            or type(scheme_count) is not int or scheme_count < 1):
+        raise ValueError("意图识别未返回有效的微调方案索引和输出数量，请明确后重试")
+    if source not in ("current", "initial"):
+        raise ValueError("意图识别未明确方案版本，请指定当前或最初方案后重试")
+    if source == "initial":
+        if not initial_schemes:
+            import asyncio
+            from wellflow.app.workflows.scheme_selection import load_initial_schemes
+            initial_schemes = await asyncio.to_thread(load_initial_schemes, task_id)
+        if not initial_schemes:
+            raise ValueError("找不到最初商拍方案记录，不能使用当前方案代替，请重新选择")
+        schemes = initial_schemes
     indices = validate_scheme_indices(selection, len(schemes))
-    schemes = [schemes[i] for i in indices]
-    scheme_count = len(schemes)
+    source_schemes = [(i, schemes[i]) for i in indices]
     if task_id:
         publish(task_id, "phase", {"phase": "node2_refining", "reset_text": True, "scheme_count": scheme_count})
     client = get_llm_client("text", model_override=settings.classifier_model)
     parts: list[str] = []
     previous = json.dumps([
-        {"scheme_name": s.get("scheme_name") or f"方案{i + 1}", "report_text": s["report_text"]}
-        for i, s in enumerate(schemes)
+        {"source_scheme_number": i + 1, "scheme_name": s.get("scheme_name") or f"方案{i + 1}", "report_text": s["report_text"]}
+        for i, s in source_schemes
     ], ensure_ascii=False)
     chunk_index = 0
     async for item in client.stream_chat(
@@ -242,6 +271,9 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
         "_refine_target": None,
         "_refine_instruction": None,
         "_refine_selected_indices": None,
+        "_refine_scheme_count": None,
+        "_refine_scheme_source": None,
+        "initial_schemes": initial_schemes,
     }
 
 

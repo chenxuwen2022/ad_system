@@ -940,6 +940,8 @@ async def chat(
                     product_images=product_images,
                     refine_instruction=_instruction,
                     refine_selected_indices=_sel_indices,
+                    refine_scheme_count=intent_result.get("scheme_output_count"),
+                    refine_scheme_source=intent_result.get("scheme_source"),
                     edit_mode=intent_result.get("edit_mode", "refine"),
                 )):
                     yield ev
@@ -1070,6 +1072,8 @@ async def _handle_backward(
     product_images: list[UploadFile] | None = None,
     refine_instruction: str | None = None,
     refine_selected_indices: list[int] | str | None = None,
+    refine_scheme_count: int | None = None,
+    refine_scheme_source: str | None = None,
     edit_mode: str = "refine",
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
@@ -1147,7 +1151,9 @@ async def _handle_backward(
             "decision": "refine",
             "refine_target": redo_target,
             "refine_instruction": _instruction,
-            "refine_selected_indices": refine_selected_indices,  # None for non-node2 refine → 下游忽略
+            "refine_selected_indices": refine_selected_indices,
+            "refine_scheme_count": refine_scheme_count,
+            "refine_scheme_source": refine_scheme_source,
         }
     else:
         # 完整重做目标节点
@@ -1253,6 +1259,8 @@ async def _handle_resume(
             resume_values["refine_target"] = "node2"
             resume_values["refine_instruction"] = message
             resume_values["refine_selected_indices"] = intent_result.get("selected_indices")
+            resume_values["refine_scheme_count"] = intent_result.get("scheme_output_count")
+            resume_values["refine_scheme_source"] = intent_result.get("scheme_source")
             print(f"[chat] c2 edit_and_confirm_c2 → refine 路径, instruction={message}", flush=True)
         else:
             # confirm_current / confirm_generation / chat_outside 等非编辑类意图

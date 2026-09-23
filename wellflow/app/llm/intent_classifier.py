@@ -98,6 +98,15 @@ def summarize_graph_state(graph_state: dict[str, Any] | None) -> str:
             report_brief = report_brief[:800] + "…"
         lines.append(f"node1 商品报告{tag}:\n{report_brief}")
 
+    originals = graph_state.get("initial_schemes") or []
+    if originals:
+        lines.append("首次商拍方案（scheme_source=initial，与当前列表独立编号）:")
+        for i, scheme in enumerate(originals):
+            lines.append(f"  最初方案{i + 1}（selected_indices={i}）: {scheme.get('scheme_name', '')} | "
+                         + str(scheme.get("report_text", ""))[:180])
+    else:
+        lines.append("首次方案尚未加载；明确最初方案编号可返回 scheme_source=initial，由执行层查历史核实。")
+
     # ---- node2 ----
     n2 = graph_state.get("node2") or {}
     schemes = n2.get("schemes") or []
@@ -107,7 +116,7 @@ def summarize_graph_state(graph_state: dict[str, Any] | None) -> str:
         for i, s in enumerate(schemes):
             if not isinstance(s, dict):
                 continue
-            name = s.get("scheme_name") or f"方案{i}"
+            name = s.get("scheme_name") or f"方案{i + 1}"
             pos = s.get("positioning") or {}
             scene = s.get("scene") or {}
             mod = s.get("model") or {}
@@ -126,7 +135,9 @@ def summarize_graph_state(graph_state: dict[str, Any] | None) -> str:
             if isinstance(lighting, dict):
                 light_style = (lighting.get("lighting_design") or lighting.get("color_system") or "").strip()[:30]
             is_selected = "✓" if i in selected_indices else " "
-            parts = [f"[{is_selected} {i}] {name}"]
+            parts = [f"[{is_selected}] 用户可见方案{i + 1}（selected_indices={i}）: {name}"]
+            if s.get("report_text"):
+                parts.append("正文摘要=" + str(s["report_text"])[:180])
             if theme:
                 parts.append(f"视觉主题={theme}")
             if env:
@@ -226,6 +237,20 @@ refine_target 只表示目标产物：报告=node1，商拍方案=node2，生图
 node1 已锁定仍返回 redo_blocked；不能跳过上游确认。
 例如：重新生成商拍方案 -> edit/node2/regenerate；把方案场景改为室外 -> edit/node2/refine；
 重新生成提示词 -> edit/node3/regenerate；重新生图 -> edit/node4/regenerate。
+【商拍方案微调范围与数量｜必须返回】
+针对已有商拍方案的字段修改（即使没有“微调”二字）必须判为 edit/node2/refine。
+例如“方案2，品牌为星巴克”是修改方案2，不是选择确认，也不是重新生成全部方案。
+node2/refine 必须返回 scheme_source（current=当前方案，initial=最开始/首次方案）、selected_indices（非空的零基整数数组）及 scheme_output_count（正整数）。
+根据当前方案列表和用户原话判定输入范围与输出数量，二者独立；禁止套用首次生成默认3套。
+普通微调输出数量等于目标方案数；指定扩展、融合、删减时按用户要求判定输出数量。
+例：当前有3套，“方案2，品牌为星巴克” -> selected_indices=[1], scheme_output_count=1。
+“方案1和方案3品牌改为星巴克” -> [0,2], 2；“方案2扩展成3个版本” -> [1], 3。
+“融合方案1和方案2” -> [0,1], 1；“全部方案品牌改为星巴克” -> [0,1,2], 3。
+没有指定编号时结合已选方案、方案名称和上下文判断；无法确定时返回 chat_outside 并说明需要澄清，禁止默认全选。
+“将最开始的方案2，重新调整，品牌改为tims” -> scheme_source=initial, selected_indices=[1], scheme_output_count=1。
+索引必须相对于 scheme_source 指定的列表；即使当前只剩1套，也不能把最初方案2改成索引0。
+未提历史版本时 scheme_source=current；历史信息不足以定位时澄清，不能用当前结果替代。
+仅“选择方案2”仍为选择确认，不是微调。其他目标及非微调操作 scheme_output_count=null。
 """
 
 
@@ -424,8 +449,10 @@ async def _classify_via_llm(
         "edit_mode": "regenerate" if data.get("edit_mode") == "regenerate" else "refine",
         "reasoning": data.get("reasoning", ""),
         "refine_target": data.get("refine_target"),
-        "refine_instruction": refine_instruction,
+        "refine_instruction": message.strip() if intent == "edit" else refine_instruction,
         "selected_indices": data.get("selected_indices"),
+        "scheme_output_count": data.get("scheme_output_count"),
+        "scheme_source": data.get("scheme_source"),
         "blocked_step": data.get("blocked_step"),
         "parsed_content": data.get("parsed_content"),  # 保留兼容旧消费者
     }

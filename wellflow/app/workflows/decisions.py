@@ -21,7 +21,7 @@ def invalidate(state, stage):
     update = {"confirmations": {f"c{i}": False for i in range(stage, 5)},
               "workflow_revision": state.get("workflow_revision", 0) + 1,
               "_redo_target": None, "_redo_instruction": None, "_refine_target": None,
-              "_refine_instruction": None, "_refine_selected_indices": None}
+              "_refine_instruction": None, "_refine_selected_indices": None, "_refine_scheme_count": None, "_refine_scheme_source": None}
     if stage < 2:
         update["node2"] = cleared()
     if stage < 3:
@@ -46,7 +46,7 @@ def decision_node(stage):
             if not accepted:
                 return {**result, "_redo_target": None, "_redo_instruction": None,
                         "_refine_target": None, "_refine_instruction": None,
-                        "_refine_selected_indices": None}
+                        "_refine_selected_indices": None, "_refine_scheme_count": None, "_refine_scheme_source": None}
             update["confirmations"].update(result.get("confirmations") or {})
             confirmations = update["confirmations"]
             update.update(result)

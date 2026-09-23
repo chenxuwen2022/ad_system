@@ -241,6 +241,9 @@ class TaskState(TypedDict, total=False):
     # node2 refine 专用：LLM 意图分类器返回的 selected_indices
     # 决定 refine_node2_schemes 能看到哪几套原方案（用户明确点名了哪些 → 只传那些；"all"或None → 全部传）
     _refine_selected_indices: Annotated[list[int] | str | None, REDUCER]
+    _refine_scheme_count: Annotated[int | None, REDUCER]
+    _refine_scheme_source: Annotated[str | None, REDUCER]
+    initial_schemes: Annotated[list[dict[str, Any]], REDUCER]
     # 多轮 refine 历史（按 node 隔离，避免 node1/node2/node3 指令互相污染）
     # 旧格式兼容：如果 checkpoint 里还是 list（老任务），_get_node_refine_history helper 会自动 wrap 成 {'nodeX': list}
     # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）

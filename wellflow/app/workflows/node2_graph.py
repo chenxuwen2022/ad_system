@@ -152,6 +152,6 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         "thinking_text": full_thinking if full_thinking else "",
     }
 
-    output = {"_redo_target": None, "_redo_instruction": None, "phase": "node2_plan_scheme", "node2": new_node2}
+    output = {"initial_schemes": state.get("initial_schemes") or schemes, "_redo_target": None, "_redo_instruction": None, "phase": "node2_plan_scheme", "node2": new_node2}
     print(f"[node2] _plan_schemes 输出: {len(schemes)} 套商拍方案", flush=True)
     return output
