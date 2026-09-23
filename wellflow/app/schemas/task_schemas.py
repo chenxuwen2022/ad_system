@@ -33,7 +33,7 @@ class TaskCreateResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 class TaskResumeRequest(BaseModel):
-    node: Literal["c1", "c2", "review"]
+    node: Literal["c1", "c2", "c3", "c4"]
     values: dict[str, Any]
 
 
@@ -49,6 +49,10 @@ class TaskInfoResponse(BaseModel):
     node1: dict[str, Any] | None = None
     node2: dict[str, Any] | None = None
     node3: dict[str, Any] | None = None
+    node4: dict[str, Any] | None = None
+    runtime_status: str = "unknown"
+    can_restart: bool = False
+    recovery_error: str | None = None
     # 任务关联图片（从 task_image 表读出）
     reference_images: dict[str, list[dict[str, Any]]] = Field(default_factory=dict)  # 按 type 分组：mannequin / scene / outfit
     output_images: list[dict[str, Any]] = Field(default_factory=list)  # 确认结束后的生图成品

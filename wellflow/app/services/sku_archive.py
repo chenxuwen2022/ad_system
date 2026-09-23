@@ -192,35 +192,36 @@ async def archive_generated_images(sku_id: int, request: ArchiveGeneratedImages)
     from wellflow.app.event_bus import is_running, mark_running, mark_done
     from wellflow.app.runtime import get_graph
 
-    if is_running(request.task_id):
-        raise HTTPException(409, "任务正在处理，请稍后重试")
-    mark_running(request.task_id)
-    try:
-        def prepare():
-            with session_scope() as db:
-                receipt = prepare_archive(db, sku_id, request)
-                return receipt, db.get(Task, request.task_id).phase == "done"
-        receipt, already_done = await asyncio.to_thread(prepare)
-        if already_done:
-            return
-        graph = get_graph()
-        if graph is None:
-            raise RuntimeError("工作流暂不可用")
-        config = {"configurable": {"thread_id": request.task_id}}
-        snapshot = await graph.aget_state(config)
-        if snapshot.values.get("phase") != "done":
-            if "c4_review_result" not in snapshot.next:
-                raise RuntimeError("工作流不在图片确认节点")
-            result = await graph.ainvoke(Command(resume={"decision": "confirm"}), config=config)
-            if result.get("phase") != "done":
-                raise RuntimeError("工作流尚未完成")
-        def finish():
-            with session_scope() as db:
-                complete_archive(db, request.task_id, receipt)
-        await asyncio.to_thread(finish)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(503, "入库未完成，请保留当前选择重试；已保存图片不会重复添加") from exc
-    finally:
-        mark_done(request.task_id)
+    from wellflow.app.workflow_execution import execution_lease
+    from wellflow.app.graph_persist import reconcile_checkpoint
+    async with execution_lease(request.task_id):
+        try:
+            graph = get_graph()
+            if graph is None:
+                raise RuntimeError("工作流暂不可用")
+            config = {"configurable": {"thread_id": request.task_id}}
+            snapshot = await graph.aget_state(config)
+            await asyncio.to_thread(reconcile_checkpoint, request.task_id, snapshot)
+            def prepare():
+                with session_scope() as db:
+                    receipt = prepare_archive(db, sku_id, request)
+                    return receipt, db.get(Task, request.task_id).phase == "done"
+            receipt, already_done = await asyncio.to_thread(prepare)
+            if already_done:
+                return
+            from wellflow.app.workflow_status import checkpoint_view
+            phase, interrupt = checkpoint_view(snapshot)
+            if phase != "done":
+                if not interrupt or interrupt["node"] != "c4":
+                    raise RuntimeError("工作流不在图片确认节点")
+                result = await graph.ainvoke(Command(resume={"decision": "confirm", "revision": interrupt.get("revision")}), config=config)
+                if result.get("phase") != "done":
+                    raise RuntimeError("工作流尚未完成")
+            def finish():
+                with session_scope() as db:
+                    complete_archive(db, request.task_id, receipt)
+            await asyncio.to_thread(finish)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(503, "入库未完成，请保留当前选择重试；已保存图片不会重复添加") from exc

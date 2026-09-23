@@ -87,13 +87,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Node3 缺少有效的前端 per_scheme_count")
 
     if not selected_schemes:
-        print("[node3] ⚠️ 没有选中的方案，跳过 prompt 生成", flush=True)
-        new_node3: dict[str, Any] = {
-            "reference_images": ref_images,
-            "generate_prompts": [],
-            "prompts_detail": [],
-        }
-        return {"phase": "node3_prompt_gen", "node3": new_node3}
+        raise ValueError("没有已确认的商拍方案，无法生成提示词")
 
     if task_id:
         publish(task_id, "phase", {"phase": "node3_prompt_gen"})
@@ -193,6 +187,9 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     total_t = time.time() - t_total
     print(f"[node3] _gen_prompts 完成: {len(all_prompts)} 个 prompt, "
           f"总耗时={total_t:.1f}s", flush=True)
+
+    if not all_prompts or any(not prompt.strip() for prompt in all_prompts):
+        raise RuntimeError("提示词生成返回空内容，请重试当前节点")
 
     # 用全新 dict 返回
     new_node3: dict[str, Any] = {

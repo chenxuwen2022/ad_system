@@ -190,6 +190,7 @@ class PromptState(TypedDict, total=False):
 
 
 class Node4State(TypedDict, total=False):
+    generation_id: str
     reference_images: list[str]             # 商品图+模特图文件路径列表
     reference_images_data_uris: list[str]   # 一次性缓存的 data URI（避免重复 PIL）
     work_items: list[dict[str, Any]]
@@ -215,6 +216,7 @@ class TaskState(TypedDict, total=False):
     # 都会 update phase/nodeX/request 等字段，而目标 node 自己又会 return 这些字段，
     # 所以同 step 多写入是**必然**会发生的，不能依赖"不会撞"。
     # reducer 策略：dict 做字段级 | merge，标量/list 后来者覆盖（符合"更新"语义）。
+    workflow_revision: Annotated[int, REDUCER]
     task_id: Annotated[str, REDUCER]
     phase: Annotated[str, REDUCER]
     request: Annotated[dict[str, Any], REDUCER]

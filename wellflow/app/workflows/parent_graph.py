@@ -48,6 +48,7 @@ Node4 子图内部已合并为 2 节点：prepare_work_items → run_generation�
 from __future__ import annotations
 
 from typing import Any
+from wellflow.app.workflows.decisions import decision_node, request_interrupt
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +185,7 @@ def _report_hash(text: str | None) -> str:
     return f"{h:016x}"
 
 
+@decision_node(1)
 def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     """C1：用户确认商品识别报告。
 
@@ -222,7 +224,7 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
 
     # —— 首次/每次 refine 后进入 C1，都要下发最新版本的 hash，
     #    让前端在 confirm 时原样带回，防止用户确认旧版本报告 ——
-    interrupt_value = interrupt({
+    interrupt_value = request_interrupt(state, {
         "node": "c1",
         "phase": "c1_confirm",
         "hint": c1_hint,
@@ -272,10 +274,13 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
 
     # ---- confirm：版本绑定 + 锁定 ----
     new_node1 = dict(node1_state)
-    new_node3 = dict(state.get("node3", {}))
+    new_node3 = {k: v for k, v in state.get("node3", {}).items()
+                 if k in ("reference_images", "ratio", "image_model")}
 
     # 允许前端传入用户编辑后的 confirmed_report —— 若与 state 不同，需重新计算 hash
     incoming_report = interrupt_value.get("confirmed_report")
+    if incoming_report is not None and (not isinstance(incoming_report, str) or not incoming_report.strip()):
+        return {"phase": "c1_confirm"}
     incoming_hash = interrupt_value.get("report_hash")
 
     # 优先使用 state 里最新的报告做版本绑定（不是用户传来的 confirmed_report）。
@@ -322,10 +327,11 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     if image_model:
         new_node3["image_model"] = image_model
 
-    return {"phase": "c1_confirm", "node1": new_node1, "node3": new_node3,
+    return {"phase": "c1_confirm", "node1": new_node1, "node3": {"__clear__": True, **new_node3},
             "confirmations": {"c1": True}, "_redo_target": None}
 
 
+@decision_node(2)
 def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     """C2：用户明确选定一套商拍方案，或继续微调方案。
 
@@ -342,7 +348,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "c2_select"})
 
-    interrupt_value = interrupt({
+    interrupt_value = request_interrupt(state, {
         "node": "c2",
         "phase": "c2_select",
         "hint": "请从商拍策划方案列表中选定一套。确认后将按前端设置生成差异化生图提示词",
@@ -406,7 +412,8 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     print(f"[c2_select] ✅ selected={new_node2['selected_scheme_indices']} "
           f"per_scheme_count={new_node2['per_scheme_count']}", flush=True)
 
-    new_node3 = dict(state.get("node3", {}))
+    new_node3 = {k: v for k, v in state.get("node3", {}).items()
+                 if k in ("reference_images", "ratio", "image_model")}
     ratio = interrupt_value.get("ratio")
     if ratio:
         new_node3["ratio"] = ratio
@@ -415,15 +422,16 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
         new_node3["image_model"] = image_model
     incoming_refs = interrupt_value.get("reference_images") or {}
     new_node3["reference_images"] = {
-        "mannequin": list(incoming_refs.get("mannequin") or new_node3.get("reference_images", {}).get("mannequin") or []),
-        "scene": list(incoming_refs.get("scene") or []),
-        "outfit": list(incoming_refs.get("outfit") or []),
+        "mannequin": list(incoming_refs.get("mannequin", new_node3.get("reference_images", {}).get("mannequin", []))),
+        "scene": list(incoming_refs.get("scene", new_node3.get("reference_images", {}).get("scene", []))),
+        "outfit": list(incoming_refs.get("outfit", new_node3.get("reference_images", {}).get("outfit", []))),
     }
 
-    return {"phase": "c2_select", "node2": new_node2, "node3": new_node3,
+    return {"phase": "c2_select", "node2": new_node2, "node3": {"__clear__": True, **new_node3},
             "confirmations": {"c2": True}, "_redo_target": None}
 
 
+@decision_node(3)
 def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     """C3：用户确认每套 prompt 的最终内容 + 选规格。
 
@@ -444,7 +452,7 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "c3_confirm"})
 
-    interrupt_value = interrupt({
+    interrupt_value = request_interrupt(state, {
         "node": "c3",
         "phase": "c3_confirm",
         "hint": "请确认每套方案的最终提示词，可编辑后继续生图",
@@ -468,8 +476,9 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c3_confirm] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c3_confirm"}
-        # 仅当 refine_target=node2 时取意图分类器给的方案过滤索引
-        _refine_sel_idx = interrupt_value.get("refine_selected_indices") if refine_target == "node2" else None
+        # node2 refine：方案过滤索引；node3 refine：也透传 selected_indices
+        # （"把第1条提示词加人物居中" → selected_indices=["0"]，refine_node3 会用它限定目标）
+        _refine_sel_idx = interrupt_value.get("refine_selected_indices")
         print(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
               f"refine_selected_indices={_refine_sel_idx}", flush=True)
         from wellflow.app.workflows.state import build_refine_history_update
@@ -486,40 +495,26 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
     # ---- confirm：正常处理 prompt 编辑 + 规格 + 选中过滤 ----
     new_node3 = dict(state.get("node3", {}))
 
+    from wellflow.app.workflows.refine_nodes import _rebuild_prompts_detail
     edited = interrupt_value.get("edited_prompts")
-    if edited and isinstance(edited, list):
-        new_node3["generate_prompts"] = list(edited)
-
-    per_size = interrupt_value.get("per_prompt_size")
-    if per_size and isinstance(per_size, list):
-        new_node3["per_prompt_size"] = list(per_size)
-
-    prompts = new_node3.get("generate_prompts", [])
-    if not new_node3.get("per_prompt_size"):
-        new_node3["per_prompt_size"] = ["3:4"] * len(prompts)
-
-    selected_indices = interrupt_value.get("selected_prompt_indices")
-    if selected_indices and isinstance(selected_indices, list):
-        sel_set = set(int(i) for i in selected_indices)
-        orig_len = len(new_node3.get("generate_prompts", []))
-        sel_sorted = sorted(i for i in sel_set if 0 <= i < orig_len)
-        print(f"[c3_confirm] ☑️ selected_prompt_indices={sel_sorted} (原始 {orig_len} 条)", flush=True)
-
-        if sel_sorted:
-            new_node3["generate_prompts"] = [
-                new_node3["generate_prompts"][i] for i in sel_sorted
-            ]
-            if new_node3.get("prompts_detail"):
-                new_node3["prompts_detail"] = [
-                    new_node3["prompts_detail"][i] for i in sel_sorted
-                ]
-            if new_node3.get("per_prompt_size"):
-                new_node3["per_prompt_size"] = [
-                    new_node3["per_prompt_size"][i] for i in sel_sorted
-                ]
-            print(f"[c3_confirm] ✂️ 过滤后剩 {len(sel_sorted)} 条 prompt → Node4", flush=True)
-        else:
-            print("[c3_confirm] ⚠️ selected_prompt_indices 为空，无 prompt 选中！", flush=True)
+    prompts = edited if edited is not None else new_node3.get("generate_prompts", [])
+    if not isinstance(prompts, list) or not prompts or any(not isinstance(x, str) or not x.strip() for x in prompts):
+        return {"phase": "c3_confirm"}
+    sizes = interrupt_value.get("per_prompt_size", new_node3.get("per_prompt_size") or [])
+    if not isinstance(sizes, list):
+        return {"phase": "c3_confirm"}
+    sizes = [sizes[i] if i < len(sizes) and isinstance(sizes[i], str) and sizes[i] else "3:4"
+             for i in range(len(prompts))]
+    selected = interrupt_value.get("selected_prompt_indices", list(range(len(prompts))))
+    if (not isinstance(selected, list) or not selected
+            or any(type(i) is not int or i < 0 or i >= len(prompts) for i in selected)):
+        return {"phase": "c3_confirm"}
+    selected = sorted(set(selected))
+    details = _rebuild_prompts_detail(new_node3.get("prompts_detail") or [], prompts)
+    new_node3["generate_prompts"] = [prompts[i] for i in selected]
+    new_node3["prompts_detail"] = [details[i] for i in selected]
+    new_node3["per_prompt_size"] = [sizes[i] for i in selected]
+    new_node3["prompt_raw"] = "\n---\n".join(new_node3["generate_prompts"])
 
     ratio = interrupt_value.get("ratio")
     if ratio:
@@ -529,15 +524,16 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         new_node3["image_model"] = image_model
     incoming_refs = interrupt_value.get("reference_images") or {}
     new_node3["reference_images"] = {
-        "mannequin": list(incoming_refs.get("mannequin") or new_node3.get("reference_images", {}).get("mannequin") or []),
-        "scene": list(incoming_refs.get("scene") or new_node3.get("reference_images", {}).get("scene") or []),
-        "outfit": list(incoming_refs.get("outfit") or new_node3.get("reference_images", {}).get("outfit") or []),
+        "mannequin": list(incoming_refs.get("mannequin", new_node3.get("reference_images", {}).get("mannequin", []))),
+        "scene": list(incoming_refs.get("scene", new_node3.get("reference_images", {}).get("scene", []))),
+        "outfit": list(incoming_refs.get("outfit", new_node3.get("reference_images", {}).get("outfit", []))),
     }
 
     return {"phase": "c3_confirm", "node3": new_node3,
             "confirmations": {"c3": True}, "_redo_target": None}
 
 
+@decision_node(4)
 def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
     """C4：用户查看生图结果。
 
@@ -560,7 +556,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "c4_review"})
 
-    interrupt_value = interrupt({
+    interrupt_value = request_interrupt(state, {
         "node": "c4",
         "phase": "c4_review",
         "hint": node4.get("generation_summary", ""),
@@ -591,8 +587,8 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         if not refine_instruction:
             print("[c4_review] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
             return {"phase": "c4_review"}
-        # 仅当 refine_target=node2 时取意图分类器给的方案过滤索引
-        _refine_sel_idx = interrupt_value.get("refine_selected_indices") if refine_target == "node2" else None
+        # 透传意图分类器的 selected_indices —— node2 用作方案过滤；node3 用作 prompt 目标限定
+        _refine_sel_idx = interrupt_value.get("refine_selected_indices")
         print(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
               f"refine_selected_indices={_refine_sel_idx}", flush=True)
         from wellflow.app.workflows.state import build_refine_history_update

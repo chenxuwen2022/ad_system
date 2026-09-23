@@ -154,10 +154,7 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
     node4["reference_images_data_uris"] = all_ref_uris
 
     if not prompts:
-        print("[node4] ⚠️ generate_prompts 为空，无法生成 work_items", flush=True)
-        node4["work_items"] = []
-        node4["reference_images"] = all_ref_uris
-        return {"phase": "node4_prepare", "node4": node4}
+        raise ValueError("缺少已确认的提示词，无法生成图片")
 
     node4["outputs"] = []
     node4["failed_items"] = []
@@ -179,7 +176,10 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
             "status": "pending",
         })
 
+    from wellflow.app.generation_journal import generation_id, prepare_batch
+    node4["generation_id"] = generation_id(state, work_items)
     node4["work_items"] = work_items
+    await asyncio.to_thread(prepare_batch, task_id, node4, state.get("workflow_revision", 0))
     node4["reference_images"] = all_ref_uris  # data URI 列表，供 run_gen 备用
     print(f"[node4] 📥 入队 {len(work_items)} 张（按 prompt_index 顺序）: "
           f"{', '.join(shot_names)}", flush=True)
@@ -206,7 +206,8 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         _eb(task_id, "phase", {"phase": "node4_generation"})
 
-    node4_in = state.get("node4", {}) or {}
+    from wellflow.app.generation_journal import restore_completed, persist_image
+    node4_in = await asyncio.to_thread(restore_completed, task_id, state.get("node4", {}) or {})
     work_items = [dict(it) for it in node4_in.get("work_items", []) or []]
     cached_ref_uris: list[str] = node4_in.get("reference_images_data_uris") or []
 
@@ -297,22 +298,15 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
             shot = item.get("work_item_id", "?")
             if url:
                 n_done += 1
-                outputs.append({
+                output = await asyncio.to_thread(persist_image, task_id, node4_in["generation_id"], {
                     "work_item_id": item["work_item_id"],
                     "prompt_index": item.get("prompt_index", 0),
-                    "prompt": item.get("prompt", ""),
-                    "image_url": url,
-                "image_key": hashlib.sha256(url.encode("utf-8")).hexdigest(),
+                    "prompt": item.get("prompt", ""), "image_url": url,
                 })
+                outputs.append(output)
                 _eb(task_id, "node4_image_done", {
-                    "work_item_id": item["work_item_id"],
-                    "prompt_index": item.get("prompt_index", 0),
-                    "prompt": item.get("prompt", ""),
-                    "image_url": url,
-                "image_key": hashlib.sha256(url.encode("utf-8")).hexdigest(),
-                    "elapsed": round(dt, 1),
-                    "n_done": n_done + retained_count,
-                    "n_total": len(work_items),
+                    **output, "elapsed": round(dt, 1),
+                    "n_done": n_done + retained_count, "n_total": len(work_items),
                 })
             else:
                 n_failed += 1

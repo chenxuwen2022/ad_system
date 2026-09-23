@@ -10,6 +10,8 @@ list_conversations 用 JOIN + 子查询一次拉齐 conversation 列表 + 统计
 
 from __future__ import annotations
 
+from wellflow.app.workflow_status import canonical_phase
+
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -168,7 +170,7 @@ async def list_conversations(
             sku_id=c.sku_id,
             title=c.title,
             current_task_id=c.current_task_id,
-            current_phase=current_phase,
+            current_phase=canonical_phase(current_phase),
             current_task_saved_image_count=current_saved_img_count,
             total_saved_image_count=total_img_map.get(c.conversation_id, 0),
             latest_message_preview=latest_user_map.get(c.conversation_id),
@@ -246,7 +248,7 @@ async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_
         req = t.request_json or {}
         task_out.append(ConversationTaskRef(
             task_id=t.task_id,
-            phase=t.phase,
+            phase=canonical_phase(t.phase),
             description=req.get("description", "")[:80],
             has_interrupt=bool(t.interrupt_json),
             created_at=to_cn_iso(t.created_at),

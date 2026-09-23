@@ -89,6 +89,8 @@ async def init_wellflow_runtime() -> None:
     # 编译 graph（无论 checkpointer 可用与否）
     try:
         from wellflow.app.workflows.parent_graph import build_graph
+        if _checkpointer is None:
+            raise RuntimeError("持久化 checkpoint 不可用，禁止启动不可恢复的工作流")
         _graph = build_graph(checkpointer=_checkpointer)
         if _checkpointer:
             print("✅ [商拍子系统] LangGraph 父图编译完成（带 checkpointer）")

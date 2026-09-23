@@ -6,7 +6,7 @@
 唯一实现：_classify_via_llm()
 唯一兜底：LLM 异常 / JSON 异常 / 非白名单 → chat_outside
 
-模型来源：wellflow.app.llm.model_pool.get_model_pool()
+模型固定：deepseek-v4-flash，通过 get_llm_client() 直接调用，不进入模型池。
 """
 
 from __future__ import annotations
@@ -17,10 +17,6 @@ import re
 from wellflow.app.config import settings
 from typing import Any, Literal
 from wellflow.app.prompt.registry import get_active_prompt
-
-# 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
-# （Node1/2/3 的 refine 纯文本微调也复用同一模型，见 workflows/refine_nodes.py）
-CLASSIFIER_MODEL = "deepseek-v4-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -342,23 +338,15 @@ async def _classify_via_llm(
         "请返回意图分类 JSON。"
     )
 
-    if task_id:
-        from wellflow.app.llm.model_pool import get_model_pool
-        resp, used_model = await get_model_pool(task_id=task_id).chat(
-            system=get_active_prompt("intent_classifier"), user=user_prompt,
-            response_format={"type": "json_object"}, temperature=0.2,
-            reasoning_effort=settings.text_reasoning_effort,
-        )
-    else:
-        # 新任务的第一次分类发生在 task_id 生成前；任务创建后会立即预加载目录。
-        from wellflow.app.llm.factory import get_llm_client
-        client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
-        resp = await client.chat(
-            system=get_active_prompt("intent_classifier"), user=user_prompt,
-            response_format={"type": "json_object"}, temperature=0.2,
-            reasoning_effort=settings.text_reasoning_effort,
-        )
-        used_model = CLASSIFIER_MODEL
+    # 无论是否已有 task_id，意图识别始终使用固定模型，不参与模型池选择或降级。
+    from wellflow.app.llm.factory import get_llm_client
+    client = get_llm_client("text", model_override=settings.classifier_model)
+    resp = await client.chat(
+        system=get_active_prompt("intent_classifier"), user=user_prompt,
+        response_format={"type": "json_object"}, temperature=0.2,
+        reasoning_effort=settings.text_reasoning_effort,
+    )
+    used_model = settings.classifier_model
 
     try:
         data = json.loads(resp.content.strip())

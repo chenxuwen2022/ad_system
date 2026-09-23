@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.workflow_status import canonical_phase
+
 import asyncio
 import json as json_mod
 import time
@@ -75,57 +77,6 @@ def _extract_interrupt_value(chunk: Any) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 
-async def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
-    """处理 graph.astream 的单个 chunk：先推 SSE，再按流顺序写 DB。
-
-    DB 写入用 await asyncio.to_thread 串行化——fire-and-forget 的 run_in_executor
-    不保证执行顺序，曾出现 persist_phase("node1_vlm_done") 晚于
-    persist_interrupt("c1_confirm") 提交、把 task.phase 回退成旧值的竞态。
-    """
-    from wellflow.app.event_bus import publish as _eb
-    print(f"[graph-chunk] task={task_id} type={type(chunk).__name__} chunk={repr(chunk)[:400]}", flush=True)
-
-    interrupt_value = _extract_interrupt_value(chunk)
-    if interrupt_value:
-        print(f"[graph-interrupt] ✅ 命中 interrupt! node={interrupt_value.get('node')}", flush=True)
-        phase = interrupt_value.get("phase") or f"{interrupt_value.get('node')}_confirm"
-        _eb(task_id, "phase", {"phase": phase})
-        _eb(task_id, "interrupt", {**interrupt_value, "_phase": phase})
-        await asyncio.to_thread(persist_interrupt, task_id, interrupt_value, phase)
-        return
-
-    if isinstance(chunk, tuple) and chunk[0] == "updates":
-        data = chunk[1]
-        if not isinstance(data, dict):
-            return
-        for node_name, node_out in data.items():
-            if node_name == "__interrupt__":
-                continue
-            if not isinstance(node_out, dict):
-                continue
-            phase = node_out.get("phase")
-            if not phase:
-                continue
-            _eb(task_id, "phase", {"phase": phase})
-            if phase == "done":
-                n4_raw = node_out.get("node4") or {}
-                n3_raw = node_out.get("node3") or {}
-                if n4_raw.get("reference_images"):
-                    from wellflow.app.utils.image_store import paths_to_data_uris
-                    n4_raw = {**n4_raw, "reference_images": paths_to_data_uris(n4_raw["reference_images"])}
-                _eb(task_id, "done", {
-                    "phase": "done",
-                    "node1": node_out.get("node1"),
-                    "node2": node_out.get("node2"),
-                    "node3": n3_raw,
-                    "node4": n4_raw,
-                    "cost": node_out.get("cost", {}),
-                    "progress": node_out.get("progress", {}),
-                })
-                # 确认结束：生图成品落盘 + 写 task_image 表（按 task_id 可查）
-                await asyncio.to_thread(persist_outputs, task_id, n4_raw)
-            await asyncio.to_thread(persist_phase, task_id, phase, node_name)
-
 
 def _storage_uri_url(storage_uri: str) -> str:
     """相对路径 → 可被前端直接访问的 URL（静态挂载 /uploads 提供）。"""
@@ -147,38 +98,9 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 
 async def _start_graph(task_id: str, graph, config, initial_state=None, resume_values=None):
-    """后台启动 LangGraph，异常转成 SSE error 事件。"""
-    from wellflow.app.event_bus import publish as _eb, cleanup as _eb_cleanup, mark_running, mark_done
-    import traceback as _tb
-    from wellflow.app.llm.model_pool import prepare_task_models
-    mark_running(task_id)
-    try:
-        await prepare_task_models(task_id)
-        if resume_values is not None:
-            stream_iter = graph.astream(
-                Command(resume=resume_values), config=config,
-                stream_mode=["updates"],
-            )
-        else:
-            stream_iter = graph.astream(
-                initial_state, config=config,
-                stream_mode=["updates"],
-            )
-        async for chunk in stream_iter:
-            await _handle_graph_chunk(task_id, chunk)
-    except Exception as exc:
-        print(f"[graph] ❌ task_id={task_id} error={exc}", flush=True)
-        _tb.print_exc()
-        try:
-            _eb(task_id, "error", {"phase": "failed", "message": str(exc)})
-            asyncio.get_event_loop().run_in_executor(
-                None, persist_error, task_id, "GRAPH_RUNTIME_ERROR", str(exc), "parent_graph"
-            )
-        except Exception:
-            pass
-    finally:
-        mark_done(task_id)
-        _eb_cleanup(task_id)
+    from wellflow.app.workflow_execution import launch_graph
+    return await launch_graph(task_id, graph, config, initial_state=initial_state,
+                              command=Command(resume=resume_values) if resume_values is not None else None)
 
 
 # ===========================================================================
@@ -279,7 +201,7 @@ async def create_task(
             request_json, brand_cfg, graph, config, initial_state,
         ))
     except Exception as exc:
-        print(f"[create_task] ❌ graph 不可用: {exc}", flush=True)
+        raise HTTPException(503, "工作流暂不可用，请稍后重试") from exc
 
     # --- Step 4: 返回 StreamingResponse ---
     # 第一个 event 是 task_created（含 task_id），然后从 queue 读事件推给前端
@@ -391,7 +313,11 @@ async def _create_task_in_background(
         return  # 不启动 graph
 
     # DB 就绪，启动 graph
-    await _start_graph(task_id, graph, config, initial_state=initial_state)
+    try:
+        await _start_graph(task_id, graph, config, initial_state=initial_state)
+    except Exception as exc:
+        from wellflow.app.event_bus import publish
+        publish(task_id, "error", {"phase": "needs_retry", "message": str(exc)})
 
 
 def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
@@ -449,6 +375,7 @@ async def resume_task(
     refine_instruction: str | None = Form(default=None),
     refine_target: str | None = Form(default=None),
     resume_json: str | None = Form(default=None),
+    revision: str | None = Form(default=None),
     # 三类参考图（一步到位：直接在 resume 请求里把图传过来）
     mannequin_files: list[UploadFile] = File(default_factory=list),
     scene_files: list[UploadFile] = File(default_factory=list),
@@ -474,39 +401,16 @@ async def resume_task(
     if _is_running(task_id):
         raise HTTPException(409, "任务正在执行中，请等待完成后再操作")
 
-    interrupt = task.interrupt_json or {}
-    current_node = interrupt.get("node")
-
-    # ------------------------------------------------------------------
-    # phase vs interrupt_json 一致性校验（防并发损坏）
-    #   偶发场景：并发 race 导致 interrupt_json.node 和 task.phase 不对。
-    #   这里用 phase 作为权威来源反推当前 node（phase 是最常写、最安全的字段）。
-    #   如果两者不一致，以 phase 为准并自动修复 interrupt_json。
-    # ------------------------------------------------------------------
-    _PHASE_TO_NODE: dict[str, str] = {
-        "c1_confirm": "c1",
-        "c2_select":  "c2",
-        "c2_confirm": "c2",
-        "c3_confirm": "c3",
-        "c3":         "c3",
-        "c4_review":  "c4",
-    }
-    # backward / redo 后 phase 可能残留旧值，这时候 interrupt_json 更可信
-    expected_node_from_phase = _PHASE_TO_NODE.get(task.phase)
-    if expected_node_from_phase and current_node != expected_node_from_phase:
-        print(f"[resume] ⚠️ phase({task.phase}) 推导出 node={expected_node_from_phase}，"
-              f"但 interrupt_json.node={current_node}，以 phase 为准自动修复", flush=True)
-        repo.save_interrupt(task_id, {
-            "node": expected_node_from_phase,
-            "phase": task.phase,
-        })
-        db.commit()
-        current_node = expected_node_from_phase
-
-    if not current_node:
-        raise HTTPException(409, "任务当前没有暂停点（interrupt_json 为空）")
+    graph_state, snapshot = await _aget_graph_state(task_id)
+    if graph_state is None:
+        raise HTTPException(503, "无法读取工作流状态，请稍后重试")
+    from wellflow.app.workflow_status import checkpoint_view
+    _, interrupt = checkpoint_view(snapshot)
+    if not interrupt:
+        raise HTTPException(409, "任务没有暂停点，请恢复执行或刷新任务")
+    current_node = interrupt["node"]
     if current_node != node:
-        raise HTTPException(409, f"当前暂停在 node={current_node}，不能 resume node={node}")
+        raise HTTPException(409, f"当前暂停在 {current_node}，请刷新后操作")
 
     # ------------------------------------------------------------------
     # 🛡️ C4 入库守卫：confirm 是不可逆的终态操作，必须显式声明意图。
@@ -549,7 +453,6 @@ async def resume_task(
 
     if not _skip_validate:
         from wellflow.app.graph_context import validate_current_node_products
-        graph_state, _ = await _aget_graph_state(task_id)
         ok, missing = validate_current_node_products(current_node, graph_state)
         if not ok:
             print(
@@ -656,7 +559,7 @@ async def resume_task(
                         print(f"[resume] C2 收到 selected_scheme_indices={indices}", flush=True)
                     except ValueError:
                         print(f"[resume] ⚠️ selected_scheme_indices 解析失败: {selected_scheme_indices}", flush=True)
-                _psc = request.form.get("per_scheme_count")
+                _psc = (await request.form()).get("per_scheme_count")
                 if _psc:
                     try:
                         counts = [int(x) for x in _psc.split(",") if x.strip()]
@@ -685,6 +588,12 @@ async def resume_task(
             elif node == "c4":
                 resume_values["decision"] = "confirm"
 
+    supplied_revision = resume_values.get("revision") or revision
+    if supplied_revision and supplied_revision != interrupt.get("revision"):
+        raise HTTPException(409, "内容已更新，请刷新后重新确认")
+    resume_values["revision"] = interrupt.get("revision")
+    resume_values["node"] = current_node
+
     if node == "c4" and resume_values.get("decision", "confirm") == "confirm":
         raise HTTPException(409, "请在图片结果中勾选图片，并通过 SKU 入库按钮确认")
 
@@ -704,44 +613,9 @@ async def resume_task(
                 or any(type(count) is not int or count < 1 for count in counts)):
             raise HTTPException(400, "请由前端提交所选方案的提示词数量 per_scheme_count。")
 
-    # fire-and-forget DB: 清 interrupt + 写事件
-    def _sync_prepare():
-        try:
-            with session_scope() as db:
-                repo2 = TaskRepo(db)
-                repo2.save_interrupt(task_id, None)
-                # 事件 payload 里写 ref_paths 的统计
-                _total_ref = sum(len(v) for v in ref_paths.values())
-                repo2.add_event(
-                    task_id, "task_resumed",
-                    payload_json={
-                        "node": node,
-                        "ref_image_count": _total_ref,
-                        "action": action,
-                        "redo_target": redo_target,
-                        "refine_target": refine_target,
-                    }
-                )
-                # resume_json 中是预先上传的路径，也必须持久化供刷新恢复。
-                repo2.save_reference_images(
-                    task_id, resume_values.get("reference_images") or ref_paths,
-                )
-        except Exception as e:
-            print(f"[resume] ⚠️ DB prepare 失败: {e}", flush=True)
-
-    # 先写入参考图，再启动 graph；刷新请求才能稳定读到刚提交的图片。
-    await asyncio.to_thread(_sync_prepare)
-
-    # 注册 event_bus queue + 启动 graph
-    from wellflow.app.event_bus import drain_and_subscribe
-    q = await drain_and_subscribe(task_id)
-
-    try:
-        graph = _get_graph()
-        config = _langgraph_config(task_id)
-        asyncio.create_task(_start_graph(task_id, graph, config, resume_values=resume_values))
-    except Exception as exc:
-        raise HTTPException(503, f"graph 不可用: {exc}")
+    from wellflow.app.workflow_execution import launch_graph
+    q = await launch_graph(task_id, _get_graph(), _langgraph_config(task_id),
+                           command=Command(resume=resume_values))
 
     async def event_generator():
         # 首 event：resume 已接收
@@ -846,87 +720,24 @@ async def restart_task(
     if not task:
         raise HTTPException(404, f"task {task_id} 不存在")
 
-    # 商品图前置检查：graph 跑 node1 必须读这些文件，文件缺失直接让前端重发
-    images_ok, images_err = await _check_product_images_ready(task)
-    if not images_ok:
-        print(f"[restart] 🚫 task={task_id} 商品图不可用 → 拒绝重启: {images_err}", flush=True)
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "PRODUCT_IMAGES_MISSING",
-                "message": "商品图片不可用，请重新上传商品图片后发起任务（原文件已丢失）",
-                "missing": images_err,
-            },
-        )
-
     if task.phase == "archive_pending":
-        raise HTTPException(409, "请重试完成图片入库，不能重启任务")
-    # 终态不能重启
-    if task.phase in (TaskPhase.DONE.value, TaskPhase.FAILED.value):
-        raise HTTPException(409, f"任务已 {task.phase}，无法重启")
-
-    # graph 真在跑就拦（防并发）
-    if _is_running(task_id):
-        raise HTTPException(409, "任务正在执行中，不需要重启")
-
-    # 读 checkpoint 看 graph 当前状态（graph_state 未用到，仅 snapshot 用于 rt_state 判断）
-    _graph_state, snapshot = await _aget_graph_state(task_id)
+        raise HTTPException(409, "请重试完成图片入库")
+    graph_state, snapshot = await _aget_graph_state(task_id)
+    if graph_state is None:
+        raise HTTPException(503, "无法读取工作流状态，请稍后重试")
     rt_state, rt_age = check_graph_runtime_state(snapshot)
-
-    print(f"[restart] task={task_id} phase={task.phase} rt_state={rt_state} age={rt_age}",
-          flush=True)
-
+    if rt_state == "none":
+        raise HTTPException(409, "任务 checkpoint 缺失，请重新创建任务")
     if rt_state == "done":
-        # checkpoint 说 graph 已到 END，但 DB phase 可能没同步
-        # （典型根因：persist_phase 之前静默吞异常导致 DB 写入丢失）
-        if task.phase not in (TaskPhase.DONE.value, TaskPhase.FAILED.value):
-            # 🔴 graph→DB 状态脱节！主动 reconcile，让 DB 追上 checkpoint
-            print(
-                f"[restart] 🛠️ task={task_id} 状态脱节 reconcile: "
-                f"checkpoint=done vs db.phase={task.phase}",
-                flush=True,
-            )
-            with session_scope() as db2:
-                repo2 = TaskRepo(db2)
-                repo2.update_phase(task_id, TaskPhase.DONE.value)
-                repo2.save_interrupt(task_id, None)
-            # 返回 SSE 流：先发 reconciled 让前端知道发生了状态修复，
-            # 再发标准的 phase=done 终态事件（前端的 SSE 监听靠 done/error 事件自然关闭）
-            async def _reconcile_event_generator():
-                yield _sse("reconciled", {
-                    "task_id": task_id,
-                    "phase": TaskPhase.DONE.value,
-                    "reconciled": True,
-                    "message": "graph 已完成但 DB 状态未同步，已自动修正为 done。请刷新页面查看结果。",
-                })
-                # 用 phase=done 结束流 —— 让前端的现有终态处理逻辑自然 kick in，
-                # 避免前端因为没收到 done/error 而继续监听直到心跳超时
-                yield _sse("phase", {"phase": "done"})
-
-            return StreamingResponse(_reconcile_event_generator(), media_type="text/event-stream")
-        # DB 也已经是终态 → 真的不需要重启
-        raise HTTPException(409, "任务已完成，无需重启")
-
-    if rt_state == "paused":
-        # graph 正停在 HITL，应该走 resume 而不是 restart
-        raise HTTPException(409, "任务等待人工确认，请使用 resume 接口")
-
-    # running / stale / none → 放行，让 graph.astream(None) 续跑
-    # running 且年龄很小时说明 graph 真在跑，但 event_bus 里没标记 running
-    # （比如后端刚重启），这种情况也放行——astream(None) 会从 checkpoint 继续
-
-    # 注册 event_bus queue + 启动 graph
-    from wellflow.app.event_bus import drain_and_subscribe
-    q = await drain_and_subscribe(task_id)
-
-    try:
-        graph = _get_graph()
-        config = _langgraph_config(task_id)
-        # 关键：initial_state=None → 走 astream(None, config)
-        # LangGraph 会直接从 checkpoint snapshot 续跑下一个节点
-        asyncio.create_task(_start_graph(task_id, graph, config, initial_state=None))
-    except Exception as exc:
-        raise HTTPException(503, f"graph 不可用: {exc}")
+        from wellflow.app.graph_persist import reconcile_checkpoint
+        await asyncio.to_thread(reconcile_checkpoint, task_id, snapshot)
+        async def completed():
+            yield _sse("done", {"task_id": task_id, "phase": "done"})
+        return StreamingResponse(completed(), media_type="text/event-stream")
+    if not snapshot.next:
+        raise HTTPException(409, "没有可恢复的执行节点，请重新创建任务")
+    from wellflow.app.workflow_execution import launch_graph
+    q = await launch_graph(task_id, _get_graph(), _langgraph_config(task_id))
 
     async def event_generator():
         yield _sse("restart_ack", {
@@ -986,7 +797,7 @@ def list_tasks(
         req = t.request_json or {}
         list_items.append(TaskListItem(
             task_id=t.task_id,
-            phase=t.phase,
+            phase=canonical_phase(t.phase),
             platform=req.get("platform", ""),
             marketing_goal=req.get("marketing_goal", ""),
             description=req.get("description", "")[:80],
@@ -1034,109 +845,32 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
     node3 = graph_state.get("node3") if graph_state else None
     node4 = graph_state.get("node4") if graph_state else None
 
-    # ── redo 等待态 early-exit ──────────────────────────────────────────────
-    # checkpoint phase='waiting_selection' + interrupt.node='redo_selection'
-    # 是 LangGraph aupdate_state 写的 redo 等待态。
-    # resolve_current_node 只认 c1/c2/c3/c4 interrupt，会把 redo_selection 过滤掉，
-    # 还会误把 snapshot.next 里的 cX interrupt 当成当前节点。
-    # 这里在它之前直接用 checkpoint 里的值，跳过整个合成流程。
-    if graph_state and graph_state.get("phase") == "waiting_selection":
-        ckpt_interrupt = graph_state.get("interrupt")
-        if isinstance(ckpt_interrupt, dict) and ckpt_interrupt.get("node") == "redo_selection":
-            return ok(TaskInfoResponse(
-                task_id=task.task_id,
-                phase="waiting_selection",
-                request=task.request_json or {},
-                selected_plan_ids=task.selected_plan_ids_json or [],
-                interrupt=ckpt_interrupt,
-                cost=graph_state.get("cost", {}) or {},
-                progress=graph_state.get("progress", {}) or {},
-                node1=node1,
-                node2=node2,
-                node3=node3,
-                reference_images={},
-                output_images=[],
-                created_at=to_cn_iso(task.created_at),
-                updated_at=to_cn_iso(task.updated_at),
-            ))
-
-    # ── Step A: 从报告正文重建四块，兼容历史任务及旧解析器遗漏的多行字段 ───
-    # 放在最前面——后面 graph_current_node 推出来的 c1 需要用它合成 interrupt
-    if isinstance(node1, dict):
+    if graph_state is None:
+        raise HTTPException(503, "无法读取工作流状态，请稍后重试")
+    if isinstance(node1, dict) and node1.get("product_insight") and not node1.get("report_sections"):
         from wellflow.app.prompt.report_sections import build_report_sections
-        insight = node1.get("product_insight", "") or ""
-        if insight:
-            sections = build_report_sections(insight)
-            node1 = {**node1, "report_sections": sections}
-
-    # graph_context.resolve_current_node 重新从 checkpoint snapshot 推 current_node
-    # —— DB 的 interrupt_json 可能被 _clear_interrupt 清掉（graph 每次跑前都会清旧 interrupt），
-    # snapshot.next 才是唯一真相源。把推出来的 node 塞进 response.interrupt.node，
-    # 前端 restoreConversation 靠这个判断 graph 停在哪。
-    graph_current_node: str | None = None
-    try:
-        from wellflow.app.graph_context import resolve_current_node
-        ctx = resolve_current_node(
-            snapshot=snapshot,
-            state=graph_state,
-            db_interrupt_json=task.interrupt_json,
-            db_phase=task.phase,
-            verbose=False,
-        )
-        graph_current_node = ctx.current_node
-        print(f"[get_task] task={task_id} resolved graph_current_node={graph_current_node} "
-              f"confidence={ctx.confidence}", flush=True)
-    except Exception as exc:
-        print(f"[get_task] resolve_current_node 失败: {exc}", flush=True)
-
-    # 合成 response.interrupt：
-    #   - 优先用 DB 里的 interrupt_json（graph 最近停下来时写的，payload 完整）
-    #   - DB 里没有就用 graph_current_node 合成一个轻量 interrupt（产物从 graph_state 里拿）
-    interrupt_json = task.interrupt_json if isinstance(task.interrupt_json, dict) else None
-    if interrupt_json is None and graph_current_node:
-        node_payload_map = {
-            "c1": {
-                "node": "c1",
-                "hint": "确认商品分析报告后继续",
-                "report_sections": (node1 or {}).get("report_sections"),
-                "product_insight": (node1 or {}).get("product_insight"),
-                "thinking_text": (node1 or {}).get("thinking_text"),
-            },
-            "c2": {
-                "node": "c2",
-                "hint": "请选择商拍方案",
-                "schemes": (node2 or {}).get("schemes"),
-                "selected_scheme_indices": (node2 or {}).get("selected_scheme_indices"),
-                "scheme_raw": (node2 or {}).get("scheme_raw"),
-                "thinking_text": (node2 or {}).get("thinking_text"),
-            },
-            "c3": {
-                "node": "c3",
-                "hint": "请确认生图提示词",
-                "generate_prompts": (node3 or {}).get("generate_prompts"),
-                "prompts_detail": (node3 or {}).get("prompts_detail"),
-                "thinking_text": (node3 or {}).get("thinking_text"),
-            },
-            "c4": {
-                "node": "c4",
-                "hint": "",
-                "outputs": (node4 or {}).get("outputs"),
-                "failed_items": (node4 or {}).get("failed_items"),
-                "thinking_text": (node4 or {}).get("thinking_text"),
-            },
-        }
-        interrupt_json = node_payload_map.get(graph_current_node)
-        print(f"[get_task] DB interrupt_json 丢失，从 graph_state 合成 → node={graph_current_node}", flush=True)
-    elif interrupt_json is not None and graph_current_node:
-        # DB 里的 interrupt_json 有值但 graph_current_node 也推出来了——如果两者 node 不一致
-        # （说明 DB 陈旧），就用 graph_current_node 覆盖 interrupt_json.node，
-        # payload 保持 DB 的（更完整）。
-        if interrupt_json.get("node") != graph_current_node:
-            interrupt_json = {**interrupt_json, "node": graph_current_node}
-            print(f"[get_task] DB interrupt_json.node={task.interrupt_json.get('node')} "
-                  f"陈旧，覆盖为 graph_current_node={graph_current_node}", flush=True)
-    if interrupt_json is not None and interrupt_json.get("node") == "c1" and isinstance(node1, dict):
-        interrupt_json = {**interrupt_json, "report_sections": node1.get("report_sections")}
+        node1 = {**node1, "report_sections": build_report_sections(node1["product_insight"])}
+    from wellflow.app.workflow_status import checkpoint_view
+    from wellflow.app.graph_context import check_graph_runtime_state
+    from wellflow.app.event_bus import is_running
+    phase, interrupt_json = checkpoint_view(snapshot)
+    recovery_error = ("任务 checkpoint 缺失，无法恢复，请创建新任务" if phase == "missing" else
+                      "没有可恢复的执行节点，请创建新任务" if phase == "needs_retry" else None)
+    runtime_status, _ = check_graph_runtime_state(snapshot)
+    can_restart = bool(snapshot and snapshot.next and not interrupt_json and not is_running(task_id))
+    if phase == "missing":
+        phase, runtime_status, can_restart = "needs_retry", "missing", False
+    if is_running(task_id):
+        phase, interrupt_json, runtime_status, can_restart = "processing", None, "running", False
+    if task.phase == "done":
+        phase, interrupt_json, runtime_status, can_restart = "done", None, "done", False
+    if task.phase == "archive_pending":
+        phase, can_restart = "archive_pending", False
+    # A read never overwrites a newer execution's DB projection. Mutations repair
+    # it under the execution lease before consuming a command.
+    if graph_state:
+        from wellflow.app.generation_journal import restore_completed
+        node4 = await asyncio.to_thread(restore_completed, task_id, node4, graph_state.get("workflow_revision", 0))
 
     # 从 task_image 表读出参考图（按 type 分组）+ 生图成品
     reference_images: dict[str, list[dict[str, Any]]] = {"mannequin": [], "scene": [], "outfit": []}
@@ -1158,41 +892,23 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
             item["prompt_index"] = img.prompt_index
             output_images.append(item)
 
-    # 兼容修复前已通过 resume_json 提交、但尚未写入 task_image 的任务。
-    saved_refs = {
-        (kind, item["storage_uri"])
-        for kind, items in reference_images.items()
-        for item in items
+    # Current selection is checkpoint-owned; task_image is historical only.
+    reference_images = {
+        kind: [{"storage_uri": uri, "url": _storage_uri_url(uri)}
+               for uri in ((node3 or {}).get("reference_images") or {}).get(kind, [])]
+        for kind in ("mannequin", "scene", "outfit")
     }
-    checkpoint_refs = (node3 or {}).get("reference_images") or {}
-    for kind in reference_images:
-        for uri in checkpoint_refs.get(kind) or []:
-            if not isinstance(uri, str) or not uri or (kind, uri) in saved_refs:
-                continue
-            saved_refs.add((kind, uri))
-            reference_images[kind].append({"storage_uri": uri, "url": _storage_uri_url(uri)})
-
-    # 🔍 thinking_text 诊断日志：三处来源的长度全打出来，定位"刷新后 thinking 丢失"根因
-    _db_interrupt_think = (task.interrupt_json or {}).get("thinking_text") if isinstance(task.interrupt_json, dict) else None
-    _final_interrupt_think = interrupt_json.get("thinking_text") if isinstance(interrupt_json, dict) else None
-    print(
-        f"[get_task] 🩺 thinking_text lengths | "
-        f"ckpt_node1={len((node1 or {}).get('thinking_text') or '')}, "
-        f"ckpt_node2={len((node2 or {}).get('thinking_text') or '')}, "
-        f"ckpt_node3={len((node3 or {}).get('thinking_text') or '')}, "
-        f"ckpt_node4={len((node4 or {}).get('thinking_text') or '')}, "
-        f"db_interrupt={len(_db_interrupt_think or '')}, "
-        f"final_interrupt={len(_final_interrupt_think or '')}",
-        flush=True,
-    )
 
     from wellflow.app.services.sku_archive import with_image_keys
     if interrupt_json:
         interrupt_json = with_image_keys(interrupt_json)
     return ok(TaskInfoResponse(
         task_id=task.task_id,
-        phase=task.phase,
-        request=task.request_json or {},
+        phase=phase,
+        runtime_status=runtime_status,
+        can_restart=can_restart,
+        recovery_error=recovery_error,
+        request=graph_state.get("request") or task.request_json or {},
         selected_plan_ids=task.selected_plan_ids_json or [],
         interrupt=interrupt_json,
         cost=graph_state.get("cost", {}) if graph_state else {},
@@ -1200,6 +916,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         node1=node1,
         node2=node2,
         node3=node3,
+        node4=node4,
         reference_images=reference_images,
         output_images=output_images,
         created_at=to_cn_iso(task.created_at),

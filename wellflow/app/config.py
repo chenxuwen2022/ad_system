@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Node4 生图渠道单独配 node4_image_channel_id（语义不同，不要合并）
     llm_channel_id: int = 4
 
+    # 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
+    classifier_model: str = "deepseek-v4-flash"
+
     # 模型池熔断参数（模型列表本身由 new-api /models?channel_id=llm_channel_id 动态获取）
     model_pool_fail_threshold: int = 2              # 连续 2 次失败熔断
     model_pool_fail_window: float = 10.0            # 失败统计窗口（秒）

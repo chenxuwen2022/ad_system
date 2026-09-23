@@ -168,6 +168,8 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     full_report = "".join(full_report_parts)
     full_thinking = "".join(progress_parts)
     report_body, next_actions = _split_next_actions(full_report)
+    if not report_body.strip():
+        raise RuntimeError("商品分析未返回报告，请重试当前节点")
 
     # 归一化为稳定 key 的四块结构（前端"重点洞察"面板只认这个，不认 prompt 字段名）
     from wellflow.app.prompt.report_sections import build_report_sections

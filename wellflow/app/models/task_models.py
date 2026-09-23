@@ -21,6 +21,11 @@ class TaskPhase(str, Enum):
     DONE = "done"
     FAILED = "failed"
     NEEDS_RETRY = "needs_retry"
+    C2_SELECT = "c2_select"
+    C3_CONFIRM = "c3_confirm"
+    C4_REVIEW = "c4_review"
+    PROCESSING = "processing"
+    ARCHIVE_PENDING = "archive_pending"
 
 
 class Task(Base):
