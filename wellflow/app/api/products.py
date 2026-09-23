@@ -420,12 +420,12 @@ async def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(
         if body.model_fields_set - {"archive_generated_images"}:
             raise HTTPException(422, "图片入库和商品资料编辑请分开提交")
         from wellflow.app.services.sku_archive import archive_generated_images
-        await archive_generated_images(sku_id, body.archive_generated_images)
+        result = await archive_generated_images(sku_id, body.archive_generated_images)
         db.expire_all()
         sku = SkuRepo(db).get(sku_id)
         if sku is None:
             raise HTTPException(404, "商品不存在")
-        return ok(_sku_to_detail(sku, db))
+        return ok(_sku_to_detail(sku, db), message=result["message"])
     repo = SkuRepo(db)
     try:
         sku = repo.update(sku_id, **body.model_dump(exclude_none=True, exclude={"archive_generated_images"}))
@@ -450,6 +450,105 @@ def delete_sku(sku_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "SKU 不存在")
     db.commit()
     return ok({"deleted": True, "sku_id": sku_id})
+
+
+@router.delete(
+    "/skus/{sku_id}/images/{image_id}",
+    response_model=StandardResponse[dict],
+    summary="解绑 SKU 图片（只删 ProductImage 行，不动磁盘文件）",
+)
+def detach_sku_image(sku_id: int, image_id: int, db: Session = Depends(get_db)):
+    from wellflow.app.models.asset_models import ProductImage
+    from wellflow.app.models.task_models import Task, TaskEvent, TaskImage
+    from wellflow.app.repositories.product_repo import SkuRepo
+    import hashlib
+
+    sku = SkuRepo(db).get(sku_id)
+    if sku is None:
+        raise HTTPException(404, "SKU 不存在")
+
+    image = db.get(ProductImage, image_id)
+    if image is None:
+        raise HTTPException(404, "图片不存在")
+    if image.sku_id != sku_id:
+        raise HTTPException(409, "图片不属于当前 SKU")
+
+    removed_uri = image.storage_uri
+    source_task_id = image.source_task_id
+
+    # 1. 清 TaskImage 关联记录（如果是 AI 生图入库的 ad 图）
+    if source_task_id and removed_uri:
+        task_image_id = hashlib.sha256(
+            f"{source_task_id}:{removed_uri}".encode()
+        ).hexdigest()
+        db.query(TaskImage).where(TaskImage.image_id == task_image_id).delete(
+            synchronize_session=False
+        )
+
+    # 2. 同步维护 sku_images_archived receipt + workflow_done 事件 + task.phase。
+    #    保持历史回执与解绑后的关联状态一致。
+    if source_task_id and removed_uri:
+        receipt = db.scalar(
+            db.query(TaskEvent)
+            .where(
+                TaskEvent.task_id == source_task_id,
+                TaskEvent.event_type == "sku_images_archived",
+            )
+            .order_by(TaskEvent.event_id.desc())
+            .with_for_update()
+        )
+        if receipt:
+            payload = dict(receipt.payload_json or {})
+            # 在 payload["images"] 里找到这条图的 shot_id（= image_key），
+            # 然后从 payload["images"] 和 payload["selection"] 里一起移掉。
+            removed_shot_id = None
+            new_images = []
+            for img in payload.get("images", []):
+                if img.get("storage_uri") == removed_uri:
+                    removed_shot_id = img.get("shot_id")
+                else:
+                    new_images.append(img)
+            new_selection = []
+            for sel in payload.get("selection", []):
+                # sel 是 [task_id, image_key]
+                if (
+                    removed_shot_id is not None
+                    and sel[0] == source_task_id
+                    and sel[1] == removed_shot_id
+                ):
+                    continue
+                new_selection.append(list(sel))
+
+            if new_selection:
+                #  receipt 还有剩余条目 → 更新 payload
+                payload["selection"] = new_selection
+                payload["images"] = new_images
+                receipt.payload_json = payload
+            else:
+                # receipt 被清空 → 用户把该 task 入库的 ad 图全解绑了，
+                # 整条 receipt + workflow_done 都删掉，让 task 回到 c4_review 可重新入库。
+                db.delete(receipt)
+                wd = db.scalar(
+                    db.query(TaskEvent)
+                    .where(
+                        TaskEvent.task_id == source_task_id,
+                        TaskEvent.event_type == "workflow_done",
+                    )
+                    .order_by(TaskEvent.event_id.desc())
+                )
+                if wd:
+                    db.delete(wd)
+                task = db.scalar(
+                    db.query(Task)
+                    .where(Task.task_id == source_task_id)
+                    .with_for_update()
+                )
+                if task is not None:
+                    task.phase = "c4_review"
+
+    db.delete(image)
+    db.commit()
+    return ok({"deleted": True, "image_id": image_id})
 
 
 # ============================================================================

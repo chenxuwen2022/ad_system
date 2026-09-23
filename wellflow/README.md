@@ -244,7 +244,11 @@ SKU 行锁和已保存路径防止并发重复入库。
 
 图片和 `sku_images_archived` 回执先提交，随后完成 C4 checkpoint，再原子提交任务
 完成状态、选中图的 TaskImage 和 workflow_done。中断时 phase 为 `archive_pending`；
-会话详情的 `pending_archive` 返回原选择，客户端使用原请求重试，不能重做或改选。
+会话详情的 `pending_archive` 返回已保存选择，重试可以增减或更换选择。
+每次按 SKU 当前关联去重：未关联的补充关联，已关联的跳过；已完成任务也支持补充入库。
+成功响应保留 SKU 详情，`message` 返回“入库完成：新增关联 N 张，已关联跳过 M 张”。
+完成入库后同时持久化 `sku_archive_result` 事件，payload 保存同一 message 和本次新增/跳过数量；
+前端即时追加结果消息，刷新后从对话 timeline 恢复，失败的入库不记录成功消息。
 旧 C4 resume/chat 的直接确认改为引导用户勾选后入库。普通 SKU 基本信息 PUT 不受影响。
 
 回归测试（不连接实际数据库）：在仓库根目录运行 `python3 -m unittest discover -s tests -v`。
