@@ -304,10 +304,12 @@ def _save_output(session_id: str, name: str, b64: str) -> str:
 def _read_original_image(original_uri: str) -> bytes:
     """读取原图字节(http 直链 / 本地 storage_uri),>15MB 拒绝。"""
     if original_uri.startswith(("http://", "https://")):
-        import urllib.request as _ur
+        import httpx
         try:
-            with _ur.urlopen(original_uri, timeout=20) as resp:
-                raw = resp.read()
+            with httpx.Client(trust_env=False, follow_redirects=True) as client:
+                resp = client.get(original_uri, timeout=20)
+                resp.raise_for_status()
+                raw = resp.content
         except Exception:
             raise HTTPException(400, "原图链接无法打开,请先走统一上传")
     else:
@@ -550,10 +552,12 @@ async def _call_vlm_recognize(raw: bytes):
     raise RuntimeError(f"VLM 未返回有效单品清单: {content[:200]}")
 def _download_image(url: str, model: str) -> str:
     """下载网关返回的生成图 url → b64(校验图片魔数,防拿到错误页)。"""
-    import urllib.request as _ur
+    import httpx
     try:
-        with _ur.urlopen(url, timeout=60) as resp:
-            data = resp.read()
+        with httpx.Client(trust_env=False, follow_redirects=True) as client:
+            resp = client.get(url, timeout=60)
+            resp.raise_for_status()
+            data = resp.content
     except Exception as e:
         raise RuntimeError(f"{model}: 下载生成图失败: {str(e)[:100]}")
     if len(data) < 64 or data[:8] not in (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff"):

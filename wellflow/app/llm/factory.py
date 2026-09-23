@@ -60,5 +60,4 @@ def get_llm_client(
         base_url=settings.newapi_base_url,
         api_key=settings.newapi_api_key,
         timeout=timeout,
-        proxy_url=None,  # 网关直连，不走本机代理
     )

@@ -64,7 +64,6 @@ class Settings(BaseSettings):
     image_gen_quality: str = "medium"              # high | medium | low —— 生图质量/速度杠杆
     image_gen_input_fidelity: str = "low"          # high | low —— edit 模式下对参考图的保真强度
     image_gen_detail: str = "low"                  # high | low | auto —— input_image block 的 detail
-    image_gen_proxy_url: str | None = None         # /v1/responses 是否走代理，None=直连（跳过 127.0.0.1:7890）
     image_gpt_edit_endpoint: str = "edits"         # edits（/v1/images/edits multipart）| responses（/v1/responses + image_generation tool）
     image_edit_quality: str = "high"               # /v1/images/edits multipart 生图质量（gpt-image 系列）
 
@@ -122,13 +121,6 @@ class Settings(BaseSettings):
     def newapi_admin_base_url(self) -> str:
         """管理接口与 /v1 模型接口位于同一 New API 服务。"""
         return self.newapi_base_url.rstrip("/").removesuffix("/v1")
-
-    @field_validator("image_gen_proxy_url", mode="before")
-    @classmethod
-    def _empty_str_to_none(cls, v):
-        if isinstance(v, str) and v.strip() == "":
-            return None
-        return v
 
     @field_validator("upload_dir", mode="before")
     @classmethod

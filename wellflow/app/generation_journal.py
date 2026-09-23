@@ -39,7 +39,7 @@ def persist_image(task_id, batch_id, output):
     if url.startswith("data:"):
         raw = base64.b64decode(url.split(",", 1)[1], validate=True)
     elif url.startswith(("http://", "https://")):
-        response = httpx.get(url, timeout=120, follow_redirects=True)
+        response = httpx.get(url, timeout=120, follow_redirects=True, trust_env=False)
         response.raise_for_status()
         raw = response.content
     else:

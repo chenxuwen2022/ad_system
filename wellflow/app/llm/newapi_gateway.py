@@ -70,13 +70,11 @@ class NewApiGateway(BaseLLMClient):
         base_url: str | None = None,
         api_key: str | None = None,
         timeout: float = 60.0,
-        proxy_url: str | None = None,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.timeout = timeout
-        self.proxy_url = proxy_url
 
     async def chat(
         self,
@@ -224,7 +222,7 @@ class NewApiGateway(BaseLLMClient):
         for attempt in range(self.MAX_RETRIES + 1):
             try:
                 # 非流式也去掉 timeout —— 上游推理慢（尤其带 thinking 的模型）时不再被 60s 截断
-                async with httpx.AsyncClient(timeout=None, proxy=self.proxy_url, trust_env=False) as client:
+                async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
                     resp = await client.post(
                         f"{self.base_url}/chat/completions",
                         headers=self._build_headers(),
@@ -323,7 +321,7 @@ class NewApiGateway(BaseLLMClient):
                 _last_flush_ts = time.time()
 
             try:
-                async with httpx.AsyncClient(timeout=None, proxy=self.proxy_url, trust_env=False) as client:
+                async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
                     print(f"[llm] → POST {self.base_url}/chat/completions model={self.model} stream=True ...", flush=True)
                     async with client.stream(
                         "POST", f"{self.base_url}/chat/completions",
