@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,6 +165,7 @@ async def list_conversations(
         )
         list_items.append(ConversationListItem(
             conversation_id=c.conversation_id,
+            sku_id=c.sku_id,
             title=c.title,
             current_task_id=c.current_task_id,
             current_phase=current_phase,
@@ -251,8 +253,21 @@ async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_
             updated_at=to_cn_iso(t.updated_at),
         ))
 
+    pending_archive = None
+    pending_task = next((t for t in tasks if t.phase == "archive_pending"), None)
+    if pending_task:
+        from wellflow.app.models.task_models import TaskEvent
+        receipt = (await db.execute(select(TaskEvent).where(
+            TaskEvent.task_id == pending_task.task_id, TaskEvent.event_type == "sku_images_archived",
+        ).order_by(TaskEvent.event_id.desc()))).scalars().first()
+        if receipt:
+            pending_archive = {"task_id": pending_task.task_id, "images": [
+                {"task_id": source, "image_key": key} for source, key in receipt.payload_json["selection"]
+            ]}
     return ok(ConversationDetailResponse(
+        pending_archive=pending_archive,
         conversation_id=c.conversation_id,
+        sku_id=c.sku_id,
         title=c.title,
         current_task_id=c.current_task_id,
         messages=chat_out,
@@ -333,6 +348,7 @@ async def get_timeline(conversation_id: str, db: AsyncSession = Depends(get_asyn
             "created_at": to_cn_iso(ch.created_at),
         })
 
+    from wellflow.app.services.sku_archive import with_image_keys
     for ev in events:
         timeline.append({
             "kind": "event",
@@ -340,7 +356,7 @@ async def get_timeline(conversation_id: str, db: AsyncSession = Depends(get_asyn
             "task_id": ev.task_id,
             "event_type": ev.event_type,
             "phase": ev.phase,
-            "payload": ev.payload_json or {},
+            "payload": with_image_keys(ev.payload_json or {}),
             "cost_usd": ev.cost_usd,
             "created_at": to_cn_iso(ev.created_at),
         })
@@ -418,6 +434,8 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
     )
     tasks = list(tasks_result.scalars().all())
     task_ids = [t.task_id for t in tasks]
+    if any(t.phase == "archive_pending" for t in tasks):
+        raise HTTPException(409, "请先重试完成图片入库，再删除对话")
 
     # ---- 3. 活动任务防护（DB phase + checkpoint 双重校验）----
     # 后端重启后 DB phase 可能陈旧（停在 input 但 checkpoint 已 done），
@@ -517,3 +535,25 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
         "task_count": len(task_ids),
         "images_kept": should_keep_images,
     })
+
+
+class BindSkuRequest(BaseModel):
+    sku_id: int = Field(gt=0)
+
+
+@router.put("/{conversation_id}/sku", summary="为历史对话一次性绑定 SKU")
+async def bind_conversation_sku(conversation_id: str, body: BindSkuRequest, db: AsyncSession = Depends(get_async_db)):
+    from wellflow.app.models.asset_models import ProductSku
+    short_id = conversation_id.replace("-", "")[:12]
+    c = (await db.execute(select(Conversation).where(
+        (Conversation.conversation_id == conversation_id) | (Conversation.conversation_id_short == short_id)
+    ).with_for_update())).scalar_one_or_none()
+    if not c:
+        raise HTTPException(404, "对话不存在")
+    if c.sku_id is not None and c.sku_id != body.sku_id:
+        raise HTTPException(409, "对话关联商品已锁定，请新建对话")
+    if await db.get(ProductSku, body.sku_id) is None:
+        raise HTTPException(404, "商品不存在")
+    c.sku_id = body.sku_id
+    await db.commit()
+    return ok({"sku_id": c.sku_id})

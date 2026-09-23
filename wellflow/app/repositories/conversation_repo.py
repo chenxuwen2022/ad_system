@@ -54,6 +54,7 @@ class ConversationRepo:
         title: str = "新对话",
         current_task_id: str | None = None,
         title_hint: dict[str, Any] | None = None,
+        sku_id: int | None = None,
     ) -> Conversation:
         cid = conversation_id or uuid.uuid4().hex[:12]
         # 起名钩子：只有当 title 是占位值 且 提供了 hint 时才生成真实 title
@@ -64,6 +65,7 @@ class ConversationRepo:
             conversation_id=cid,
             conversation_id_short=self._short_of(cid),
             title=_effective_title,
+            sku_id=sku_id,
             current_task_id=current_task_id,
         )
         self.db.add(obj)

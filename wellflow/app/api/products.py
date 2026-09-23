@@ -415,10 +415,20 @@ async def create_sku(
 
 
 @router.put("/skus/{sku_id}", response_model=StandardResponse[SkuDetailResponse], summary="更新 SKU")
-def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(get_db)):
+async def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(get_db)):
+    if body.archive_generated_images is not None:
+        if body.model_fields_set - {"archive_generated_images"}:
+            raise HTTPException(422, "图片入库和商品资料编辑请分开提交")
+        from wellflow.app.services.sku_archive import archive_generated_images
+        await archive_generated_images(sku_id, body.archive_generated_images)
+        db.expire_all()
+        sku = SkuRepo(db).get(sku_id)
+        if sku is None:
+            raise HTTPException(404, "商品不存在")
+        return ok(_sku_to_detail(sku, db))
     repo = SkuRepo(db)
     try:
-        sku = repo.update(sku_id, **body.model_dump(exclude_none=True))
+        sku = repo.update(sku_id, **body.model_dump(exclude_none=True, exclude={"archive_generated_images"}))
         db.commit()
     except ValueError as e:
         raise HTTPException(404, str(e))
@@ -500,6 +510,8 @@ def _sku_to_detail(sku, db: Session) -> SkuDetailResponse:
         images_out.append(SkuImageResponse(
             id=img.id,
             category=img.category,
+            image_type=img.image_type,
+            source_task_id=img.source_task_id,
             storage_uri=img.storage_uri,
             url=_storage_uri_url(img.storage_uri),
             sort_order=img.sort_order,

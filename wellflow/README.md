@@ -213,3 +213,38 @@ git pull
 - LangGraph checkpointer 连接失败时应用会降级启动（图持久化不可用，但 API 正常）
 - `uploads/` 目录通过 docker volume 挂载到宿主机 `/data/wellflow/uploads`，便于备份
 - 修改模型后务必生成新迁移：`alembic revision --autogenerate -m "描述"`
+
+## SKU 图片分类与生成图入库
+
+部署本功能前先执行 `alembic upgrade head`（在此目录运行），迁移版本为
+`f2a6b8d9e0c1`。旧 `product_image` 行默认补为 `image_type=product`；
+`ad` 表示投流图，`category` 仍表示正面、侧面等角度。新增可空的
+`source_task_id` 记录来源，未增加 `source_output_id` 列。
+
+- 首次 `POST /api/chat` 传 `sku_id`，保存到 conversation；后续不能换绑。
+- 历史无关联对话可调用 `PUT /api/conversations/{id}/sku`，JSON 为 `{"sku_id": 7}`。
+- SKU 删除将 conversation.sku_id 置空；删除对话不删除已入库图片。
+- 商品图和投流图统一由 SKU 详情的 `images[].image_type` 区分。
+- C4 入库调用 `PUT /api/products/skus/{id}`，仅提交以下新增字段：
+
+```json
+{
+  "archive_generated_images": {
+    "conversation_id": "conversation-id",
+    "task_id": "current-task-id",
+    "images": [{ "task_id": "source-task-id", "image_key": "64位SHA256值" }]
+  }
+}
+```
+
+`image_key` 是返回给前端的临时选择标识（生成图片 URL 的 SHA256），随生图事件、
+C4 interrupt 和历史 timeline 返回，不新增数据库列。后端查验同一对话的生成记录，
+仅追加选中的图片；文件按内容摘要保存到 `uploads/sku/{sku_id}/ad/`。
+SKU 行锁和已保存路径防止并发重复入库。
+
+图片和 `sku_images_archived` 回执先提交，随后完成 C4 checkpoint，再原子提交任务
+完成状态、选中图的 TaskImage 和 workflow_done。中断时 phase 为 `archive_pending`；
+会话详情的 `pending_archive` 返回原选择，客户端使用原请求重试，不能重做或改选。
+旧 C4 resume/chat 的直接确认改为引导用户勾选后入库。普通 SKU 基本信息 PUT 不受影响。
+
+回归测试（不连接实际数据库）：在仓库根目录运行 `python3 -m unittest discover -s tests -v`。

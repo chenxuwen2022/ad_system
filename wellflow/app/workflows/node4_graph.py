@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from typing import Any
 
 from wellflow.app.llm.image_gen_service import (
@@ -300,12 +302,14 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
                     "prompt_index": item.get("prompt_index", 0),
                     "prompt": item.get("prompt", ""),
                     "image_url": url,
+                "image_key": hashlib.sha256(url.encode("utf-8")).hexdigest(),
                 })
                 _eb(task_id, "node4_image_done", {
                     "work_item_id": item["work_item_id"],
                     "prompt_index": item.get("prompt_index", 0),
                     "prompt": item.get("prompt", ""),
                     "image_url": url,
+                "image_key": hashlib.sha256(url.encode("utf-8")).hexdigest(),
                     "elapsed": round(dt, 1),
                     "n_done": n_done + retained_count,
                     "n_total": len(work_items),

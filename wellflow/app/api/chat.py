@@ -372,6 +372,7 @@ async def chat(
     task_id: str | None = Form(default=None),
     # 新增：conversation 关联（可选，首次可不传；后端会从 task.conversation_id 反查或自动新建）
     conversation_id: str | None = Form(default=None),
+    sku_id: int | None = Form(default=None),
     platform: str = Form(default="taobao"),
     image_type: str = Form(default="ad"),
     marketing_goal: str = Form(default="acquisition"),
@@ -402,6 +403,28 @@ async def chat(
 
     message = _fix_utf8(message).strip()
 
+    # SKU is chosen explicitly; task/conversation identities may not disagree.
+    from wellflow.app.models.asset_models import ProductSku
+    from wellflow.app.models.task_models import Task
+    binding_repo = ConversationRepo(db)
+    bound_task = db.get(Task, task_id) if task_id else None
+    bound_conv = binding_repo.resolve(conversation_id) if conversation_id else None
+    if bound_task and bound_task.conversation_id:
+        task_conv = binding_repo.get(bound_task.conversation_id)
+        if conversation_id and (not bound_conv or bound_conv.conversation_id != bound_task.conversation_id):
+            raise HTTPException(409, "任务不属于当前对话")
+        bound_conv = task_conv
+    if bound_conv:
+        if sku_id is not None and sku_id != bound_conv.sku_id:
+            raise HTTPException(409, "对话关联商品已锁定，请新建对话或先绑定历史对话")
+        sku_id = bound_conv.sku_id
+    if sku_id is not None and db.get(ProductSku, sku_id) is None:
+        raise HTTPException(404, "关联商品不存在")
+    if not bound_conv and sku_id is None:
+        raise HTTPException(422, "请先选择 SKU 商品")
+
+    if bound_task and bound_task.phase == "archive_pending":
+        raise HTTPException(409, "图片入库待完成，请用原选择重试入库")
     has_task = bool(task_id)
     t_id: str | None = None
     current_node: str | None = None
@@ -602,7 +625,7 @@ async def chat(
             has_task=has_task,
             current_node=current_node,
             completed_mask=completed_mask,
-            has_images=len(images) > 0,
+            has_images=len(images) > 0 or (not has_task and sku_id is not None),
             selected_finetuning_target=selected_finetuning_target,
             graph_state_brief=_state_brief,
             task_id=t_id,
@@ -762,6 +785,7 @@ async def chat(
                 conversation_id=conv_id_for_this_turn,
                 title="新对话",  # 占位，repo 会用 hint 覆盖
                 title_hint=_title_hint,
+                sku_id=sku_id,
             )
             print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title_hint=start_task", flush=True)
         else:
@@ -773,6 +797,7 @@ async def chat(
                     conversation_id=conv_id_for_this_turn,
                     title="新对话",
                     title_hint=_title_hint,
+                    sku_id=sku_id,
                 )
                 print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
 
@@ -1214,8 +1239,18 @@ async def _handle_start_task(
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
-    if not product_images:
-        yield _sse("message", {"text": "请上传至少 1 张商品图片再开始。"})
+    sku_paths: list[str] = []
+    if not product_images and conversation_id:
+        from wellflow.app.models.asset_models import ProductImage
+        from sqlalchemy import select
+        with session_scope() as db:
+            conv = ConversationRepo(db).get(conversation_id)
+            if conv and conv.sku_id:
+                sku_paths = list(db.scalars(select(ProductImage.storage_uri).where(
+                    ProductImage.sku_id == conv.sku_id, ProductImage.image_type == "product",
+                ).order_by(ProductImage.sort_order, ProductImage.id)))
+    if not product_images and not sku_paths:
+        yield _sse("message", {"text": "该商品还没有商品图，请上传至少 1 张商品图片再开始。"})
         yield _sse("done", {"phase": "done"})
         return
 
@@ -1223,8 +1258,8 @@ async def _handle_start_task(
     q = await drain_and_subscribe(task_id)
 
     raw_files = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
-    product_image_paths = save_upload(task_id, raw_files, prefix="p")
-    image_names = [f.filename for f in product_images]
+    product_image_paths = save_upload(task_id, raw_files, prefix="p") if raw_files else sku_paths
+    image_names = [f.filename for f in product_images] if raw_files else [p.rsplit("/", 1)[-1] for p in sku_paths]
 
     # 生成简短 description 供前端历史列表展示
     _desc = message.strip()[:30]
@@ -1238,8 +1273,8 @@ async def _handle_start_task(
         "marketing_goal": marketing_goal,
         "product_link": None,
         "image_model": None,
-        "image_count": len(product_images),
-        "has_images": len(product_images) > 0,
+        "image_count": len(product_image_paths),
+        "has_images": bool(product_image_paths),
         "has_text": bool(message),
         "product_image_names": image_names,
         "product_images": product_image_paths,
@@ -1689,6 +1724,12 @@ async def _handle_resume(
                 yield _chunk
 
     elif node == "c4":
+        if intent != "redo_generation":
+            yield _sse("message", {"text": "请在图片结果中勾选需要的图片，点击入库保存到关联 SKU。"})
+            from wellflow.app.services.sku_archive import with_image_keys
+            payload = with_image_keys((graph_state or {}).get("node4") or {})
+            yield _sse("interrupt", {**payload, "node": "c4", "phase": "c4_review", "hint": "请选择图片后入库"})
+            return
         # C4 独占 confirm_generation / redo_generation 两个意图。
         # 统一走 decision + redo_target（graph 的 _c4_review_result 读这两个字段）。
         if intent == "redo_generation":

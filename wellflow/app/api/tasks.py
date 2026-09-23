@@ -462,6 +462,9 @@ async def resume_task(
     if not task:
         raise HTTPException(404, f"task {task_id} 不存在")
 
+    if task.phase == "archive_pending":
+        raise HTTPException(409, "图片入库待完成，请用原选择重试入库")
+
     # 终态守卫：确认入库（done）后禁止任何 redo / resume
     if task.phase == TaskPhase.DONE.value:
         raise HTTPException(409, "任务已确认入库，禁止任何重做操作")
@@ -682,6 +685,9 @@ async def resume_task(
             elif node == "c4":
                 resume_values["decision"] = "confirm"
 
+    if node == "c4" and resume_values.get("decision", "confirm") == "confirm":
+        raise HTTPException(409, "请在图片结果中勾选图片，并通过 SKU 入库按钮确认")
+
     # 多套方案必须明确选中；只有一套时可直接确认唯一方案。
     if node == "c2" and resume_values.get("decision", "confirm") == "confirm":
         selected = resume_values.get("selected_scheme_indices")
@@ -853,6 +859,8 @@ async def restart_task(
             },
         )
 
+    if task.phase == "archive_pending":
+        raise HTTPException(409, "请重试完成图片入库，不能重启任务")
     # 终态不能重启
     if task.phase in (TaskPhase.DONE.value, TaskPhase.FAILED.value):
         raise HTTPException(409, f"任务已 {task.phase}，无法重启")
@@ -1178,6 +1186,9 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         flush=True,
     )
 
+    from wellflow.app.services.sku_archive import with_image_keys
+    if interrupt_json:
+        interrupt_json = with_image_keys(interrupt_json)
     return ok(TaskInfoResponse(
         task_id=task.task_id,
         phase=task.phase,
@@ -1215,6 +1226,9 @@ async def delete_task(task_id: str):
         task = repo.get(task_id)
         if not task:
             raise HTTPException(404, f"task {task_id} 不存在")
+
+        if task.phase == "archive_pending":
+            raise HTTPException(409, "请先重试完成图片入库，再删除任务")
 
         # 只有 node1/node2/node3 正在执行时才禁止删除；
         # HITL 等待（c1_confirm / c2_confirm）和终态（done / failed / needs_retry）都允许删
