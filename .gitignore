@@ -42,6 +42,7 @@ _sample_export.html
 
 # ===== 商拍子系统（WellFlow）=====
 wellflow/uploads/
+wellflow/tests/
 
 # AI 场景处理产物
 static/scene_ai/
