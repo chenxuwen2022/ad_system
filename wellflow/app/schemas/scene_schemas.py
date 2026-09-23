@@ -19,7 +19,7 @@ class SceneDims(BaseModel):
 
 
 class SceneExtractRequest(BaseModel):
-    """场景 AI 处理请求:点击即入库 extracting,后台审核+提取+打标。
+    """场景 AI 处理请求:点击即入库 extracting,后台提取+打标(马赛克原图)。
 
     scene_id 传了=对已有待确认行「换图重处理」(不新建)。
     """
@@ -30,12 +30,11 @@ class SceneExtractRequest(BaseModel):
 
 
 class SceneUpdateRequest(BaseModel):
-    """编辑/确认入库/重新整理/审核请求。
+    """编辑/确认入库/重新整理请求。
 
     status 取值:
-      "pending_review" = 确认入库(仅待确认行)
-      "extracting"     = 重新整理(仅待确认行;清空处理产物,后台重跑 AI 三步)
-      "approved" / "returned" = 审核操作(仅待审核行)
+      "active"     = 确认入库(仅待确认行;直接可用,无审核环节)
+      "extracting" = 重新整理(仅待确认行;清空处理产物,后台重跑 AI)
     """
 
     name: str | None = None
@@ -44,7 +43,7 @@ class SceneUpdateRequest(BaseModel):
     cover_storage_uri: str | None = None
     original_storage_uri: str | None = None
     dims: SceneDims | None = None
-    status: Literal["pending_review", "extracting", "approved", "returned"] | None = None
+    status: Literal["extracting", "active"] | None = None
 
 
 class SceneListItem(BaseModel):
@@ -55,11 +54,13 @@ class SceneListItem(BaseModel):
     tags: str | None = None
     scope: str = "mine"
     origin: str | None = None
-    status: str = "extracting"   # extracting/pending_confirm/pending_review/approved/returned/failed
+    status: str = "extracting"   # extracting/pending_confirm/active/failed
     cover_storage_uri: str | None = None
     cover_url: str | None = None
     original_storage_uri: str | None = None
     original_url: str | None = None
+    mosaic_storage_uri: str | None = None
+    mosaic_url: str | None = None
     created_at: str = ""
     updated_at: str = ""
 
@@ -77,6 +78,8 @@ class SceneDetailResponse(BaseModel):
     cover_url: str | None = None
     original_storage_uri: str | None = None
     original_url: str | None = None
+    mosaic_storage_uri: str | None = None
+    mosaic_url: str | None = None
     dims: dict[str, list[str]] = Field(default_factory=dict)
     created_at: str = ""
     updated_at: str = ""

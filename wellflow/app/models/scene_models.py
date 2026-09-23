@@ -27,6 +27,7 @@ class Scene(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="extracting")
     cover_storage_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)     # 场景图(处理成果)
     original_storage_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)  # 上传原图
+    mosaic_storage_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)    # 原图马赛克版(人+违规物打码)
     dims: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # {space:[..],region:[..],season:[..],weather:[..],sceneStyle:[..]}
     owner_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))

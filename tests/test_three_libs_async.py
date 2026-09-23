@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """三库异步功能测试:Part A TaskStore(DB 版)单元测试 + Part B 三库 HTTP 全链路。
-运行:./venv/bin/python /tmp/three_libs_smoke.py
+运行:./venv/bin/python tests/test_three_libs_async.py
 """
 import sys, time
 from datetime import datetime, timezone, timedelta
@@ -115,6 +115,36 @@ check("B3 穿搭详情待选件", r.json().get("data", {}).get("status") == "pen
 
 r = requests.get(f"{BASE}/api/scene", params={"page_size": 1}, timeout=15)
 check("B4 场景列表", r.status_code == 200 and "items" in r.json().get("data", {}))
+
+# ── 场景全链路(真 AI:提取 + 马赛克 + 打标,约 1~5 分钟)→ 确认入库即 active ──
+r = requests.post(f"{BASE}/api/scene/ai-extract", json={
+    "original_uri": "/static/assets/outfit-demo/original.png",
+    "session_id": f"tst_scene_{int(time.time()*1000)}"}, timeout=15)
+d = r.json().get("data", {})
+sid2, stid = d.get("scene_id"), d.get("task_id")
+check("B4b 场景处理秒回", r.status_code == 200 and d.get("status") == "extracting"
+      and sid2 and stid, f"resp={d}")
+status = ""
+if sid2 and stid:
+    deadline = time.time() + 360
+    while time.time() < deadline:
+        r = requests.get(f"{BASE}/api/scene/ai-status",
+                         params={"task_id": stid}, timeout=15)
+        status = r.json().get("data", {}).get("status")
+        if status in ("done", "failed"):
+            break
+        time.sleep(5)
+    r = requests.get(f"{BASE}/api/scene/{sid2}", timeout=15)
+    det = r.json().get("data", {})
+    check("B4c 场景轮询 done+马赛克原图", status == "done" and "mosaic_url" in det,
+          f"status={status} mosaic={det.get('mosaic_url')}")
+    r = requests.put(f"{BASE}/api/scene/{sid2}", json={"status": "active"}, timeout=15)
+    det = r.json().get("data", {})
+    check("B4d 确认入库即 active(无审核)", r.status_code == 200
+          and det.get("status") == "active", f"resp={det.get('status')}")
+    r = requests.put(f"{BASE}/api/scene/{sid2}", json={"status": "active"}, timeout=15)
+    check("B4e 非待确认行不可确认(400)", r.status_code == 400, f"code={r.status_code}")
+    requests.delete(f"{BASE}/api/scene/{sid2}", timeout=15)
 
 r = requests.get(f"{BASE}/api/reference/mannequins/dimensions", timeout=15)
 check("B5 模特维度", r.status_code == 200 and "groups" in r.json().get("data", {}))
