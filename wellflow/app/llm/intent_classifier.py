@@ -1,12 +1,8 @@
-"""意图分类器 —— 全 LLM 驱动，无关键词硬编码、无 UI 旁路。
+"""Classify user intent, target product and operation independently.
 
-职责：把用户自然语言 + 当前任务状态 → 8 类意图之一 + refine_target。
-
-唯一入口：classify()
-唯一实现：_classify_via_llm()
-唯一兜底：LLM 异常 / JSON 异常 / 非白名单 → chat_outside
-
-模型固定：deepseek-v4-flash，通过 get_llm_client() 直接调用，不进入模型池。
+Whole-product regeneration uses the original generator. Incremental edits use
+refinement. Explicit short commands are deterministic; other wording uses the
+published classifier prompt plus the execution protocol.
 """
 
 from __future__ import annotations
@@ -217,6 +213,33 @@ def is_image_regeneration_request(message: str) -> bool:
     ))
 
 
+# Keep operation separate from the product target: edit is a compatible API
+# envelope; edit_mode selects the original generator versus incremental editing.
+OPERATION_CONTRACT = """
+【执行协议，优先于旧版重做规则】
+对已有任务，intent=edit 时必须返回 edit_mode: regenerate 或 refine。
+用户要求重新生成/重做/从头生成某层产物，edit_mode=regenerate；
+修改、补充、调整已有产物，edit_mode=refine。不能把完整重做解释为微调。
+refine_target 只表示目标产物：报告=node1，商拍方案=node2，生图提示词=node3，图片=node4。
+明确产物名优先于当前节点；无产物名时采用用户选中的目标或当前节点。
+否定重做不属于 regenerate；局部修改后要求重新输出仍是 refine。
+node1 已锁定仍返回 redo_blocked；不能跳过上游确认。
+例如：重新生成商拍方案 -> edit/node2/regenerate；把方案场景改为室外 -> edit/node2/refine；
+重新生成提示词 -> edit/node3/regenerate；重新生图 -> edit/node4/regenerate。
+"""
+
+
+def explicit_regeneration_target(message: str) -> str | None:
+    """Only unambiguous whole-product commands bypass the classifier."""
+    text = re.sub(r"[\s，。！!？?、]", "", message)
+    match = re.fullmatch(
+        r"(?:请|帮我|请帮我)?(?:重新生成|重新做|重做|从头生成|重新制作)"
+        r"(商拍方案|商拍策划|方案|生图提示词|提示词)(?:吧|一下)?", text)
+    if not match:
+        return None
+    return "node3" if "提示词" in match[1] else "node2"
+
+
 async def classify(
     message: str,
     *,
@@ -233,10 +256,15 @@ async def classify(
     graph_state_brief: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
+    explicit_target = explicit_regeneration_target(message) if has_task else None
+    if explicit_target:
+        return {"intent": "edit", "edit_mode": "regenerate", "refine_target": explicit_target,
+                "refine_instruction": message, "selected_indices": None,
+                "blocked_step": None, "reasoning": "明确要求完整重生成指定产物"}
     if (has_task and current_node == "c4"
             and selected_finetuning_target in (None, "node4")
             and is_image_regeneration_request(message)):
-        return {"intent": "edit", "refine_target": "node4",
+        return {"intent": "edit", "edit_mode": "regenerate", "refine_target": "node4",
                 "refine_instruction": message, "selected_indices": None,
                 "blocked_step": None, "reasoning": "图片结果阶段明确要求再次生图"}
     try:
@@ -338,7 +366,7 @@ async def _classify_via_llm(
     if selected_finetuning_target:
         ctx_lines.append(
             f"⚠️ 用户显式指定了要微调的目标：refine_target={selected_finetuning_target}，"
-            f"请务必尊重这个选择，把 intent 判为 edit 并使用该 refine_target"
+            f"请务必尊重这个选择，把 intent 判为 edit 并使用该 refine_target；edit_mode 仍按用户要求区分重做与微调"
         )
 
     # 产物摘要 —— 方案 B：每层精选字段，让 LLM 知道当前产物"长什么样"
@@ -360,7 +388,7 @@ async def _classify_via_llm(
     from wellflow.app.llm.factory import get_llm_client
     client = get_llm_client("text", model_override=settings.classifier_model)
     resp = await client.chat(
-        system=get_active_prompt("intent_classifier"), user=user_prompt,
+        system=get_active_prompt("intent_classifier") + OPERATION_CONTRACT, user=user_prompt,
         response_format={"type": "json_object"}, temperature=0.2,
         reasoning_effort=settings.text_reasoning_effort,
     )
@@ -393,6 +421,7 @@ async def _classify_via_llm(
 
     result = {
         "intent": intent,
+        "edit_mode": "regenerate" if data.get("edit_mode") == "regenerate" else "refine",
         "reasoning": data.get("reasoning", ""),
         "refine_target": data.get("refine_target"),
         "refine_instruction": refine_instruction,
@@ -401,5 +430,5 @@ async def _classify_via_llm(
         "parsed_content": data.get("parsed_content"),  # 保留兼容旧消费者
     }
     print(f"[intent] {used_model} → {intent} refine_target={result['refine_target']}: "
-          f"{result.get('reasoning', '')[:80]}", flush=True)
+          f"mode={result['edit_mode']} {result.get('reasoning', '')[:80]}", flush=True)
     return result

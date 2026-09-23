@@ -118,8 +118,13 @@ async def launch_graph(task_id, graph, config, *, initial_state=None, command=No
                 allowed = {"c1": {"node1"}, "c2": {"node2"}, "c3": {"node2", "node3"}, "c4": {"node2", "node3"}}
                 if decision == "refine" and values.get("refine_target", "node3" if interrupt["node"] == "c4" else "node" + interrupt["node"][-1]) not in allowed[interrupt["node"]]:
                     raise HTTPException(409, "当前阶段不允许修改该节点")
-                if decision == "redo" and (interrupt["node"] != "c4" or values.get("redo_target", "node4") != "node4"):
-                    raise HTTPException(409, "仅图片阶段支持重新生成")
+                if decision == "redo":
+                    from wellflow.app.workflows.decisions import validate_redo
+                    try:
+                        validate_redo(snapshot.values, interrupt["node"],
+                                      values.get("redo_target", "node" + interrupt["node"][-1]))
+                    except ValueError as exc:
+                        raise HTTPException(409, str(exc)) from exc
                 if decision not in ("confirm", "refine", "redo"):
                     raise HTTPException(400, "无效的确认操作")
                 if decision == "confirm":

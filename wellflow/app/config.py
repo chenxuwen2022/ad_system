@@ -43,8 +43,8 @@ class Settings(BaseSettings):
     text_reasoning_effort: str = "close"
 
     # ====== Node2 ======
-    # 首次生成的候选商拍方案数量；微调时不据此增删方案。
-    node2_scheme_count_default: int = 3
+    # 首次和重新生成的候选方案数量；微调按目标方案数量输出。
+    node2_scheme_count_default: int = Field(default=3, ge=1)
 
     # ====== Node4 ======
     node4_gen_concurrency: int = Field(default=2, ge=1)                 # Node4 生图队列 worker 数，对齐上游限流配额防 429

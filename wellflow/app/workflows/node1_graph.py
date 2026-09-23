@@ -77,6 +77,8 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     req = state.get("request", {})
     image_paths: list[str] = req.get("product_images") or []
     user_text: str = req.get("description", "")
+    if state.get("_redo_instruction"):
+        user_text += "\n本次重新生成要求：" + state["_redo_instruction"]
 
     # --- Step 1: 输入校验（同步，轻量） ---
     analysis = input_analyzer.analyze_input(
@@ -196,6 +198,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     #    这样避免了独立 message 事件被 append 到报告正文再被 interrupt 的 replace 覆盖的问题。
 
     return {
+        "_redo_target": None, "_redo_instruction": None,
         "phase": "node1_vlm_done",
         "node1": {
             **state.get("node1", {}),

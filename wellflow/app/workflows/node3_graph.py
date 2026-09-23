@@ -48,10 +48,13 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
 
     product_insight = node1.get("product_insight", "")
     schemes: list[dict[str, Any]] = node2.get("schemes", [])
-    selected_indices: list[int] = node2.get("selected_scheme_indices") or list(range(len(schemes)))
+    from wellflow.app.workflows.scheme_selection import validate_scheme_indices
+    selected_indices = validate_scheme_indices(node2.get("selected_scheme_indices"), len(schemes))
     # 每套选中方案要生成几份 prompt —— 新链路由 C2 写入 node2.per_scheme_count
     per_scheme_count: list[int] = node2.get("per_scheme_count") or []
     user_requirement: str = req.get("user_requirement", "")
+    if state.get("_redo_instruction"):
+        user_requirement += "\n本次重新生成要求：" + state["_redo_instruction"]
 
     # 三类参考图：C2 interrupt 时写入 node3.reference_images
     ref_images: dict[str, list[str]] = node3.get("reference_images") or {}
@@ -200,6 +203,6 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
         "thinking_text": "\n\n".join(all_think_parts),
     }
 
-    output = {"phase": "node3_prompt_gen", "node3": new_node3}
+    output = {"_redo_target": None, "_redo_instruction": None, "phase": "node3_prompt_gen", "node3": new_node3}
     print(f"[node3] _gen_prompts 输出 node3 keys={list(new_node3.keys())}", flush=True)
     return output

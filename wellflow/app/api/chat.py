@@ -421,80 +421,7 @@ async def chat(
               f" ref_images={existing_ref_images}"
               f" conversation={resolved_conv_id}", flush=True)
 
-    # ------------------------------------------------------------------
-    # 🛑 提前拦截：纯文本重复 refine 指令（在 LLM classify() 之前）
-    #
-    # 只有当用户明确在说同一条微调指令时才会命中——完全相同的指令在 refine_history[-1] 里。
-    # 命中就直接返回 SSE + persist，跳过 classify()，省一次 LLM 调用。
-    #
-    # 只做精确 normalize 匹配，不做"语义近似"检测（避免误杀真正想重提的指令）。
-    # 这层之后 event_generator 里 edit 分支的重复检测还会再兜一次，
-    # 捕捉 LLM 改写过的 refine_instruction 与历史重复的情况。
-    # ------------------------------------------------------------------
-    _PHASE_CN_MAP = {"node1": "c1_confirm", "node2": "c2_select",
-                     "node3": "c3_confirm", "node4": "c4_review"}
-    _TARGET_CN_MAP = {"node1": "报告", "node2": "方案", "node3": "提示词", "node4": "生图"}
-    if has_task and graph_state and message and current_node != "c4" and graph_state.get("phase") != "done":
-        from wellflow.app.workflows.state import get_node_refine_history
-        _FALLBACK_NODE = {"c1": "node1", "c2": "node2",
-                          "c3": "node3", "c4": "node4"}
-        _tgt = _FALLBACK_NODE.get(current_node or "", "node2")
-        # 🔴 重复检测也必须按 node 隔离 —— node2 的历史不能误拦截 node3 的同名字指令
-        _h = get_node_refine_history(graph_state, _tgt)
-        if _h and isinstance(_h[-1], str) and normalize_instruction(message) == normalize_instruction(_h[-1]):
-            # 指令重复 → 还要看上一轮 refine 是否真的成功产出了数据
-            # 如果上一轮 refine 因为 bug/异常没成功（产物为空或被清掉），就不能 block，
-            # 必须允许用户重新执行，否则用户永远卡在"等待确认"
-            if not _is_last_refine_succeeded(graph_state, _tgt):
-                print(f"[chat] 🔄 指令重复但上一轮 refine 未成功（产物为空），放行让它重新执行 target={_tgt}", flush=True)
-            else:
-                print(f"[chat] 🛑 提前拦截: raw message 与上一条 refine_history[-1] 完全重复 → 跳过 classify()", flush=True)
-                _lock_text = (
-                    f"这条微调指令和上一轮完全一样哦，上一轮已经对{_TARGET_CN_MAP.get(_tgt, '产物')}做过相同的修改了。"
-                    "如果想继续调整，可以换一条不一样的指令～"
-                )
-
-                async def _dup_sse():
-                    _chunk = _sse("message", {"text": _lock_text})
-                    # 直接在 async 函数里 inline persist assistant（不能引用 event_generator 内部的闭包辅助函数）
-                    if resolved_conv_id:
-                        try:
-                            from wellflow.app.repositories.conversation_repo import ChatMessageRepo as _CMR
-                            with session_scope() as _sdb2:
-                                _CMR(_sdb2).create(
-                                    conversation_id=resolved_conv_id, role="assistant",
-                                    text=_lock_text, task_id=t_id,
-                                )
-                                _CR = ConversationRepo(_sdb2)
-                                _CR.touch(resolved_conv_id)
-                        except Exception:
-                            pass
-                    yield _chunk
-                    yield _sse("done", {"phase": _PHASE_CN_MAP.get(_tgt, "done")})
-
-                # 必须先把 conversation 关联和用户消息持久化好——这是后续所有 handler 的隐含前提
-                conv_repo = ConversationRepo(db)
-                msg_repo = ChatMessageRepo(db)
-                resolved_conv_id: str | None = conversation_id
-                if t_id and not resolved_conv_id:
-                    try:
-                        _tk = TaskRepo(db).get(t_id)
-                        if _tk and _tk.conversation_id:
-                            resolved_conv_id = _tk.conversation_id
-                    except Exception:
-                        pass
-                if resolved_conv_id:
-                    try:
-                        msg_repo.create(
-                            conversation_id=resolved_conv_id,
-                            role="user", text=message,
-                            images_json=[], intent="edit", task_id=t_id,
-                        )
-                        conv_repo.touch(resolved_conv_id)
-                    except Exception:
-                        pass
-                return StreamingResponse(_dup_sse(), media_type="text/event-stream")
-
+    # Duplicate refinement detection runs after classification so regeneration is never blocked.
     # 🔑 统一 images → 后端判断分流
     product_images, ref_images = classify_images(
         images, has_task=has_task, current_node=current_node, message=message,
@@ -950,7 +877,7 @@ async def chat(
                 # ------------------------------------------------------------------
                 # LLM 意图分类器返回 intent="edit" + refine_target=nodeX →
                 # 转成 backward_to_<target> 调用 _handle_backward 走 refine 分支。
-                # node1/2/3 是增量 refine；node4 是 redo（生图 API 无法增量编辑）。
+                # edit_mode=regenerate 走原始生成；refine 改已有文本；node4 始终 redo。
                 # ------------------------------------------------------------------
                 _target = intent_result.get("refine_target")
                 if not _target and current_node:
@@ -967,7 +894,7 @@ async def chat(
                 # 🛑 拦截：本轮 refine 指令 == graph_state._refine_history[-1]（上一轮完全重复）
                 # 但必须同时满足"上一轮 refine 成功产出了有效数据"——如果上一轮 refine
                 # 因为 bug/异常没成功（产物为空或被清掉），就不能 block，必须允许重新执行
-                if _instruction and _instruction.strip() and isinstance(graph_state, dict):
+                if intent_result.get("edit_mode") != "regenerate" and _instruction and _instruction.strip() and isinstance(graph_state, dict):
                     from wellflow.app.workflows.state import get_node_refine_history
                     # 🔴 重复检测按 node 隔离 —— 只看 _target（即将 refine 的那个 node）自己的历史
                     _history = get_node_refine_history(graph_state, _target)
@@ -996,7 +923,7 @@ async def chat(
                         print(f"[chat] → 未命中拦截：normalize 不相等 "
                               f"('{normalize_instruction(_instruction)}' vs '{normalize_instruction(_history[-1])}')", flush=True)
 
-                print(f"[chat] edit → backward_to_{_target}, instruction={_instruction}",
+                print(f"[chat] edit mode={intent_result.get('edit_mode', 'refine')} → backward_to_{_target}, instruction={_instruction}",
                       flush=True)
 
                 # LLM 意图分类器返回的 selected_indices：
@@ -1013,6 +940,7 @@ async def chat(
                     product_images=product_images,
                     refine_instruction=_instruction,
                     refine_selected_indices=_sel_indices,
+                    edit_mode=intent_result.get("edit_mode", "refine"),
                 )):
                     yield ev
 
@@ -1142,6 +1070,7 @@ async def _handle_backward(
     product_images: list[UploadFile] | None = None,
     refine_instruction: str | None = None,
     refine_selected_indices: list[int] | str | None = None,
+    edit_mode: str = "refine",
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
@@ -1165,8 +1094,8 @@ async def _handle_backward(
         yield _sse("done", {"phase": "done"})
         return
     resume_node, redo_target, step_num = _INTENT_MAP[intent]
-    # node1/2/3 → refine；node4 → redo
-    _IS_REFINE = redo_target in ("node1", "node2", "node3")
+    # 操作模式与目标节点独立，不能仅凭 node 编号决定微调。
+    _IS_REFINE = edit_mode != "regenerate" and redo_target in ("node1", "node2", "node3")
 
     from wellflow.app.workflow_status import checkpoint_view
     current_snapshot, _ = await _aget_snapshot(task_id)
@@ -1187,8 +1116,7 @@ async def _handle_backward(
     # refine_instruction：优先用传入的显式参数，否则用用户原始 chat 消息做兜底
     _instruction = (refine_instruction or "").strip()
     if _IS_REFINE and not _instruction:
-        print(f"[backward] ⚠️ refine 目标 {redo_target} 无指令，降级为通用 '重新生成' 指令", flush=True)
-        _instruction = "请基于现有内容重新生成一份，保持整体风格不变。"
+        raise HTTPException(400, "请提供具体修改要求，或明确选择重新生成")
 
     # 注意：node1 锁定守卫已在 chat.py 顶部统一处理（API 层），
     # _handle_backward 里不再重复拦截——如果 intent 已走到这里，说明 API 层已放行。
@@ -1222,12 +1150,13 @@ async def _handle_backward(
             "refine_selected_indices": refine_selected_indices,  # None for non-node2 refine → 下游忽略
         }
     else:
-        # redo node4
+        # 完整重做目标节点
         resume_values = {
             "node": interrupt_node,
             "revision": current_interrupt.get("revision"),
             "decision": "redo",
             "redo_target": redo_target,
+            "redo_instruction": _instruction,
         }
     cmd = Command(resume=resume_values, **({"update": cmd_update} if cmd_update else {}))
     print(f"[backward] 🎯 Command(resume={resume_values}) task={task_id} update_keys={list(cmd_update.keys())}", flush=True)
@@ -1323,30 +1252,27 @@ async def _handle_resume(
             resume_values["decision"] = "refine"
             resume_values["refine_target"] = "node2"
             resume_values["refine_instruction"] = message
+            resume_values["refine_selected_indices"] = intent_result.get("selected_indices")
             print(f"[chat] c2 edit_and_confirm_c2 → refine 路径, instruction={message}", flush=True)
         else:
             # confirm_current / confirm_generation / chat_outside 等非编辑类意图
             #
             # 选中项优先级：
-            #   1) 前端 checkbox 显式传的 selected_scheme_indices（resume 表单）
-            #   2) 意图分类器从消息文本解析的 intent_result.selected_indices（"选第1套"/"全选"）
+            #   1) 用户消息中明确指定的方案编号
+            #   2) 前端 selected_scheme_indices
+            #   3) 意图分类器的 selected_indices
             #
             # 多套方案必须明确选中一套；微调/融合后仅剩一套时，
             # "继续" 可以直接确认唯一的最终方案。
             #    卡片确认走 /api/tasks/{id}/resume，输入框确认走这里。
-            indices: list[int] = []
-            if selected_scheme_indices:
+            from wellflow.app.workflows.scheme_selection import explicit_scheme_indices
+            explicit = explicit_scheme_indices(message)
+            indices: list[int] = explicit if explicit is not None else []
+            if explicit is None and selected_scheme_indices:
                 for part in selected_scheme_indices.split(","):
                     part = part.strip()
                     if part.isdigit():
                         indices.append(int(part))
-            if not indices:
-                # 自然语言中的“方案1”是用户可见的第 1 套，内部索引为 0。
-                explicit = re.search(r"方案\s*([1-9]\d*)|第\s*([1-9]\d*)\s*套", message)
-                if explicit:
-                    idx = int(explicit.group(1) or explicit.group(2)) - 1
-                    if 0 <= idx < len(existing_schemes):
-                        indices = [idx]
             if not indices:
                 selected = intent_result.get("selected_indices")
                 if selected == "all":
@@ -1361,7 +1287,7 @@ async def _handle_resume(
                             pass
             if not indices and len(existing_schemes) == 1:
                 indices = [0]
-            if len(indices) != 1:
+            if len(indices) != 1 or not 0 <= indices[0] < len(existing_schemes):
                 print(
                     f"[chat] 🛑 c2 阶段必须明确选中一套方案 → 拦截, "
                     f"existing_schemes={len(existing_schemes)}",

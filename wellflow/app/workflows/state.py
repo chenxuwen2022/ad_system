@@ -245,5 +245,6 @@ class TaskState(TypedDict, total=False):
     # 旧格式兼容：如果 checkpoint 里还是 list（老任务），_get_node_refine_history helper 会自动 wrap 成 {'nodeX': list}
     # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）
     _refine_history: Annotated[dict[str, list[str]], REDUCER]  # {node1|node2|node3: [instruction,...]}，含本轮
-    # redo 路径：仅 C4 redo→node4 保留（其他节点都走 refine）
-    _redo_target: Annotated[str | None, REDUCER]         # "node4" | None
+    # redo reruns the original generator for the selected product.
+    _redo_target: Annotated[str | None, REDUCER]         # "node1" | "node2" | "node3" | "node4" | None
+    _redo_instruction: Annotated[str | None, REDUCER]

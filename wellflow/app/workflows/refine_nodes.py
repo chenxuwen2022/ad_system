@@ -19,6 +19,7 @@ LLM 做最小必要增量修改，直接产出更新后的完整产物。
 from __future__ import annotations
 
 import time
+import json
 from typing import Any
 
 from wellflow.app.config import settings
@@ -186,7 +187,7 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
-    from wellflow.app.nodes.planning_scheme import split_scheme_reports
+    from wellflow.app.nodes.planning_scheme import split_scheme_reports, scheme_output_contract
 
     task_id = state.get("task_id", "")
     instruction = state.get("_refine_instruction", "").strip()
@@ -196,16 +197,26 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     if not instruction or not reports or any(not report for report in reports):
         return {"phase": "c2_select"}
 
+    from wellflow.app.workflows.scheme_selection import explicit_scheme_indices, validate_scheme_indices
+    selection = explicit_scheme_indices(instruction)
+    if selection is None:
+        selection = state.get("_refine_selected_indices")
+    if selection is None:
+        selection = node2.get("selected_scheme_indices") or "all"
+    indices = validate_scheme_indices(selection, len(schemes))
+    schemes = [schemes[i] for i in indices]
+    scheme_count = len(schemes)
     if task_id:
-        publish(task_id, "phase", {"phase": "node2_refining", "reset_text": True})
+        publish(task_id, "phase", {"phase": "node2_refining", "reset_text": True, "scheme_count": scheme_count})
     client = get_llm_client("text", model_override=settings.classifier_model)
     parts: list[str] = []
-    previous = "\n\n".join(
-        f"===SCHEME {i + 1}: {schemes[i].get('scheme_name') or f'方案{i + 1}'}===\n{report}"
-        for i, report in enumerate(reports)
-    )
+    previous = json.dumps([
+        {"scheme_name": s.get("scheme_name") or f"方案{i + 1}", "report_text": s["report_text"]}
+        for i, s in enumerate(schemes)
+    ], ensure_ascii=False)
+    chunk_index = 0
     async for item in client.stream_chat(
-        system=get_active_prompt("refine_plan"),
+        system=get_active_prompt("refine_plan") + scheme_output_contract(scheme_count),
         user=(f"【原商拍策划方案列表】\n{previous}\n\n"
               f"【本轮修改指令】\n{instruction}"),
         reasoning_effort=settings.text_reasoning_effort,
@@ -214,19 +225,20 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
         if text and (not isinstance(item, dict) or item.get("type", "content") != "thinking"):
             parts.append(text)
             if task_id:
-                publish(task_id, "scheme_chunk", {"chunk": text, "node": "node2"})
+                chunk_index += 1
+                publish(task_id, "scheme_chunk", {"chunk": text, "index": chunk_index, "node": "node2"})
     updated_raw = "".join(parts).strip()
     if not updated_raw:
         raise RuntimeError("商拍策划报告修改未返回正文")
-    updated_schemes = split_scheme_reports(updated_raw)
+    updated_schemes = split_scheme_reports(updated_raw, expected_count=scheme_count)
     if task_id:
         publish(task_id, "scheme_chunk_done", {
-            "schemes": updated_schemes, "_final": True, "node": "node2"
+            "schemes": updated_schemes, "scheme_count": scheme_count, "_final": True, "node": "node2"
         })
     return {
         "phase": "c2_select",
         "node2": {**node2, "schemes": updated_schemes, "scheme_raw": updated_raw,
-                  "selected_scheme_indices": []},
+                  "selected_scheme_indices": [], "per_scheme_count": []},
         "_refine_target": None,
         "_refine_instruction": None,
         "_refine_selected_indices": None,
