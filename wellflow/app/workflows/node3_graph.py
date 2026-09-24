@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any
 
@@ -125,6 +126,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     all_details: list[dict[str, Any]] = []
     all_think_parts: list[str] = []  # 💭 累积所有方案的 thinking 文本
 
+    content_chunk_index = 0
     # 每套方案仅调用一次模型，一次拿回该方案的全部提示词。
     for si, scheme in enumerate(selected_schemes):
         scheme_index = scheme.get("scheme_index", si)
@@ -170,12 +172,20 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
                     })
             else:
                 content_parts.append(text)
+                content_chunk_index += 1
+                if task_id:
+                    publish(task_id, "prompt_chunk", {
+                        "chunk": text, "index": content_chunk_index, "node": "node3",
+                        "scheme_index": scheme_index, "scheme_name": scheme_name,
+                        "variant_total": n_variants,
+                    })
 
         raw_content = "".join(content_parts)
         generated = _pg.split_generated_prompts(
             raw_content, n_variants, required_binding=required_binding,
         )
         elapsed = round(time.time() - started, 1)
+        scheme_details: list[dict[str, Any]] = []
         for vi, item in enumerate(generated):
             prompt_text = item["prompt"]
             prompt_name = f"{scheme_name} · {item['title']}"
@@ -191,10 +201,15 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
             }
             all_prompts.append(prompt_text)
             all_details.append(detail)
-            if task_id:
-                publish(task_id, "prompt_chunk_done", {
-                    **detail, "node": "node3",
-                })
+            scheme_details.append(detail)
+        if task_id:
+            publish(task_id, "prompt_chunk_done", {
+                "node": "node3", "scheme_index": scheme_index,
+                "variant_total": n_variants,
+                "generate_prompts": [item["prompt"] for item in generated],
+                "prompts_detail": scheme_details,
+                "_final": True,
+            })
 
         if think_parts:
             all_think_parts.append(f"【方案 #{scheme_index} {scheme_name}】\n{''.join(think_parts)}")
@@ -213,7 +228,7 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
         "reference_images": ref_images,
         "generate_prompts": all_prompts,
         "prompts_detail": all_details,
-        "prompt_raw": "\n---\n".join(d.get("prompt", "") for d in all_details),
+        "prompt_raw": json.dumps([{"title": d["prompt_subtitle"], "prompt": d["prompt"]} for d in all_details], ensure_ascii=False),
         "thinking_text": "\n\n".join(all_think_parts),
     }
 

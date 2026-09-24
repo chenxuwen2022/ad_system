@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import re
+import json
 from typing import Any
 
 from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.prompt.registry import get_active_prompt
-
-_PROMPT_HEADER = re.compile(r"^===PROMPT ([1-9]\d*): (.+?)===$", re.MULTILINE)
 
 
 def _reference_groups(
@@ -68,18 +66,23 @@ def _reference_instructions(binding: str) -> str:
 def split_generated_prompts(
     raw: str, expected_count: int, *, required_binding: str = "",
 ) -> list[dict[str, str]]:
-    """拆分一次模型调用返回的多份纯文本提示词。"""
-    matches = list(_PROMPT_HEADER.finditer(raw))
-    if not matches or raw[:matches[0].start()].strip():
-        raise ValueError("生图提示词缺少规范的分段边界")
+    """校验完整 JSON 提示词列表、数量及每份参考图绑定。"""
+    try:
+        items = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ValueError("生图提示词格式解析失败：需要完整的 JSON 数组") from exc
+    if not isinstance(items, list) or not items:
+        raise ValueError("生图提示词格式解析失败：需要非空提示词数组")
+    if len(items) != expected_count:
+        raise ValueError(f"生图提示词数量不符：期望 {expected_count} 份，实际 {len(items)} 份")
     prompts: list[dict[str, str]] = []
-    for index, match in enumerate(matches):
-        if int(match.group(1)) != index + 1:
-            raise ValueError("生图提示词编号不连续")
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(raw)
-        body = raw[match.end():end].strip()
-        if not body:
-            raise ValueError(f"第 {index + 1} 份生图提示词为空")
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise ValueError(f"第 {index + 1} 份生图提示词必须是对象")
+        for field in ("title", "prompt"):
+            if not isinstance(item.get(field), str) or not item[field].strip():
+                raise ValueError(f"第 {index + 1} 份生图提示词缺少有效的 {field}")
+        body = item["prompt"].strip()
         if required_binding:
             # 固定前缀必须完整保留，不能仅靠正文里出现“模特”等关键词通过校验。
             binding, separator, description = body.partition("\n\n")
@@ -87,9 +90,7 @@ def split_generated_prompts(
                 raise ValueError(
                     f"第 {index + 1} 份生图提示词缺少完整的参考图识别绑定或正文，请重新生成"
                 )
-        prompts.append({"title": match.group(2).strip(), "prompt": body})
-    if len(prompts) != expected_count:
-        raise ValueError(f"生图提示词数量不符：期望 {expected_count} 份，实际 {len(prompts)} 份")
+        prompts.append({"title": item["title"].strip(), "prompt": body})
     return prompts
 
 
@@ -129,10 +130,19 @@ def _build_request(
         system_parts.append(_reference_instructions(binding))
     system_parts.append(
         f"【本次输出要求】针对上述同一套商拍方案，一次生成 {prompt_count} 份风格与镜头表达不同的完整中文生图提示词。"
-        "各份均须完整覆盖前述数据库提示词定义的全部维度，维度数量与内容以该提示词为准。不要输出 JSON。"
-        "每份开头单独一行使用精确边界：===PROMPT 1: 简短标题===、"
-        "===PROMPT 2: 简短标题===，依此类推；提示词正文从下一行开始。"
-        "不要在正文其他位置使用这个边界格式，也不要输出边界以外的说明。"
+        "各份均须完整覆盖前述数据库提示词定义的全部维度，维度数量与内容以该提示词为准。"
+    )
+    system_parts.append(
+        "【本次输出协议｜覆盖前文中冲突的数量、格式要求】只输出一个合法 JSON 数组，"
+        f"数组必须恰好包含 {prompt_count} 个提示词对象，不能增减。"
+        "每个对象按顺序输出 title、prompt 两个字符串字段；title 为简短标题，"
+        "prompt 为包含完整参考图绑定块及生图描述的中文正文。"
+        "使用标准 JSON 转义换行、双引号和反斜杠；不要代码块、前言、结语或分段标记。"
+        "数组结构示例（请替换为真实提示词）："
+        + json.dumps([
+            {"title": f"提示词{i + 1}标题", "prompt": "完整参考图绑定块及生图描述"}
+            for i in range(prompt_count)
+        ], ensure_ascii=False)
     )
     return "\n\n".join(system_parts), "\n\n".join(lines), images
 
