@@ -1,1 +1,0 @@
-{"task_id": "1790057871940_ecb0f7", "task_type": "fine_tune", "status": "done", "step": "queued", "input_uri": "uploads/1790057766564_75c223/outputs/gen-2.png", "prompt": "变成黑人模特，头发加长", "generate_model": "gpt-image-2", "session_id": "1790057871940_ecb0f7", "mannequin_id": 17, "error": "", "pid": "97884", "image_uri": "uploads/1790057871940_ecb0f7/outputs/tuned.png"}

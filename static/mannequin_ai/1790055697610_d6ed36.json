@@ -1,1 +1,0 @@
-{"task_id": "1790055697610_d6ed36", "task_type": "fine_tune", "status": "failed", "step": "queued", "input_uri": "uploads/1790055475627_22afb5/outputs/gen-3.png", "prompt": "修改成", "generate_model": "gpt-image-2", "session_id": "1790055697610_d6ed36", "mannequin_id": 15, "error": "fine_tune失败: ", "pid": "95823"}

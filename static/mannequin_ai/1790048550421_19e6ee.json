@@ -1,1 +1,0 @@
-{"task_id": "1790048550421_19e6ee", "task_type": "fine_tune", "status": "done", "step": "queued", "input_uri": "uploads/1790048464219_50b1ba/outputs/gen-1.png", "prompt": "把发型改成黑色短发,保持五官一致", "generate_model": "qwen-image-3.0", "session_id": "1790048550421_19e6ee", "error": "", "pid": "89536", "image_uri": "uploads/1790048550421_19e6ee/outputs/tuned.png"}
