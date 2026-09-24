@@ -47,11 +47,13 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
 
     product_insight = node1.get("product_insight", "")
     user_requirement: str = req.get("user_requirement", "")
+    if state.get("_redo_instruction"):
+        user_requirement += "\n本次重新生成要求：" + state["_redo_instruction"]
 
     from wellflow.app.config import settings as _settings
     scheme_count = max(1, int(_settings.node2_scheme_count_default))
     if task_id:
-        publish(task_id, "phase", {"phase": "node2_plan_scheme", "scheme_count": scheme_count})
+        publish(task_id, "phase", {"phase": "node2_plan_scheme", "scheme_count": scheme_count, "reset_text": True})
 
     cached_product = node1.get("compressed_images") or []
     product_image_paths: list[str] = req.get("product_images") or []
@@ -119,7 +121,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     raw_text = "".join(content_parts)
     full_thinking = "".join(think_parts)
 
-    # 初次生成严格按配置数量拆分；正文保持自由文本。
+    # 首次和重新生成均严格校验 JSON 数组数量；正文保持 Markdown。
     schemes = _ps.split_scheme_reports(raw_text, expected_count=scheme_count)
 
     total_ts = time.time()
@@ -150,6 +152,6 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         "thinking_text": full_thinking if full_thinking else "",
     }
 
-    output = {"phase": "node2_plan_scheme", "node2": new_node2}
+    output = {"initial_schemes": state.get("initial_schemes") or schemes, "_redo_target": None, "_redo_instruction": None, "phase": "node2_plan_scheme", "node2": new_node2}
     print(f"[node2] _plan_schemes 输出: {len(schemes)} 套商拍方案", flush=True)
     return output

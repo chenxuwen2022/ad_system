@@ -82,9 +82,19 @@ def save_upload(
         from wellflow.app.config import settings
         ext = settings.image_ext_map.get(ext, ext)
 
-        filename = f"{prefix}{i}.{ext}"
+        # Immutable paths: a rejected/stale upload must not overwrite a file
+        # still referenced by a checkpoint or a previous generation batch.
+        import hashlib
+        import tempfile
+        digest = hashlib.sha256(raw).hexdigest()[:24]
+        filename = f"{prefix}{i}-{digest}.{ext}"
         save_path = task_dir / filename
-        save_path.write_bytes(raw)
+        with tempfile.NamedTemporaryFile(dir=task_dir, delete=False) as temporary:
+            temporary.write(raw)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            temporary_path = Path(temporary.name)
+        temporary_path.replace(save_path)
 
         rel_path = f"uploads/{task_id}/{filename}"
         paths.append(rel_path)

@@ -1,12 +1,8 @@
-"""意图分类器 —— 全 LLM 驱动，无关键词硬编码、无 UI 旁路。
+"""Classify user intent, target product and operation independently.
 
-职责：把用户自然语言 + 当前任务状态 → 8 类意图之一 + refine_target。
-
-唯一入口：classify()
-唯一实现：_classify_via_llm()
-唯一兜底：LLM 异常 / JSON 异常 / 非白名单 → chat_outside
-
-模型来源：wellflow.app.llm.model_pool.get_model_pool()
+Whole-product regeneration uses the original generator. Incremental edits use
+refinement. Explicit short commands are deterministic; other wording uses the
+published classifier prompt plus the execution protocol.
 """
 
 from __future__ import annotations
@@ -17,10 +13,6 @@ import re
 from wellflow.app.config import settings
 from typing import Any, Literal
 from wellflow.app.prompt.registry import get_active_prompt
-
-# 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
-# （Node1/2/3 的 refine 纯文本微调也复用同一模型，见 workflows/refine_nodes.py）
-CLASSIFIER_MODEL = "deepseek-v4-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +98,15 @@ def summarize_graph_state(graph_state: dict[str, Any] | None) -> str:
             report_brief = report_brief[:800] + "…"
         lines.append(f"node1 商品报告{tag}:\n{report_brief}")
 
+    originals = graph_state.get("initial_schemes") or []
+    if originals:
+        lines.append("首次商拍方案（scheme_source=initial，与当前列表独立编号）:")
+        for i, scheme in enumerate(originals):
+            lines.append(f"  最初方案{i + 1}（selected_indices={i}）: {scheme.get('scheme_name', '')} | "
+                         + str(scheme.get("report_text", ""))[:180])
+    else:
+        lines.append("首次方案尚未加载；明确最初方案编号可返回 scheme_source=initial，由执行层查历史核实。")
+
     # ---- node2 ----
     n2 = graph_state.get("node2") or {}
     schemes = n2.get("schemes") or []
@@ -115,7 +116,7 @@ def summarize_graph_state(graph_state: dict[str, Any] | None) -> str:
         for i, s in enumerate(schemes):
             if not isinstance(s, dict):
                 continue
-            name = s.get("scheme_name") or f"方案{i}"
+            name = s.get("scheme_name") or f"方案{i + 1}"
             pos = s.get("positioning") or {}
             scene = s.get("scene") or {}
             mod = s.get("model") or {}
@@ -134,7 +135,9 @@ def summarize_graph_state(graph_state: dict[str, Any] | None) -> str:
             if isinstance(lighting, dict):
                 light_style = (lighting.get("lighting_design") or lighting.get("color_system") or "").strip()[:30]
             is_selected = "✓" if i in selected_indices else " "
-            parts = [f"[{is_selected} {i}] {name}"]
+            parts = [f"[{is_selected}] 用户可见方案{i + 1}（selected_indices={i}）: {name}"]
+            if s.get("report_text"):
+                parts.append("正文摘要=" + str(s["report_text"])[:180])
             if theme:
                 parts.append(f"视觉主题={theme}")
             if env:
@@ -185,7 +188,7 @@ INTENT = Literal[
     "start_task",              # 无任务 → 开新任务
     "confirm_current",         # c1/c2/c3 通用确认（好的/继续/就这样/ok）
     "confirm_generation",      # 仅 c4：确认生图结果（满意/保存/结束）
-    "redo_blocked",            # 用户想完全重做/回到某一步 → 一律拦，引导用微调
+    "redo_blocked",            # 已锁定报告或目标不明的重做请求
     "edit",                    # 微调/修改某层产物（配合 refine_target）
     "select_topics",           # 仅 c2：选方案（全选/用第1个）
     "skip_forward",            # 试图跳过工作流步骤 → 一律拦
@@ -206,8 +209,61 @@ ALLOWED_INTENTS: set[str] = {
 
 
 # ---------------------------------------------------------------------------
-# 主入口 —— 全 LLM 分类，无关键词短路、无 UI 旁路
+# 主入口 —— 图片阶段明确的重生短句确定路由，其余交给 LLM
 # ---------------------------------------------------------------------------
+
+def is_image_regeneration_request(message: str) -> bool:
+    """Recognize short image rerun requests, never edits to upstream products."""
+    import re
+    text = re.sub(r"[\s，。！!？?、]", "", message).strip()
+    return bool(re.fullmatch(
+        r"(?:请|帮我|请帮我|我想|我要)?(?:"
+        r"(?:重新|再次|再)(?:生成|生|出)(?:(?:几|一|两|二|三|四|五|六|[1-9]\d*)张)?(?:图片|图像|图)?"
+        r"|再来(?:几|一|两|二|三|四|五|六|[1-9]\d*)张(?:图片|图)?"
+        r"|重做(?:图片|图)|重跑node4)(?:吧|一下)?", text, re.IGNORECASE,
+    ))
+
+
+# Keep operation separate from the product target: edit is a compatible API
+# envelope; edit_mode selects the original generator versus incremental editing.
+OPERATION_CONTRACT = """
+【执行协议，优先于旧版重做规则】
+对已有任务，intent=edit 时必须返回 edit_mode: regenerate 或 refine。
+用户要求重新生成/重做/从头生成某层产物，edit_mode=regenerate；
+修改、补充、调整已有产物，edit_mode=refine。不能把完整重做解释为微调。
+refine_target 只表示目标产物：报告=node1，商拍方案=node2，生图提示词=node3，图片=node4。
+明确产物名优先于当前节点；无产物名时采用用户选中的目标或当前节点。
+否定重做不属于 regenerate；局部修改后要求重新输出仍是 refine。
+node1 已锁定仍返回 redo_blocked；不能跳过上游确认。
+例如：重新生成商拍方案 -> edit/node2/regenerate；把方案场景改为室外 -> edit/node2/refine；
+重新生成提示词 -> edit/node3/regenerate；重新生图 -> edit/node4/regenerate。
+【商拍方案微调范围与数量｜必须返回】
+针对已有商拍方案的字段修改（即使没有“微调”二字）必须判为 edit/node2/refine。
+例如“方案2，品牌为星巴克”是修改方案2，不是选择确认，也不是重新生成全部方案。
+node2/refine 必须返回 scheme_source（current=当前方案，initial=最开始/首次方案）、selected_indices（非空的零基整数数组）及 scheme_output_count（正整数）。
+根据当前方案列表和用户原话判定输入范围与输出数量，二者独立；禁止套用首次生成默认3套。
+普通微调输出数量等于目标方案数；指定扩展、融合、删减时按用户要求判定输出数量。
+例：当前有3套，“方案2，品牌为星巴克” -> selected_indices=[1], scheme_output_count=1。
+“方案1和方案3品牌改为星巴克” -> [0,2], 2；“方案2扩展成3个版本” -> [1], 3。
+“融合方案1和方案2” -> [0,1], 1；“全部方案品牌改为星巴克” -> [0,1,2], 3。
+没有指定编号时结合已选方案、方案名称和上下文判断；无法确定时返回 chat_outside 并说明需要澄清，禁止默认全选。
+“将最开始的方案2，重新调整，品牌改为tims” -> scheme_source=initial, selected_indices=[1], scheme_output_count=1。
+索引必须相对于 scheme_source 指定的列表；即使当前只剩1套，也不能把最初方案2改成索引0。
+未提历史版本时 scheme_source=current；历史信息不足以定位时澄清，不能用当前结果替代。
+仅“选择方案2”仍为选择确认，不是微调。其他目标及非微调操作 scheme_output_count=null。
+"""
+
+
+def explicit_regeneration_target(message: str) -> str | None:
+    """Only unambiguous whole-product commands bypass the classifier."""
+    text = re.sub(r"[\s，。！!？?、]", "", message)
+    match = re.fullmatch(
+        r"(?:请|帮我|请帮我)?(?:重新生成|重新做|重做|从头生成|重新制作)"
+        r"(商拍方案|商拍策划|方案|生图提示词|提示词)(?:吧|一下)?", text)
+    if not match:
+        return None
+    return "node3" if "提示词" in match[1] else "node2"
+
 
 async def classify(
     message: str,
@@ -225,6 +281,17 @@ async def classify(
     graph_state_brief: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
+    explicit_target = explicit_regeneration_target(message) if has_task else None
+    if explicit_target:
+        return {"intent": "edit", "edit_mode": "regenerate", "refine_target": explicit_target,
+                "refine_instruction": message, "selected_indices": None,
+                "blocked_step": None, "reasoning": "明确要求完整重生成指定产物"}
+    if (has_task and current_node == "c4"
+            and selected_finetuning_target in (None, "node4")
+            and is_image_regeneration_request(message)):
+        return {"intent": "edit", "edit_mode": "regenerate", "refine_target": "node4",
+                "refine_instruction": message, "selected_indices": None,
+                "blocked_step": None, "reasoning": "图片结果阶段明确要求再次生图"}
     try:
         result = await _classify_via_llm(
             message,
@@ -324,7 +391,7 @@ async def _classify_via_llm(
     if selected_finetuning_target:
         ctx_lines.append(
             f"⚠️ 用户显式指定了要微调的目标：refine_target={selected_finetuning_target}，"
-            f"请务必尊重这个选择，把 intent 判为 edit 并使用该 refine_target"
+            f"请务必尊重这个选择，把 intent 判为 edit 并使用该 refine_target；edit_mode 仍按用户要求区分重做与微调"
         )
 
     # 产物摘要 —— 方案 B：每层精选字段，让 LLM 知道当前产物"长什么样"
@@ -342,23 +409,15 @@ async def _classify_via_llm(
         "请返回意图分类 JSON。"
     )
 
-    if task_id:
-        from wellflow.app.llm.model_pool import get_model_pool
-        resp, used_model = await get_model_pool(task_id=task_id).chat(
-            system=get_active_prompt("intent_classifier"), user=user_prompt,
-            response_format={"type": "json_object"}, temperature=0.2,
-            reasoning_effort=settings.text_reasoning_effort,
-        )
-    else:
-        # 新任务的第一次分类发生在 task_id 生成前；任务创建后会立即预加载目录。
-        from wellflow.app.llm.factory import get_llm_client
-        client = get_llm_client("text", model_override=CLASSIFIER_MODEL)
-        resp = await client.chat(
-            system=get_active_prompt("intent_classifier"), user=user_prompt,
-            response_format={"type": "json_object"}, temperature=0.2,
-            reasoning_effort=settings.text_reasoning_effort,
-        )
-        used_model = CLASSIFIER_MODEL
+    # 无论是否已有 task_id，意图识别始终使用固定模型，不参与模型池选择或降级。
+    from wellflow.app.llm.factory import get_llm_client
+    client = get_llm_client("text", model_override=settings.classifier_model)
+    resp = await client.chat(
+        system=get_active_prompt("intent_classifier") + OPERATION_CONTRACT, user=user_prompt,
+        response_format={"type": "json_object"}, temperature=0.2,
+        reasoning_effort=settings.text_reasoning_effort,
+    )
+    used_model = settings.classifier_model
 
     try:
         data = json.loads(resp.content.strip())
@@ -387,13 +446,16 @@ async def _classify_via_llm(
 
     result = {
         "intent": intent,
+        "edit_mode": "regenerate" if data.get("edit_mode") == "regenerate" else "refine",
         "reasoning": data.get("reasoning", ""),
         "refine_target": data.get("refine_target"),
-        "refine_instruction": refine_instruction,
+        "refine_instruction": message.strip() if intent == "edit" else refine_instruction,
         "selected_indices": data.get("selected_indices"),
+        "scheme_output_count": data.get("scheme_output_count"),
+        "scheme_source": data.get("scheme_source"),
         "blocked_step": data.get("blocked_step"),
         "parsed_content": data.get("parsed_content"),  # 保留兼容旧消费者
     }
     print(f"[intent] {used_model} → {intent} refine_target={result['refine_target']}: "
-          f"{result.get('reasoning', '')[:80]}", flush=True)
+          f"mode={result['edit_mode']} {result.get('reasoning', '')[:80]}", flush=True)
     return result

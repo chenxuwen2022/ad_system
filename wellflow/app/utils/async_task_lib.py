@@ -200,16 +200,29 @@ def spawn_heartbeat(store: TaskStore, task_id: str, interval: float = 20.0) -> N
 
 
 def download_image(url: str, model: str) -> str:
-    """下载网关返回的生成图 url → b64(SSL 降级重试 + 图片魔数校验)。"""
+    """下载网关返回的生成图 url → b64(SSL 降级重试 + 图片魔数校验)。
+
+    代理策略(与 base.py 的 image_gen_proxy_url 语义对齐):
+      默认直连(绕过系统代理环境变量,网关为内网直连);
+      配置 image_gen_proxy_url 时走指定代理(生产环境按需在 .env 切换,不改代码)。
+    """
     import ssl
     import urllib.request as _ur
+    from wellflow.app.config import settings
+
+    proxy_url = (getattr(settings, "image_gen_proxy_url", None) or "").strip()
+    if proxy_url:
+        proxy_handler = _ur.ProxyHandler({"http": proxy_url, "https": proxy_url})
+    else:
+        proxy_handler = _ur.ProxyHandler({})  # 空字典 = 完全直连,不走系统代理
 
     data = None
     errors = []
-    contexts = [None, ssl._create_unverified_context()]
-    for ctx in contexts:
+    for verify in (True, False):
+        ctx = ssl.create_default_context() if verify else ssl._create_unverified_context()
         try:
-            with _ur.urlopen(url, timeout=60, context=ctx) as resp:
+            opener = _ur.build_opener(proxy_handler, _ur.HTTPSHandler(context=ctx))
+            with opener.open(url, timeout=60) as resp:
                 data = resp.read()
             break
         except Exception as e:

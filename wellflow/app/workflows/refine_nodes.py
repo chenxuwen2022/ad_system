@@ -9,7 +9,7 @@ LLM 做最小必要增量修改，直接产出更新后的完整产物。
     → _cX_confirm_interrupt 识别 decision="refine"
     → 写 _refine_target + _refine_instruction 到 state
     → 路由到对应 refine 节点
-    → refine 节点复用当前 task 的 text 模型池（纯文本生成，不重新获取模型列表）
+    → refine 节点通过 settings.classifier_model 固定调用 deepseek-v4-flash（不进入模型池）
     → 路由回同一个 cX interrupt（用户再次确认）
 
 ⚠️ Node4 不做 refine —— Node4 是生图 API，没有可"增量修改"的文本产物，
@@ -19,6 +19,7 @@ LLM 做最小必要增量修改，直接产出更新后的完整产物。
 from __future__ import annotations
 
 import time
+import json
 from typing import Any
 
 from wellflow.app.config import settings
@@ -37,7 +38,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被用户确认并锁定，
     当前任务内不得再修改 —— 直接拒绝，返回 phase=c1_confirm 且不改动 node1 任何字段。
     """
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
     from wellflow.app.workflows.report_progress import ReportProgressStream, split_report_progress
@@ -76,7 +77,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node1_refining", "reset_text": True})
 
-    pool = get_model_pool(task_id=task_id)
+    client = get_llm_client("text", model_override=settings.classifier_model)
 
     # 多轮 refine 历史（**只取 node1 自己的**——避免 node2/node3 的 refine 指令混进来）
     from wellflow.app.workflows.state import get_node_refine_history
@@ -108,7 +109,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     content_chunk_index = 0
     report_stream = ReportProgressStream()
 
-    async for item in pool.stream_chat(
+    async for item in client.stream_chat(
         system=get_active_prompt("refine_report"),
         user=user_message,
         reasoning_effort=settings.text_reasoning_effort,
@@ -153,7 +154,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     new_sections = build_report_sections(new_report) if new_report else None
 
     total_ts = time.time() - t0
-    print(f"[refine_node1] ✅ 完成: model={used_model}, "
+    print(f"[refine_node1] ✅ 完成: stream_chat, "
           f"旧报告={len(old_report)}字 → 新报告={len(new_report)}字, 耗时={total_ts:.1f}s", flush=True)
     print(f"[refine_node1] 📝 新报告前300字: {new_report[:300]!r}", flush=True)
 
@@ -183,10 +184,10 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
 
 async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     """根据用户指令修改完整商拍报告正文。"""
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
-    from wellflow.app.nodes.planning_scheme import split_scheme_reports
+    from wellflow.app.nodes.planning_scheme import split_scheme_reports, scheme_output_contract
 
     task_id = state.get("task_id", "")
     instruction = state.get("_refine_instruction", "").strip()
@@ -196,16 +197,55 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     if not instruction or not reports or any(not report for report in reports):
         return {"phase": "c2_select"}
 
+    from wellflow.app.workflows.scheme_selection import validate_scheme_indices
+    selection = state.get("_refine_selected_indices")
+    scheme_count = state.get("_refine_scheme_count")
+    source = state.get("_refine_scheme_source")
+    initial_schemes = state.get("initial_schemes") or []
+    if source is None and task_id and not initial_schemes:
+        import asyncio
+        from wellflow.app.workflows.scheme_selection import load_initial_schemes
+        initial_schemes = await asyncio.to_thread(load_initial_schemes, task_id)
+    if selection is None or scheme_count is None or source is None:
+        # Older checkpoints and direct refine entry points still require an intent plan.
+        from wellflow.app.llm.intent_classifier import classify, summarize_graph_state
+        intent = await classify(
+            instruction, has_task=True, current_node="c2",
+            selected_finetuning_target="node2", graph_state_brief=summarize_graph_state({**state, "initial_schemes": initial_schemes}),
+            task_id=task_id or None,
+        )
+        if (intent.get("intent") != "edit" or intent.get("refine_target") != "node2"
+                or intent.get("edit_mode") != "refine"):
+            raise ValueError("未能确定商拍方案微调范围，请明确要修改的方案和数量")
+        selection = intent.get("selected_indices")
+        scheme_count = intent.get("scheme_output_count")
+        source = intent.get("scheme_source")
+    if (not isinstance(selection, list) or not selection
+            or type(scheme_count) is not int or scheme_count < 1):
+        raise ValueError("意图识别未返回有效的微调方案索引和输出数量，请明确后重试")
+    if source not in ("current", "initial"):
+        raise ValueError("意图识别未明确方案版本，请指定当前或最初方案后重试")
+    if source == "initial":
+        if not initial_schemes:
+            import asyncio
+            from wellflow.app.workflows.scheme_selection import load_initial_schemes
+            initial_schemes = await asyncio.to_thread(load_initial_schemes, task_id)
+        if not initial_schemes:
+            raise ValueError("找不到最初商拍方案记录，不能使用当前方案代替，请重新选择")
+        schemes = initial_schemes
+    indices = validate_scheme_indices(selection, len(schemes))
+    source_schemes = [(i, schemes[i]) for i in indices]
     if task_id:
-        publish(task_id, "phase", {"phase": "node2_refining", "reset_text": True})
-    pool = get_model_pool(task_id=task_id)
+        publish(task_id, "phase", {"phase": "node2_refining", "reset_text": True, "scheme_count": scheme_count})
+    client = get_llm_client("text", model_override=settings.classifier_model)
     parts: list[str] = []
-    previous = "\n\n".join(
-        f"===SCHEME {i + 1}: {schemes[i].get('scheme_name') or f'方案{i + 1}'}===\n{report}"
-        for i, report in enumerate(reports)
-    )
-    async for item in pool.stream_chat(
-        system=get_active_prompt("refine_plan"),
+    previous = json.dumps([
+        {"source_scheme_number": i + 1, "scheme_name": s.get("scheme_name") or f"方案{i + 1}", "report_text": s["report_text"]}
+        for i, s in source_schemes
+    ], ensure_ascii=False)
+    chunk_index = 0
+    async for item in client.stream_chat(
+        system=get_active_prompt("refine_plan") + scheme_output_contract(scheme_count),
         user=(f"【原商拍策划方案列表】\n{previous}\n\n"
               f"【本轮修改指令】\n{instruction}"),
         reasoning_effort=settings.text_reasoning_effort,
@@ -214,22 +254,26 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
         if text and (not isinstance(item, dict) or item.get("type", "content") != "thinking"):
             parts.append(text)
             if task_id:
-                publish(task_id, "scheme_chunk", {"chunk": text, "node": "node2"})
+                chunk_index += 1
+                publish(task_id, "scheme_chunk", {"chunk": text, "index": chunk_index, "node": "node2"})
     updated_raw = "".join(parts).strip()
     if not updated_raw:
         raise RuntimeError("商拍策划报告修改未返回正文")
-    updated_schemes = split_scheme_reports(updated_raw)
+    updated_schemes = split_scheme_reports(updated_raw, expected_count=scheme_count)
     if task_id:
         publish(task_id, "scheme_chunk_done", {
-            "schemes": updated_schemes, "_final": True, "node": "node2"
+            "schemes": updated_schemes, "scheme_count": scheme_count, "_final": True, "node": "node2"
         })
     return {
         "phase": "c2_select",
         "node2": {**node2, "schemes": updated_schemes, "scheme_raw": updated_raw,
-                  "selected_scheme_indices": []},
+                  "selected_scheme_indices": [], "per_scheme_count": []},
         "_refine_target": None,
         "_refine_instruction": None,
         "_refine_selected_indices": None,
+        "_refine_scheme_count": None,
+        "_refine_scheme_source": None,
+        "initial_schemes": initial_schemes,
     }
 
 
@@ -243,13 +287,43 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     输入：state.node3.generate_prompts（旧 prompt 列表） + state._refine_instruction
     输出：更新后的 node3.generate_prompts（新 prompt 列表）
     """
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.llm.factory import get_llm_client
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
 
     task_id = state.get("task_id", "")
     refine_instruction = state.get("_refine_instruction", "").strip()
     old_prompts: list[str] = state.get("node3", {}).get("generate_prompts", []) or []
+    # LLM 意图分类器返回的目标 prompt 索引 —— 例："给第一个提示词加人物居中" → ["0"]
+    # node3 refine 里用来显式告诉 LLM 哪些 prompt 是本次修改目标，其余原封不动
+    raw_sel = state.get("_refine_selected_indices")
+    n_total = len(old_prompts)
+    _target_indices: list[int] | None = None
+    if raw_sel is not None:
+        try:
+            if isinstance(raw_sel, str):
+                if raw_sel.lower() == "all":
+                    _target_indices = None  # all = 不限定
+                else:
+                    # 兜底：单字符串 "0"
+                    _target_indices = [int(raw_sel)]
+            elif isinstance(raw_sel, list):
+                if raw_sel and raw_sel[0] == "all":
+                    _target_indices = None
+                else:
+                    _target_indices = []
+                    for _x in raw_sel:
+                        try:
+                            _target_indices.append(int(_x))
+                        except (TypeError, ValueError):
+                            pass
+            # 边界钳制：过滤掉超出范围的负数索引
+            if _target_indices:
+                _target_indices = [i for i in _target_indices if 0 <= i < n_total] or None
+        except Exception:
+            _target_indices = None
+    if _target_indices is not None:
+        print(f"[refine_node3] 🎯 目标 prompt 索引已锁定: {_target_indices}", flush=True)
 
     if not refine_instruction:
         print("[refine_node3] ⚠️ 没有 refine_instruction，跳过编辑", flush=True)
@@ -262,11 +336,10 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     if task_id:
         publish(task_id, "phase", {"phase": "node3_refining", "reset_text": True})
 
-    pool = get_model_pool(task_id=task_id)
+    client = get_llm_client("text", model_override=settings.classifier_model)
     # 给每条旧 prompt 加 [i] 序号前缀，让 LLM 清楚知道边界和总数
     _numbered_old = [f"[{i + 1}] {p}" for i, p in enumerate(old_prompts)]
     old_prompts_text = "\n---PROMPT_SEP---\n".join(_numbered_old)
-    n_total = len(old_prompts)
 
     # 多轮 refine 历史（**只取 node3 自己的**——避免 node1/node2 的 refine 指令混进来）
     from wellflow.app.workflows.state import get_node_refine_history
@@ -282,6 +355,16 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
             + "\n\n"
         )
 
+    # —— 目标索引显式注入，避免 LLM 自己去猜"第一个/第二条/前三条"到底指哪条 ——
+    if _target_indices:
+        _target_desc = "、".join(f"[{i + 1}]" for i in _target_indices)
+        _target_hint = (
+            f"🔴 结构化目标锁定：**本次只修改 {_target_desc} 这 {len(_target_indices)} 条 prompt**，"
+            f"其他 {n_total - len(_target_indices)} 条必须原封不动返回，一字不改。"
+        )
+    else:
+        _target_hint = f"🔴 未锁定单独目标，默认所有 {n_total} 条 prompt 都可能被修改。"
+
     user_message = (
         f"【原生图提示词列表】（共 {n_total} 条，每条带序号前缀 [i]）\n"
         f"{old_prompts_text}\n\n"
@@ -290,7 +373,8 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整提示词列表。\n"
         f"🔴 条数约束：**当前共 {n_total} 条 prompt，请输出恰好 {n_total} 条**。\n"
         f"🔴 输出格式：每条 prompt 单独一段，用 ---PROMPT_SEP--- 分隔。\n"
-        f"🔴 未被指令提及的那条必须原封不动复制返回，一字不改。"
+        f"{_target_hint}\n"
+        f"🔴 指令明确没提到的 prompt 必须原封不动复制返回，一字不改。"
     )
 
     print(f"[refine_node3] 📤 stream_chat → refine prompts (instruction_len={len(refine_instruction)})", flush=True)
@@ -300,7 +384,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     raw_parts: list[str] = []
     content_chunk_index = 0
 
-    async for item in pool.stream_chat(
+    async for item in client.stream_chat(
         system=get_active_prompt("refine_image_prompt"),
         user=user_message,
         reasoning_effort=settings.text_reasoning_effort,
@@ -370,7 +454,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         print(f"[refine_node3] ⚠️ 返回条数变化较大: {n_total} → {len(new_prompts)}", flush=True)
 
     total_ts = time.time() - t0
-    print(f"[refine_node3] ✅ 完成: model={used_model}, "
+    print(f"[refine_node3] ✅ 完成: stream_chat, "
           f"旧 prompts={len(old_prompts)} → 新 prompts={len(new_prompts)}, 耗时={total_ts:.1f}s", flush=True)
 
     # 更新 prompts_detail：保持 scheme_index/variant_index 等元信息，只替换 prompt 内容
@@ -386,11 +470,14 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
             "generate_prompts": new_prompts,
             "prompts_detail": new_details,
             "prompt_raw": "\n---\n".join(new_prompts),
-            "per_prompt_size": node3_state.get("per_prompt_size", ["3:4"] * len(new_prompts)),
+            "per_prompt_size": [(node3_state.get("per_prompt_size") or [])[i]
+                                if i < len(node3_state.get("per_prompt_size") or []) else "3:4"
+                                for i in range(len(new_prompts))],
             "thinking_text": "",
         },
         "_refine_target": None,
         "_refine_instruction": None,
+        "_refine_selected_indices": None,  # 🔴 消费后清空，避免下一轮 refine 继承上一轮的锁定目标
     }
 
 

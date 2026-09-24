@@ -162,8 +162,14 @@ class ModelPool:
         return None
 
     def _build_client(self, state: _ModelState):
+        """按 capability 推导 role：text → 'text'；其他（vlm / None / image）→ 'vlm'。
+
+        🔴 历史 bug：这里之前硬编码成 "vlm"，导致 refine 节点（capability="text"）
+        也拿到 role=vlm 的网关日志和超时策略，stream_chat 耗时多 3-5 倍。
+        """
         from wellflow.app.llm.factory import get_llm_client, _strip_provider
-        return get_llm_client("vlm", model_override=_strip_provider(state.model_key))
+        role = "text" if self._capability == "text" else "vlm"
+        return get_llm_client(role, model_override=_strip_provider(state.model_key))
 
     # ------------------------------------------------------------------
     # helpers

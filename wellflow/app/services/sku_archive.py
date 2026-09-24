@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +21,8 @@ from wellflow.app.models.asset_models import ProductSku, ProductImage
 from wellflow.app.models.task_models import Task, TaskEvent, TaskImage
 from wellflow.app.repositories.conversation_repo import ConversationRepo
 from wellflow.app.schemas.asset_schemas import ArchiveGeneratedImages
+
+logger = logging.getLogger(__name__)
 
 
 def image_key(url: str) -> str:
@@ -63,7 +66,11 @@ def save_ad_image(sku_id: int, url: str) -> str:
         if not relative.startswith("uploads/"):
             raise ValueError("生成图片路径无效")
         path = (root / relative.removeprefix("uploads/")).resolve()
-        if root not in path.parents or path.stat().st_size > limit:
+        if root not in path.parents:
+            raise ValueError("生成图片路径无效")
+        if not path.is_file():
+            raise HTTPException(409, "生成图片文件在当前服务中不存在，无法入库。请确认生图和入库使用同一服务，或检查图片存储是否共享")
+        if path.stat().st_size > limit:
             raise ValueError("生成图片路径或大小无效")
         raw = path.read_bytes()
     if not raw or len(raw) > limit:
@@ -98,19 +105,21 @@ def prepare_archive(db: Session, sku_id: int, request: ArchiveGeneratedImages) -
     if not task or task.conversation_id != conv.conversation_id:
         raise HTTPException(409, "任务不属于当前对话")
     selected = sorted({(item.task_id, item.image_key) for item in request.images})
+    # Receipts track completion; the live SKU associations determine deduplication.
     receipt = db.scalar(select(TaskEvent).where(
         TaskEvent.task_id == task.task_id, TaskEvent.event_type == "sku_images_archived",
     ).order_by(TaskEvent.event_id.desc()))
-    if receipt:
-        payload = receipt.payload_json
-        if payload["selection"] != [list(item) for item in selected] or payload["sku_id"] != sku_id:
-            raise HTTPException(409, "本次入库已保存，请使用原选择重试完成")
-        return payload
-    if task.phase != "c4_review" or (task.interrupt_json or {}).get("node") != "c4":
+    if task.phase not in ("c4_review", "archive_pending", "done"):
         raise HTTPException(409, "当前任务不在图片确认阶段")
     if conv.current_task_id != task.task_id:
         raise HTTPException(409, "请在当前任务中确认入库")
-    sku = db.scalar(select(ProductSku).where(ProductSku.id == sku_id).with_for_update())
+    from sqlalchemy.orm import lazyload
+    sku = db.scalar(
+        select(ProductSku)
+        .where(ProductSku.id == sku_id)
+        .options(lazyload(ProductSku.brand), lazyload(ProductSku.series))
+        .with_for_update()
+    )
     if not sku:
         raise HTTPException(404, "商品不存在")
     source_ids = {source for source, _ in selected}
@@ -134,14 +143,23 @@ def prepare_archive(db: Session, sku_id: int, request: ArchiveGeneratedImages) -
                 candidates[(source.task_id, image_key(url))] = output
     if any(key not in candidates for key in selected):
         raise HTTPException(422, "所选图片无法在生成记录中找到，请刷新后重试")
-    saved = []
     existing = {img.storage_uri: img for img in db.scalars(select(ProductImage).where(
         ProductImage.sku_id == sku_id, ProductImage.image_type == "ad",
     ))}
+    previous = (receipt.payload_json or {}) if receipt and (receipt.payload_json or {}).get("sku_id") == sku_id else {}
+    saved = [item for item in previous.get("images", [])
+             if item["storage_uri"] in existing]
+    selection = {tuple(item) for item in previous.get("selection", [])}
+    selection.update(selected)
+    added_count = 0
+    skipped_count = 0
     order = max((img.sort_order for img in existing.values()), default=-1) + 1
     for source_id, key in selected:
         output = candidates[(source_id, key)]
-        uri = save_ad_image(sku_id, output["image_url"])
+        # A validated receipt can resolve an existing association even if its
+        # original generation URL has expired. Removed associations are restored.
+        known = next((item for item in saved if item.get("shot_id") == key), None)
+        uri = known["storage_uri"] if known else save_ad_image(sku_id, output["image_url"])
         img = existing.get(uri)
         if img is None:
             img = ProductImage(sku_id=sku_id, image_type="ad", category="其他",
@@ -150,14 +168,23 @@ def prepare_archive(db: Session, sku_id: int, request: ArchiveGeneratedImages) -
             db.flush()
             existing[uri] = img
             order += 1
+            added_count += 1
+        else:
+            skipped_count += 1
         if not any(item["product_image_id"] == img.id for item in saved):
             saved.append({"product_image_id": img.id, "storage_uri": uri,
                           "prompt": output.get("prompt"), "prompt_index": output.get("prompt_index"),
                           "shot_id": key})
-    payload = {"sku_id": sku_id, "selection": [list(item) for item in selected], "images": saved}
-    db.add(TaskEvent(task_id=task.task_id, event_type="sku_images_archived", payload_json=payload))
+    payload = {"sku_id": sku_id, "selection": [list(item) for item in sorted(selection)], "images": saved,
+               "added_count": added_count, "skipped_count": skipped_count}
+    payload["message"] = f"入库完成：新增关联 {added_count} 张，已关联跳过 {skipped_count} 张"
+    archive_event = TaskEvent(task_id=task.task_id, event_type="sku_images_archived", payload_json=payload)
+    db.add(archive_event)
+    db.flush()
+    payload = {**payload, "archive_event_id": archive_event.event_id}
     sku.updated_at = datetime.now(timezone.utc)
-    task.phase = "archive_pending"
+    if task.phase != "done":
+        task.phase = "archive_pending"
     db.commit()
     return payload
 
@@ -166,61 +193,78 @@ def complete_archive(db: Session, task_id: str, receipt: dict) -> None:
     task = db.scalar(select(Task).where(Task.task_id == task_id).with_for_update())
     if not task:
         raise HTTPException(404, "任务不存在")
-    if task.phase == "done":
-        return
     for img in receipt["images"]:
         image_id = hashlib.sha256(f'{task_id}:{img["storage_uri"]}'.encode()).hexdigest()
         if db.get(TaskImage, image_id) is None:
             db.add(TaskImage(image_id=image_id, task_id=task_id, image_type="output",
                              storage_uri=img["storage_uri"], shot_id=img["shot_id"],
                              prompt=img["prompt"], prompt_index=img["prompt_index"]))
+    # Preserve outputs that only reached the interrupt before clearing it.
+    if (task.interrupt_json or {}).get("outputs"):
+        db.add(TaskEvent(task_id=task_id, event_type="graph_interrupt_c4",
+                         payload_json=task.interrupt_json))
     task.phase = "done"
     task.interrupt_json = None
     task.updated_at = datetime.now(timezone.utc)
-    db.add(TaskEvent(task_id=task_id, event_type="workflow_done", phase="done", payload_json={
+    summary = {
         "phase": "done", "output_count": len(receipt["images"]),
         "image_paths": [img["storage_uri"] for img in receipt["images"]],
         "prompts": [img["prompt"] for img in receipt["images"]],
-    }))
+    }
+    done_event = db.scalar(select(TaskEvent).where(
+        TaskEvent.task_id == task_id, TaskEvent.event_type == "workflow_done",
+    ).order_by(TaskEvent.event_id.desc()))
+    if done_event:
+        done_event.payload_json = summary
+    else:
+        db.add(TaskEvent(task_id=task_id, event_type="workflow_done", phase="done", payload_json=summary))
+    archive_event = db.get(TaskEvent, receipt.get("archive_event_id")) if receipt.get("archive_event_id") else None
+    if archive_event and not (archive_event.payload_json or {}).get("result_recorded"):
+        db.add(TaskEvent(task_id=task_id, event_type="sku_archive_result", payload_json={
+            "message": receipt["message"], "sku_id": receipt["sku_id"],
+            "added_count": receipt["added_count"], "skipped_count": receipt["skipped_count"],
+        }))
+        archive_event.payload_json = {**archive_event.payload_json, "result_recorded": True}
     db.commit()
 
 
-async def archive_generated_images(sku_id: int, request: ArchiveGeneratedImages) -> None:
+async def archive_generated_images(sku_id: int, request: ArchiveGeneratedImages) -> dict:
     import asyncio
     from langgraph.types import Command
     from wellflow.app.database import session_scope
-    from wellflow.app.event_bus import is_running, mark_running, mark_done
     from wellflow.app.runtime import get_graph
 
-    if is_running(request.task_id):
-        raise HTTPException(409, "任务正在处理，请稍后重试")
-    mark_running(request.task_id)
-    try:
-        def prepare():
-            with session_scope() as db:
-                receipt = prepare_archive(db, sku_id, request)
-                return receipt, db.get(Task, request.task_id).phase == "done"
-        receipt, already_done = await asyncio.to_thread(prepare)
-        if already_done:
-            return
-        graph = get_graph()
-        if graph is None:
-            raise RuntimeError("工作流暂不可用")
-        config = {"configurable": {"thread_id": request.task_id}}
-        snapshot = await graph.aget_state(config)
-        if snapshot.values.get("phase") != "done":
-            if "c4_review_result" not in snapshot.next:
-                raise RuntimeError("工作流不在图片确认节点")
-            result = await graph.ainvoke(Command(resume={"decision": "confirm"}), config=config)
-            if result.get("phase") != "done":
-                raise RuntimeError("工作流尚未完成")
-        def finish():
-            with session_scope() as db:
-                complete_archive(db, request.task_id, receipt)
-        await asyncio.to_thread(finish)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(503, "入库未完成，请保留当前选择重试；已保存图片不会重复添加") from exc
-    finally:
-        mark_done(request.task_id)
+    from wellflow.app.workflow_execution import execution_lease
+    from wellflow.app.graph_persist import reconcile_checkpoint
+    async with execution_lease(request.task_id):
+        try:
+            graph = get_graph()
+            if graph is None:
+                raise RuntimeError("工作流暂不可用")
+            config = {"configurable": {"thread_id": request.task_id}}
+            snapshot = await graph.aget_state(config)
+            await asyncio.to_thread(reconcile_checkpoint, request.task_id, snapshot)
+            def prepare():
+                with session_scope() as db:
+                    receipt = prepare_archive(db, sku_id, request)
+                    return receipt, db.get(Task, request.task_id).phase == "done"
+            receipt, already_done = await asyncio.to_thread(prepare)
+            from wellflow.app.workflow_status import checkpoint_view
+            phase, interrupt = checkpoint_view(snapshot)
+            if not already_done and phase != "done":
+                if not interrupt or interrupt["node"] != "c4":
+                    raise RuntimeError("工作流不在图片确认节点")
+                result = await graph.ainvoke(Command(resume={"decision": "confirm", "revision": interrupt.get("revision")}), config=config)
+                if result.get("phase") != "done":
+                    raise RuntimeError("工作流尚未完成")
+            def finish():
+                with session_scope() as db:
+                    complete_archive(db, request.task_id, receipt)
+            await asyncio.to_thread(finish)
+            return receipt
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("SKU image archive failed: sku_id=%s task_id=%s conversation_id=%s",
+                             sku_id, request.task_id, request.conversation_id)
+            raise HTTPException(503, "图片入库处理暂未完成，请重试；已关联到该商品的图片会自动跳过") from exc

@@ -243,8 +243,6 @@ class BaseLLMClient(ABC):
         quality = settings.image_gen_quality
         in_fidelity = settings.image_gen_input_fidelity
         detail = settings.image_gen_detail
-        # /v1/responses 单独的代理开关：默认 None=直连，跳过 HTTP 代理
-        proxy = settings.image_gen_proxy_url
 
         # 构建 input content blocks
         content: list[dict[str, Any]] = [
@@ -286,8 +284,7 @@ class BaseLLMClient(ABC):
         _prompt_preview = prompt[:120] + ("..." if len(prompt) > 120 else "")
         print(f"[llm] 🆕 POST /v1/responses model={top_model} "
               f"{'(edit)' if is_edit else '(generate)'} refs={len(refs) if refs else 0} "
-              f"size={size} quality={quality} fidelity={in_fidelity} detail={detail} "
-              f"proxy={proxy or '(直连)'}", flush=True)
+              f"size={size} quality={quality} fidelity={in_fidelity} detail={detail}", flush=True)
         print(f"[llm]   prompt: {_prompt_preview}", flush=True)
 
         MAX_RETRIES = 0  # 生图失败交给模型链立即切换，不在当前模型等待重试
@@ -299,7 +296,7 @@ class BaseLLMClient(ABC):
         _n_refs = len(payload.get("input", [{}])[0].get("content", [])) - 1  # 减 1 是 input_text
         print(f"[llm] 📦 payload ≈ {_payload_size/1024:.0f}KB ({_n_refs} refs, {payload['tools'][0].get('quality','?')} quality)", flush=True)
 
-        async with httpx.AsyncClient(timeout=settings.image_timeout, proxy=proxy) as client:
+        async with httpx.AsyncClient(timeout=settings.image_timeout, trust_env=False) as client:
             last_exc: Exception | None = None
             data = None
             for attempt in range(1, MAX_RETRIES + 2):
@@ -390,8 +387,6 @@ class BaseLLMClient(ABC):
         model_name = getattr(self, "model", "")
         base_url = getattr(self, "base_url", "")
         api_key = getattr(self, "api_key", None)
-        # 🔑 代理策略：与 /v1/responses 路径保持一致，用 image_gen_proxy_url（默认 None=直连）
-        proxy = settings.image_gen_proxy_url
 
         # 构建 payload
         payload: dict[str, Any] = {
@@ -421,7 +416,7 @@ class BaseLLMClient(ABC):
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError,
                      httpx.ConnectTimeout, httpx.ReadTimeout)
 
-        async with httpx.AsyncClient(timeout=settings.image_timeout, proxy=proxy) as client:
+        async with httpx.AsyncClient(timeout=settings.image_timeout, trust_env=False) as client:
             data = None
             for attempt in range(1, MAX_RETRIES + 2):
                 try:
@@ -546,8 +541,7 @@ class BaseLLMClient(ABC):
         RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
         body: dict[str, Any] | None = None
-        async with httpx.AsyncClient(timeout=settings.image_timeout,
-                                     proxy=settings.image_gen_proxy_url) as client:
+        async with httpx.AsyncClient(timeout=settings.image_timeout, trust_env=False) as client:
             for attempt in range(1, MAX_RETRIES + 2):
                 try:
                     resp = await client.post(
@@ -613,9 +607,22 @@ class BaseLLMClient(ABC):
 
     def langchain_compat(self):
         """返回一个 LangChain ChatModel 兼容对象。"""
+        import httpx
         from langchain_openai import ChatOpenAI
+        from openai import AsyncOpenAI, OpenAI
 
+        # 显式提供 SDK 客户端，所有连接直连且不继承环境代理。
+        connection = {
+            "base_url": getattr(self, "base_url", None),
+            "api_key": getattr(self, "api_key", "dummy"),
+        }
+        sync_client = OpenAI(**connection, http_client=httpx.Client(trust_env=False))
+        async_client = AsyncOpenAI(**connection, http_client=httpx.AsyncClient(trust_env=False))
         return ChatOpenAI(
+            client=sync_client.chat.completions,
+            async_client=async_client.chat.completions,
+            root_client=sync_client,
+            root_async_client=async_client,
             model=getattr(self, "model", "qwen-max"),
             base_url=getattr(self, "base_url", None),
             api_key=getattr(self, "api_key", "dummy"),

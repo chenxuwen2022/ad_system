@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Node4 生图渠道单独配 node4_image_channel_id（语义不同，不要合并）
     llm_channel_id: int = 4
 
+    # 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
+    classifier_model: str = "deepseek-v4-flash"
+
     # 模型池熔断参数（模型列表本身由 new-api /models?channel_id=llm_channel_id 动态获取）
     model_pool_fail_threshold: int = 2              # 连续 2 次失败熔断
     model_pool_fail_window: float = 10.0            # 失败统计窗口（秒）
@@ -40,8 +43,8 @@ class Settings(BaseSettings):
     text_reasoning_effort: str = "close"
 
     # ====== Node2 ======
-    # 首次生成的候选商拍方案数量；微调时不据此增删方案。
-    node2_scheme_count_default: int = 3
+    # 首次和重新生成的候选方案数量；微调按目标方案数量输出。
+    node2_scheme_count_default: int = Field(default=3, ge=1)
 
     # ====== Node4 ======
     node4_gen_concurrency: int = Field(default=2, ge=1)                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
@@ -61,7 +64,6 @@ class Settings(BaseSettings):
     image_gen_quality: str = "medium"              # high | medium | low —— 生图质量/速度杠杆
     image_gen_input_fidelity: str = "low"          # high | low —— edit 模式下对参考图的保真强度
     image_gen_detail: str = "low"                  # high | low | auto —— input_image block 的 detail
-    image_gen_proxy_url: str | None = None         # /v1/responses 是否走代理，None=直连（跳过 127.0.0.1:7890）
     image_gpt_edit_endpoint: str = "edits"         # edits（/v1/images/edits multipart）| responses（/v1/responses + image_generation tool）
     image_edit_quality: str = "high"               # /v1/images/edits multipart 生图质量（gpt-image 系列）
 
@@ -127,13 +129,6 @@ class Settings(BaseSettings):
     def newapi_admin_base_url(self) -> str:
         """管理接口与 /v1 模型接口位于同一 New API 服务。"""
         return self.newapi_base_url.rstrip("/").removesuffix("/v1")
-
-    @field_validator("image_gen_proxy_url", mode="before")
-    @classmethod
-    def _empty_str_to_none(cls, v):
-        if isinstance(v, str) and v.strip() == "":
-            return None
-        return v
 
     @field_validator("upload_dir", mode="before")
     @classmethod

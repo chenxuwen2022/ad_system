@@ -14,76 +14,78 @@ from wellflow.app.repositories.task_repo import TaskRepo
 
 
 def persist_phase(task_id: str, phase: str, node_name: str) -> None:
-    """graph 节点跑完后更新 task.phase + 写 phase_change 事件。"""
-    try:
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            repo.update_phase(task_id, phase)
-            if phase == "done":
-                # 终态归档：清掉残留的 interrupt_json，
-                # 否则前端恢复任务时会误判为「等待确认」而渲染确认按钮
-                repo.save_interrupt(task_id, None)
-            repo.add_event(task_id, "phase_change", phase=phase, payload_json={"node": node_name})
-    except Exception as e:
-        # 🔴 不再静默吞掉——DB phase 持久化失败是 graph→DB 状态脱节的头号根因
-        import traceback as _tb
-        print(f"[persist_phase] ❌ task={task_id} phase={phase} node={node_name} DB 写入失败: {e}", flush=True)
-        _tb.print_exc()
+    from wellflow.app.models.task_models import Task, TaskEvent
+    with session_scope() as db:
+        task = db.get(Task, task_id)
+        if task is None:
+            raise RuntimeError("任务不存在")
+        task.phase = phase
+        task.interrupt_json = None
+        db.add(TaskEvent(task_id=task_id, event_type="phase_change", phase=phase,
+                         payload_json={"node": node_name}))
+        db.commit()
 
 
-def persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str) -> None:
-    """graph 触发 interrupt 时存 interrupt_json + 更新 phase + 写 graph_interrupt 事件。
+def persist_interrupt(task_id: str, interrupt_value: dict[str, Any], phase: str = "") -> None:
+    from wellflow.app.models.task_models import Task, TaskEvent
+    from wellflow.app.workflow_status import canonical_interrupt
+    payload = canonical_interrupt(interrupt_value)
+    phase = payload["phase"]
+    with session_scope() as db:
+        task = db.get(Task, task_id)
+        if task is None:
+            raise RuntimeError("任务不存在")
+        task.interrupt_json = payload
+        task.phase = phase
+        # All restore fields use the same payload as the actual checkpoint.
+        db.add(TaskEvent(task_id=task_id, event_type=f"graph_interrupt_{payload['node']}",
+                         phase=phase, payload_json=payload))
+        db.commit()
 
-    **同时往 task_event 追加一条带完整产物的事件**（payload_json 里放 report/schemes/prompts 等），
-    这样 GET /api/conversations/{id}/timeline 能拿到每一步的工作流产物历史，
-    而不是只看 interrupt_json 单快照（backward 重跑会被覆盖）。
-    """
-    try:
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            repo.save_interrupt(task_id, interrupt_value)
-            repo.update_phase(task_id, phase)
 
-            # 写事件：event_type = graph_interrupt_{node}
-            node = interrupt_value.get("node") or "unknown"
-            event_type = f"graph_interrupt_{node}"
-
-            # 按 node 类型提取要持久化的产物字段（去掉 hint/schema 这种非产物字段）
-            # 💭 thinking_text 必须进白名单——前端 /api/conversations/{id}/timeline
-            # 是从 task_event 表读 payload_json 恢复会话的，漏了就刷新后丢失思考过程
-            payload_fields = {
-                "c1": ["report", "report_sections", "product_insight",
-                       "thinking_text", "report_locked", "report_hash"],
-                "c2": ["schemes", "scheme_raw", "generate_prompts",
-                       "selected_scheme_indices", "thinking_text"],
-                "c3": ["generate_prompts", "prompts_detail", "prompt_raw",
-                       "thinking_text", "per_prompt_size", "image_model"],
-                "c4": ["outputs", "failed_items", "thinking_text"],
-            }.get(node, [])
-            payload = {k: v for k, v in interrupt_value.items() if k in payload_fields}
-            # 总是带上 phase + hint（恢复时有用）
-            payload.setdefault("phase", phase)
-            payload.setdefault("hint", interrupt_value.get("hint", ""))
-
-            repo.add_event(
-                task_id, event_type,
-                phase=phase,
-                payload_json=payload,
-            )
-    except Exception as e:
-        print(f"[graph] interrupt persist error: {e}", flush=True)
+def reconcile_checkpoint(task_id: str, snapshot) -> tuple[str, dict | None]:
+    """Repair the business projection without fabricating checkpoint state."""
+    from wellflow.app.models.task_models import Task, TaskEvent
+    from wellflow.app.workflow_status import checkpoint_view
+    phase, payload = checkpoint_view(snapshot)
+    if phase == "missing":
+        raise RuntimeError("任务 checkpoint 缺失，无法恢复，请重新创建任务")
+    with session_scope() as db:
+        task = db.get(Task, task_id)
+        if task is None:
+            raise RuntimeError("任务不存在")
+        # Archival is a separate transaction whose durable receipt must finish.
+        if task.phase == "done":
+            return "done", None
+        if task.phase == "archive_pending":
+            return "archive_pending", payload
+        changed = task.phase != phase or task.interrupt_json != payload
+        task.phase = phase
+        task.interrupt_json = payload
+        state = snapshot.values
+        if state.get("request"):
+            task.request_json = state["request"]
+        if changed and payload:
+            db.add(TaskEvent(task_id=task_id, event_type=f"graph_interrupt_{payload['node']}",
+                             phase=phase, payload_json=payload))
+        db.commit()
+    return phase, payload
 
 
 def persist_error(task_id: str, code: str, message: str, source: str) -> None:
-    try:
-        from wellflow.app.models.task_models import TaskPhase
-
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            repo.add_error(task_id, code, "unrecoverable", message, source=source)
-            repo.update_phase(task_id, TaskPhase.FAILED.value)
-    except Exception:
-        pass
+    from wellflow.app.models.task_models import Task, TaskErrorLog, TaskEvent
+    with session_scope() as db:
+        task = db.get(Task, task_id)
+        if task is None:
+            raise RuntimeError("任务不存在")
+        if task.phase != "archive_pending":
+            task.phase = "needs_retry"
+            task.interrupt_json = None
+        db.add(TaskEvent(task_id=task_id, event_type="graph_error", phase="needs_retry",
+                         payload_json={"message": message, "retryable": True, "source": source}))
+        db.add(TaskErrorLog(task_id=task_id, code=code, category="recoverable",
+                            message=message, source=source, retryable=True))
+        db.commit()
 
 
 def persist_outputs(task_id: str, node4: dict[str, Any]) -> None:

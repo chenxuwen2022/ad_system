@@ -190,6 +190,7 @@ class PromptState(TypedDict, total=False):
 
 
 class Node4State(TypedDict, total=False):
+    generation_id: str
     reference_images: list[str]             # 商品图+模特图文件路径列表
     reference_images_data_uris: list[str]   # 一次性缓存的 data URI（避免重复 PIL）
     work_items: list[dict[str, Any]]
@@ -215,6 +216,7 @@ class TaskState(TypedDict, total=False):
     # 都会 update phase/nodeX/request 等字段，而目标 node 自己又会 return 这些字段，
     # 所以同 step 多写入是**必然**会发生的，不能依赖"不会撞"。
     # reducer 策略：dict 做字段级 | merge，标量/list 后来者覆盖（符合"更新"语义）。
+    workflow_revision: Annotated[int, REDUCER]
     task_id: Annotated[str, REDUCER]
     phase: Annotated[str, REDUCER]
     request: Annotated[dict[str, Any], REDUCER]
@@ -239,9 +241,13 @@ class TaskState(TypedDict, total=False):
     # node2 refine 专用：LLM 意图分类器返回的 selected_indices
     # 决定 refine_node2_schemes 能看到哪几套原方案（用户明确点名了哪些 → 只传那些；"all"或None → 全部传）
     _refine_selected_indices: Annotated[list[int] | str | None, REDUCER]
+    _refine_scheme_count: Annotated[int | None, REDUCER]
+    _refine_scheme_source: Annotated[str | None, REDUCER]
+    initial_schemes: Annotated[list[dict[str, Any]], REDUCER]
     # 多轮 refine 历史（按 node 隔离，避免 node1/node2/node3 指令互相污染）
     # 旧格式兼容：如果 checkpoint 里还是 list（老任务），_get_node_refine_history helper 会自动 wrap 成 {'nodeX': list}
     # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）
     _refine_history: Annotated[dict[str, list[str]], REDUCER]  # {node1|node2|node3: [instruction,...]}，含本轮
-    # redo 路径：仅 C4 redo→node4 保留（其他节点都走 refine）
-    _redo_target: Annotated[str | None, REDUCER]         # "node4" | None
+    # redo reruns the original generator for the selected product.
+    _redo_target: Annotated[str | None, REDUCER]         # "node1" | "node2" | "node3" | "node4" | None
+    _redo_instruction: Annotated[str | None, REDUCER]

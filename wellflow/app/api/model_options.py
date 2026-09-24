@@ -1,4 +1,4 @@
-"""NewAPI model list proxy for frontend model selectors."""
+"""NewAPI model list for frontend model selectors."""
 
 from __future__ import annotations
 
@@ -74,7 +74,7 @@ async def _fetch_newapi_models(channel_id: int | None = None) -> list[dict[str, 
     if channel_id is not None:
         params["channel_id"] = channel_id
     try:
-        async with httpx.AsyncClient(timeout=10.0, proxy=None, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=10.0, trust_env=False) as client:
             response = await client.get(
                 url,
                 params=params if params else None,
