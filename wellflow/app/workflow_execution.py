@@ -65,7 +65,7 @@ async def _consume(task_id, graph, config, value):
         return "error", {"phase": "needs_retry", "message": str(exc), "retryable": True}
 
 
-async def launch_graph(task_id, graph, config, *, initial_state=None, command=None, queue=None, restart_images=False):
+async def launch_graph(task_id, graph, config, *, initial_state=None, command=None, queue=None, restart_images=False, restart_edit=None):
     """Acquire before accepting a command. Background execution owns the lease."""
     lease = execution_lease(task_id)
     await lease.__aenter__()
@@ -79,10 +79,23 @@ async def launch_graph(task_id, graph, config, *, initial_state=None, command=No
         phase_in_db = await asyncio.to_thread(db_phase)
         if phase_in_db is None:
             raise HTTPException(404, "任务不存在")
-        if phase_in_db == "archive_pending" or (phase_in_db == "done" and not restart_images):
+        if phase_in_db == "archive_pending" or (phase_in_db == "done" and not (restart_images or restart_edit is not None)):
             raise HTTPException(409, "任务已入库或正在入库，请完成入库或创建新任务")
         snapshot = await graph.aget_state(config)
         phase, interrupt = checkpoint_view(snapshot)
+        if restart_edit is not None:
+            if (restart_images or phase != "done" or phase_in_db != "done"
+                    or initial_state is not None or command is not None):
+                raise HTTPException(409, "任务状态已变化，请刷新后重新修改")
+            from wellflow.app.workflows.decisions import completed_edit_update
+            try:
+                update = completed_edit_update(snapshot.values, restart_edit)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            # Re-enter through C4's real routing edge under the same execution lease.
+            # Archived assets and events are untouched; only downstream working state resets.
+            await graph.aupdate_state(config, update, as_node="c4_review_result")
+            await asyncio.to_thread(persist_phase, task_id, "processing", "reopen_edit")
         if restart_images:
             if phase != "done" or phase_in_db != "done" or initial_state is not None or command is not None:
                 raise HTTPException(409, "任务状态已变化，请刷新后重新生成图片")
@@ -101,7 +114,7 @@ async def launch_graph(task_id, graph, config, *, initial_state=None, command=No
                 "_refine_instruction": None, "_refine_selected_indices": None,
             }, as_node="c4_review_result")
             await asyncio.to_thread(persist_phase, task_id, "node4_generation", "node4_generate_image")
-        if initial_state is None and not restart_images:
+        if initial_state is None and not restart_images and restart_edit is None:
             if phase == "missing":
                 raise HTTPException(409, "任务 checkpoint 缺失，请重新创建任务")
             if phase == "done":

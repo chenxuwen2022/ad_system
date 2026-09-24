@@ -64,35 +64,53 @@ def retry_delay(value: str | None, attempt: int) -> float:
 
 async def generate_with_rate_limit_retry(client, *, log_id, task_id=None, **kwargs):
     gate = _gate()
+    loop = asyncio.get_running_loop()
+    remaining_wait = settings.image_retry_deadline
 
-    async def run():
-        for attempt in range(settings.image_rate_limit_retries + 1):
-            print(f"[生图请求 {log_id}] 等待共享并发额度/发送间隔/限流冷却 "
-                  f"attempt={attempt + 1}/{settings.image_rate_limit_retries + 1}", flush=True)
-            async with gate.slots:
-                await gate.wait()
-                print(f"[生图请求 {log_id}] 已获得发送额度，调用上游 "
-                      f"attempt={attempt + 1}/{settings.image_rate_limit_retries + 1}", flush=True)
-                try:
-                    return await client.generate_image(**kwargs)
-                except ImageRateLimitError as exc:
-                    delay = retry_delay(exc.retry_after, attempt)
-                    gate.cooldown_until = max(
-                        gate.cooldown_until, asyncio.get_running_loop().time() + delay
-                    )
-                    if attempt >= settings.image_rate_limit_retries:
-                        raise
-                    text = (f"{log_id} 遇到限流，冷却至少 {delay:.1f} 秒后重新竞争发送额度"
-                            f"（{attempt + 1}/{settings.image_rate_limit_retries}），已完成图片保留。")
-                    print(f"[{log_id}] ⏳ {text}", flush=True)
-                    if task_id:
-                        from wellflow.app.event_bus import publish
-                        publish(task_id, "message", {"text": text})
-            # 下一次尝试也经过同一个限流入口，其他任务同时遵守 cooldown。
+    async def acquire():
+        await gate.slots.acquire()
+        try:
+            await gate.wait()
+        except BaseException:
+            gate.slots.release()
+            raise
 
-    try:
-        return await asyncio.wait_for(run(), timeout=settings.image_retry_deadline)
-    except asyncio.TimeoutError as exc:
-        raise TimeoutError(
-            f"{log_id} 生图排队或重试超过 {settings.image_retry_deadline:g} 秒，已停止本模型尝试"
-        ) from exc
+    for attempt in range(settings.image_rate_limit_retries + 1):
+        print(f"[生图请求 {log_id}] 等待共享并发额度/发送间隔/限流冷却 "
+              f"attempt={attempt + 1}/{settings.image_rate_limit_retries + 1}", flush=True)
+        wait_started = loop.time()
+        try:
+            await asyncio.wait_for(acquire(), timeout=remaining_wait)
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"{log_id} 累计排队/限流等待超过 {settings.image_retry_deadline:g} 秒，"
+                "已停止本模型尝试（不含实际生图时间）"
+            ) from exc
+        remaining_wait = max(0.0, remaining_wait - (loop.time() - wait_started))
+        try:
+            print(f"[生图请求 {log_id}] 已获得发送额度，调用上游 "
+                  f"attempt={attempt + 1}/{settings.image_rate_limit_retries + 1} "
+                  f"本次生成独立超时={settings.image_timeout:g}s（不含排队/限流等待）", flush=True)
+            try:
+                # 每次实际调用单独计时；429 后再次调用或切换模型均获得完整时限。
+                return await asyncio.wait_for(
+                    client.generate_image(**kwargs), timeout=settings.image_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                raise TimeoutError(
+                    f"{log_id} 本次模型生图调用超过 {settings.image_timeout:g} 秒，"
+                    "已停止等待（不含排队/限流等待）"
+                ) from exc
+            except ImageRateLimitError as exc:
+                delay = retry_delay(exc.retry_after, attempt)
+                gate.cooldown_until = max(gate.cooldown_until, loop.time() + delay)
+                if attempt >= settings.image_rate_limit_retries:
+                    raise
+                text = (f"{log_id} 遇到限流，冷却至少 {delay:.1f} 秒后重新竞争发送额度"
+                        f"（{attempt + 1}/{settings.image_rate_limit_retries}），已完成图片保留。")
+                print(f"[{log_id}] ⏳ {text}", flush=True)
+                if task_id:
+                    from wellflow.app.event_bus import publish
+                    publish(task_id, "message", {"text": text})
+        finally:
+            gate.slots.release()

@@ -13,11 +13,8 @@
 ⚠️ 新语义：per_prompt_count 已彻底删除。Node4 不再有批量 n>1 概念，
   每张图 = 一次独立 API 调用。redo/confirm 机制在 parent_graph 的 c4_review 实现。
 
-⚠️ 模型策略：
-  Node4 生图动态从 new-api 拉 image 模型列表（qwen-image-3.0 优先），
-  不从前端 interrupt、chat.py 分类器、state.node3.image_model 里取模型。
-  底层「模型拉取 + 单次生图 + 降级链」已抽至 wellflow.app.llm.image_gen_service，
-  API 端点（mannequin /generate）也共用同一份逻辑，确保行为一致。
+模型由前端通过 image_model 提交并保存到 node3，生图时只使用该模型。
+共享服务负责单次生图、并发限制和同模型重试。
 """
 
 from __future__ import annotations
@@ -26,10 +23,7 @@ import hashlib
 
 from typing import Any
 
-from wellflow.app.llm.image_gen_service import (
-    generate_single_image,
-    get_image_models,
-)
+from wellflow.app.llm.image_gen_service import generate_single_image
 
 
 def prepare_image_redo(node4: dict) -> dict:
@@ -194,8 +188,7 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
 async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
     """并发调 LLM 生图 —— 每个 work_item 独立一次 API 调用（n 强制 =1）。
 
-    模型选择：动态从 new-api 拉 image 模型列表（qwen-image-3.0 优先），
-    不从 state.node3.image_model 读取。
+    模型选择：使用前端确认提示词时提交的 state.node3.image_model。
     """
     import asyncio
     import time
@@ -223,13 +216,13 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
     from wellflow.app.config import settings
     WORKERS = settings.node4_gen_concurrency
 
-    # 当前 task 第一次进入 Node4 时拉取一次；后续图片和 redo 都复用缓存链。
-    _plan_models = await get_image_models(task_id)
-    _plan_first = _plan_models[0]
+    image_model = ((state.get("node3") or {}).get("image_model") or "").strip()
+    if not image_model:
+        raise ValueError("缺少生图模型，请先选择生图模型")
 
     print(f"[node4] 🏃 run_gen 启动 task={task_id[:8]}: "
           f"本轮待生成={len(pending_items)} 张, worker配置上限={WORKERS}, "
-          f"计划模型={_plan_first}, 参考图 refs={len(refs)}", flush=True)
+          f"计划模型={image_model}, 参考图 refs={len(refs)}", flush=True)
 
     queue: asyncio.Queue[dict] = asyncio.Queue()
     for it in pending_items:
@@ -244,17 +237,17 @@ async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
         size = item.get("size", _ratio_to_size(item.get("ratio", "3:4")))
         t0 = time.monotonic()
         wid = item.get("work_item_id", "?")
-        print(f"[{queue_log.prefix} shot={wid}] 准备生图（尚未发请求） size={size} model={_plan_first} refs={len(refs)} "
+        print(f"[{queue_log.prefix} shot={wid}] 准备生图（尚未发请求） size={size} model={image_model} refs={len(refs)} "
               f"prompt({len(prompt)}chars)={prompt[:60]}...", flush=True)
         try:
             result = await generate_single_image(
                 prompt=prompt, size=size, ref_data_uris=refs, log_id=f"{queue_log.prefix} shot={wid}",
                 task_id=task_id,
-                models=_plan_models,
+                model=image_model,
             )
             dt = time.monotonic() - t0
             url = result.data_uri or result.url
-            model_label = result.model or _plan_first
+            model_label = result.model or image_model
             if url:
                 item["status"] = "done"
                 item.pop("error", None)

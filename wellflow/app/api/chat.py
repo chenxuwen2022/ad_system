@@ -229,9 +229,9 @@ def _extract_interrupt_value(chunk: Any) -> dict[str, Any] | None:
     return getattr(interrupt_obj, "value", None)
 
 
-async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None, restart_images=False):
+async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None, restart_images=False, restart_edit=None):
     from wellflow.app.workflow_execution import launch_graph
-    return await launch_graph(task_id, graph, config, initial_state=initial_state, command=command, restart_images=restart_images)
+    return await launch_graph(task_id, graph, config, initial_state=initial_state, command=command, restart_images=restart_images, restart_edit=restart_edit)
 
 
 
@@ -851,7 +851,7 @@ async def chat(
             if has_task and _dispatch_intent in _NEEDS_RUNTIME_CHECK:
                 from wellflow.app.graph_context import check_graph_runtime_state
                 _rt_state, _rt_age = check_graph_runtime_state(snapshot)
-                if _rt_state == "done" and not (_dispatch_intent == "edit" and intent_result.get("refine_target") == "node4"):
+                if _rt_state == "done" and not (_dispatch_intent == "edit" and intent_result.get("refine_target") in ("node2", "node3", "node4")):
                     yield _sse("message", {"text": "任务已入库，请创建新任务继续创作。"})
                     yield _sse("done", {"phase": "done"})
                     return
@@ -1110,6 +1110,20 @@ async def _handle_backward(
         q = await _start_graph(task_id, graph, _langgraph_config(task_id), restart_images=True)
         yield _sse("resume_ack", {"task_id": task_id, "node": "c4",
                                   "message": "好的，保留原方案和提示词，重新生成一批图片。"})
+        async for ev in _stream_queue(task_id, q):
+            yield ev
+        return
+    if current_phase == "done" and redo_target in ("node2", "node3"):
+        if product_images:
+            raise HTTPException(409, "不能更换已分析的商品图，请新建任务更换商品")
+        q = await _start_graph(task_id, graph, _langgraph_config(task_id), restart_edit={
+            "target": redo_target, "mode": "refine" if _IS_REFINE else "regenerate",
+            "instruction": (refine_instruction or "").strip(),
+            "selected_indices": refine_selected_indices,
+            "scheme_count": refine_scheme_count, "scheme_source": refine_scheme_source,
+        })
+        yield _sse("resume_ack", {"task_id": task_id, "node": resume_node,
+                                  "message": f"好的，已回到第 {step_num} 步，已入库图片保持不变。"})
         async for ev in _stream_queue(task_id, q):
             yield ev
         return
