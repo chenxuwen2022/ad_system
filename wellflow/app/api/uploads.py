@@ -22,9 +22,12 @@ from __future__ import annotations
 from wellflow.app.logging import page_context
 
 from typing import Annotated
+from pathlib import Path
+import os
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 from wellflow.app.api.utils import ok, StandardResponse
 from wellflow.app.config import settings
@@ -32,6 +35,20 @@ from wellflow.app.utils.image_store import save_asset_upload
 
 
 router = APIRouter(prefix="/wellflow/image", tags=["WellFlow 通用上传"])
+
+
+@router.get("/thumbnail", summary="按需加载图片缩略图")
+def image_thumbnail(src: str = Query(max_length=2048), size: int = Query(default=480)):
+    from wellflow.app.services.image_thumbnail import thumbnail_path
+    if size not in (160, 480, 960):
+        raise HTTPException(422, "缩略图尺寸必须为 160、480 或 960")
+    upload_root = Path(settings.upload_dir)
+    roots = {"/uploads/": upload_root, "/static/": Path("static")}
+    legacy_root = os.getenv("UPLOAD_MATERIAL_DIR")
+    if legacy_root:
+        roots["/api/uploaded_media/"] = Path(legacy_root)
+    path = thumbnail_path(src, size, roots, upload_root / ".thumbnails")
+    return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
 
 # 上传规则统一在 config.py（upload_allowed_mime_prefixes / upload_max_file_size_mb / upload_max_files）
 

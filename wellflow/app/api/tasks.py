@@ -874,6 +874,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
     }
 
     from wellflow.app.services.sku_archive import with_image_keys
+    from wellflow.app.services.task_presentation import public_task_node
     if interrupt_json:
         interrupt_json = with_image_keys(interrupt_json)
     return ok(TaskInfoResponse(
@@ -887,10 +888,10 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         interrupt=interrupt_json,
         cost=graph_state.get("cost", {}) if graph_state else {},
         progress=graph_state.get("progress", {}) if graph_state else {},
-        node1=node1,
-        node2=node2,
-        node3=node3,
-        node4=node4,
+        node1=public_task_node(node1),
+        node2=public_task_node(node2),
+        node3=public_task_node(node3),
+        node4=public_task_node(node4, generation=True),
         reference_images=reference_images,
         output_images=output_images,
         created_at=to_cn_iso(task.created_at),
