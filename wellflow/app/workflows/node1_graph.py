@@ -10,6 +10,10 @@ Node1 的思考面板只展示模型输出的简短识别进度，不展示原�
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
+from wellflow.app.newapi.observability import business_operation
+
 import time
 from typing import Any
 
@@ -44,6 +48,7 @@ def build_graph():
 # ---------------------------------------------------------------------------
 
 
+@business_operation("Node1/商品分析")
 async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     """一步完成 Node 1 全部工作：输入校验 → VLM 流式识别 → 报告汇总。
 
@@ -62,7 +67,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
 
     # —— 锁定守卫：已锁定则绝不能重跑 Node1 ——
     if bool((state.get("node1") or {}).get("report_locked")):
-        print(f"[node1] 🛡️ task={task_id} node1 报告已锁定，拒绝重新生成", flush=True)
+        log_message(f"[node1] 🛡️ task={task_id} node1 报告已锁定，拒绝重新生成", page='对话', business='node1产品报告', status='记录')
         if task_id:
             publish(task_id, "message", {
                 "text": (
@@ -94,8 +99,8 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     import asyncio
     from wellflow.app.utils.image_store import paths_to_data_uris
     images = await asyncio.to_thread(paths_to_data_uris, image_paths)
-    print(f"[node1] 📥 VLM 输入: product_images paths={len(image_paths)} → data_uris={len(images)}, "
-          f"text_len={len(user_text)}", flush=True)
+    log_message(f"[node1] 📥 VLM 输入: product_images paths={len(image_paths)} → data_uris={len(images)}, "
+          f"text_len={len(user_text)}", page='对话', business='node1产品报告', status='记录')
 
     # --- Step 3: 推 phase = 调用 VLM ---
     publish(task_id, "phase", {"phase": "node1_vlm_analyzing"})
@@ -113,7 +118,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     first_content_ts = None
     first_think_ts = None
 
-    print(f"[node1] 📌 reasoning_effort={effort} → 流式 stream_analyze_product", flush=True)
+    log_message(f"[node1] 📌 reasoning_effort={effort} → 流式 stream_analyze_product", page='对话', business='node1产品报告', status='记录')
 
     # ── 流式消费 ──────────────────────────────────────────────────────
     # 忽略原始 reasoning_content；content 的标题前缀作为识别进度展示。
@@ -152,9 +157,8 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             # ── content 通道 ─────────────────────────────────────────
             if first_content_ts is None:
                 first_content_ts = time.time()
-                print(f"[node1] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
-                      + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else "")
-                      , flush=True)
+                log_message(f"[node1] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
+                      + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else ""), page='对话', business='node1产品报告', status='记录')
 
             # ── 正常 content chunk：追加 + 推 report_chunk ────────
             full_report_parts.append(text)
@@ -177,13 +181,12 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     from wellflow.app.prompt.report_sections import build_report_sections
     report_sections = build_report_sections(report_body)
     total_ts = time.time()
-    print(f"[node1] ✅ VLM 完成: 报告 {len(report_body)} 字, "
+    log_message(f"[node1] ✅ VLM 完成: 报告 {len(report_body)} 字, "
           f"thinking {len(full_thinking)} 字, "
           f"content_chunks={content_chunk_index}, think_chunks={think_chunk_index}, "
           f"总耗时={total_ts - t0:.2f}s"
           + (f", 首think={first_think_ts - t0:.2f}s" if first_think_ts else "")
-          + (f", 首content={first_content_ts - t0:.2f}s" if first_content_ts else "")
-          , flush=True)
+          + (f", 首content={first_content_ts - t0:.2f}s" if first_content_ts else ""), page='对话', business='node1产品报告', status='成功')
 
     # 推 done（带上 thinking 汇总，方便前端展示）
     publish(task_id, "report_chunk_done", {

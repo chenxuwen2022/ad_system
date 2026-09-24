@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import page_context
+
 from typing import Annotated
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
@@ -64,6 +66,7 @@ class UploadResult(BaseModel):
     ),
     response_model=StandardResponse[UploadResult],
 )
+@page_context('素材上传')
 async def upload_images(
     files: Annotated[list[UploadFile], File(..., description="图片文件列表（支持多张，最多 20 张）")],
     session_id: str | None = Query(

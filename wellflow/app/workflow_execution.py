@@ -41,7 +41,7 @@ async def execution_lease(task_id: str):
 
 
 async def _consume(task_id, graph, config, value):
-    from wellflow.app.llm.model_pool import prepare_task_models
+    from wellflow.app.newapi.pool import prepare_task_models
     try:
         await prepare_task_models(task_id)
         await asyncio.to_thread(persist_phase, task_id, "processing", "resume")
@@ -65,7 +65,7 @@ async def _consume(task_id, graph, config, value):
         return "error", {"phase": "needs_retry", "message": str(exc), "retryable": True}
 
 
-async def launch_graph(task_id, graph, config, *, initial_state=None, command=None, queue=None, restart_images=False, restart_edit=None):
+async def launch_graph(task_id, graph, config, *, initial_state=None, command=None, queue=None, restart_images=False, restart_edit=None, restart_image_model=None, restart_prompt_indices=None):
     """Acquire before accepting a command. Background execution owns the lease."""
     lease = execution_lease(task_id)
     await lease.__aenter__()
@@ -103,11 +103,19 @@ async def launch_graph(task_id, graph, config, *, initial_state=None, command=No
             node4 = state.get("node4") or {}
             if not (state.get("node3") or {}).get("generate_prompts"):
                 raise HTTPException(409, "缺少原生图提示词，请先确认提示词")
-            from wellflow.app.workflows.node4_graph import prepare_image_redo
+            from wellflow.app.workflows.node4_graph import prepare_image_redo, resolve_prompt_indices
+            from wellflow.app.workflows.image_models import selected_image_model
+            try:
+                indices = resolve_prompt_indices(restart_prompt_indices, len(state["node3"]["generate_prompts"]))
+                model = selected_image_model(restart_image_model)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from exc
+            model_update = {"node3": {**(state.get("node3") or {}), "image_model": model}} if model else {}
             # Re-enter through the real C4 routing edge under the execution lease.
-            # Only node4 is reset. Archived assets and historical events stay intact.
+            # Reset node4 and apply the selected model. Archived assets and history stay intact.
             await graph.aupdate_state(config, {
-                "node4": prepare_image_redo(node4), "phase": "node4_generation",
+                **model_update,
+                "node4": prepare_image_redo(node4, indices), "phase": "node4_generation",
                 "workflow_revision": state.get("workflow_revision", 0) + 1,
                 "confirmations": {**(state.get("confirmations") or {}), "c4": False},
                 "_redo_target": "node4", "_refine_target": None,
@@ -127,10 +135,24 @@ async def launch_graph(task_id, graph, config, *, initial_state=None, command=No
                 products = request_update.get("product_images")
                 if products is not None and products != (snapshot.values.get("request") or {}).get("product_images"):
                     raise HTTPException(409, "商品图与已分析的报告不一致，请创建新任务更换商品")
+                if values.get("image_model") is not None:
+                    from wellflow.app.workflows.image_models import selected_image_model
+                    try:
+                        values["image_model"] = selected_image_model(values["image_model"])
+                    except ValueError as exc:
+                        raise HTTPException(400, str(exc)) from exc
                 decision = values.get("decision", "confirm")
                 allowed = {"c1": {"node1"}, "c2": {"node2"}, "c3": {"node2", "node3"}, "c4": {"node2", "node3"}}
                 if decision == "refine" and values.get("refine_target", "node3" if interrupt["node"] == "c4" else "node" + interrupt["node"][-1]) not in allowed[interrupt["node"]]:
                     raise HTTPException(409, "当前阶段不允许修改该节点")
+                if decision == "redo" and values.get("redo_target", "node" + interrupt["node"][-1]) == "node4":
+                    from wellflow.app.workflows.node4_graph import resolve_prompt_indices
+                    try:
+                        values["selected_prompt_indices"] = resolve_prompt_indices(
+                            values.get("selected_prompt_indices"),
+                            len((snapshot.values.get("node3") or {}).get("generate_prompts") or []))
+                    except ValueError as exc:
+                        raise HTTPException(400, str(exc)) from exc
                 if decision == "redo":
                     from wellflow.app.workflows.decisions import validate_redo
                     try:

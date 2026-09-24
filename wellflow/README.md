@@ -63,10 +63,16 @@ wellflow-saas-backend/
 │   │   ├── platform_trend.py
 │   │   └── competitor.py
 │   │
-│   ├── llm/                 # LLM 网关抽象
-│   │   ├── base.py              # BaseLLMClient 协议
-│   │   ├── factory.py           # 工厂（统一走 new-api）
-│   │   └── newapi_gateway.py    # NewApiGateway 实现
+│   ├── llm/                 # 通用接口与业务调度
+│   │   └── base.py              # 客户端契约、响应和异常
+│   │
+│   ├── newapi/              # New API 连接实现（详见 newapi/README.md）
+│   │   ├── client_factory.py    # 配置、模型名规范化、客户端创建
+│   │   ├── gateway.py           # 文本、多模态、SSE、LangChain
+│   │   ├── image_client.py      # generations / edits / responses 生图
+│   │   ├── catalog.py           # 模型目录、能力识别及数据结构
+│   │   ├── pool.py              # 模型轮询、熔断和任务缓存
+│   │   └── channel_audit.py     # 实际渠道审计
 │   │
 │   ├── contracts/           # 跨节点数据契约（TypedDict）
 │   │   ├── generation.py
@@ -261,3 +267,22 @@ SKU 行锁和已保存路径防止并发重复入库。
 新批次使用新的生成版本，历史结果、已入库图片以及入库消息保留。
 正在入库或执行中的任务仍受互斥保护。只有明确修改商品报告才触发报告锁定提示；
 目标不明的重做请求会询问要修改的内容。
+
+
+### 依赖与调用链检查
+
+`wellflow/tests/test_code_quality.py` 检查整个 WellFlow 的导入依赖（包含函数内导入），并验证事件队列和 SSE 输出行为。
+在仓库根目录运行 `python -m unittest discover -s wellflow/tests -v`；现有业务回归继续使用 `python -m unittest discover -s tests -v`。
+
+工作流启动统一使用 `workflow_execution.launch_graph`，API 层不再包装转发函数。New API 生图只发送一次请求，429 重试仍由共享生图服务负责。
+已移除未使用的内部参数、SSE 路由多余的数据库依赖，以及恢复任务接口中原本不生效的 `scheme_count` 表单参数；方案数量继续由 `per_scheme_count` 提交。
+抽象客户端接口与数据库事件回调保留契约要求的参数。广告模块的两处模型池导入统一使用 `newapi.pool`，业务逻辑不变。
+
+
+## 切换模型重新生图
+
+`POST /api/chat` 接收可选的 `image_model`。在 C4 输入“重新生成”，或已完成任务重新生图时，
+后端在执行锁内将新选择保存到 `node3.image_model`，使用原提示词重跑 Node4。
+不传该字段则沿用已有模型，空值会被拒绝；动态模型名不受前端旧选项列表限制，不自动换模型。
+C4 `/resume` 的 redo 同样接受 `image_model`。每轮 `node4.image_model`、生成批次日志和 C4 事件
+记录该轮模型，旧事件和已入库图片保持不变；前后端需配套更新。

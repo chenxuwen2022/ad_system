@@ -6,6 +6,8 @@ products cannot manufacture a pause or declare a task complete.
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -261,10 +263,7 @@ def validate_current_node_products(
 
     ok = len(missing) == 0
     if not ok:
-        print(
-            f"[validate] 🛡️ current_node={current_node} 产物缺失 → missing={missing}",
-            flush=True,
-        )
+        log_message(f"[validate] 🛡️ current_node={current_node} 产物缺失 → missing={missing}", page='对话', business='工作流状态', status='记录')
     return ok, missing
 
 
@@ -289,18 +288,18 @@ def _normalize_confirmations(state: dict[str, Any] | None) -> dict[str, bool]:
 def _log_ctx(ctx: GraphContext) -> None:
     """打印解析过程 —— 用于排查 current_node 丢失。"""
     from time import time
-    print(f"[graph-ctx] resolved current_node={ctx.current_node!r} "
-          f"confidence={ctx.confidence}", flush=True)
+    log_message(f"[graph-ctx] resolved current_node={ctx.current_node!r} "
+          f"confidence={ctx.confidence}", page='对话', business='工作流状态', status='记录')
     if ctx.source_next:
-        print(f"  snapshot.next = {ctx.source_next!r}", flush=True)
+        log_message(f"  snapshot.next = {ctx.source_next!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_state_phase:
-        print(f"  state.phase = {ctx.source_state_phase!r}", flush=True)
+        log_message(f"  state.phase = {ctx.source_state_phase!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_confirmations:
-        print(f"  confirmations = {ctx.source_confirmations!r}", flush=True)
+        log_message(f"  confirmations = {ctx.source_confirmations!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_db_interrupt_node:
-        print(f"  db.interrupt_json.node = {ctx.source_db_interrupt_node!r}", flush=True)
+        log_message(f"  db.interrupt_json.node = {ctx.source_db_interrupt_node!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_db_phase:
-        print(f"  db.phase = {ctx.source_db_phase!r}", flush=True)
+        log_message(f"  db.phase = {ctx.source_db_phase!r}", page='对话', business='工作流状态', status='记录')
     if ctx.conflicts:
         for c in ctx.conflicts:
-            print(f"  ⚠️ conflict: {c}", flush=True)
+            log_message(f"  ⚠️ conflict: {c}", page='对话', business='工作流状态', status='警告')

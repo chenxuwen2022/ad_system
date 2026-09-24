@@ -99,8 +99,13 @@ def redo_decision(state, current_node, values):
         keep = {k: v for k, v in (state.get(target) or {}).items()
                 if k in ("reference_images", "ratio", "image_model")}
     if target == "node4":
-        from wellflow.app.workflows.node4_graph import prepare_image_redo
-        update[target] = prepare_image_redo(state.get(target) or {})
+        from wellflow.app.workflows.node4_graph import prepare_image_redo, resolve_prompt_indices
+        update[target] = prepare_image_redo(state.get(target) or {}, resolve_prompt_indices(
+            values.get("selected_prompt_indices"), len((state.get("node3") or {}).get("generate_prompts") or [])))
+        from wellflow.app.workflows.image_models import selected_image_model
+        model = selected_image_model(values.get("image_model"))
+        if model is not None:
+            update["node3"] = {**(state.get("node3") or {}), "image_model": model}
     else:
         update[target] = cleared(**keep)
     # Remove history only for regenerated products and their dependents.

@@ -190,6 +190,7 @@ class PromptState(TypedDict, total=False):
 
 
 class Node4State(TypedDict, total=False):
+    selected_prompt_indices: list[int] | None
     generation_id: str
     reference_images: list[str]             # 商品图+模特图文件路径列表
     reference_images_data_uris: list[str]   # 一次性缓存的 data URI（避免重复 PIL）

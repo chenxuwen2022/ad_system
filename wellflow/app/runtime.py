@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 from typing import Any
 
 
@@ -80,9 +82,9 @@ async def init_wellflow_runtime() -> None:
         await saver.setup()
         _checkpointer = saver
         _checkpointer_cm = pool  # 保留 pool 引用，shutdown 时 close
-        print("✅ [商拍子系统] AsyncPostgresSaver(连接池 min=4 max=16) 初始化完成，checkpoint 表已就绪")
+        log_message("✅ [商拍子系统] AsyncPostgresSaver(连接池 min=4 max=16) 初始化完成，checkpoint 表已就绪", page='系统', business='服务生命周期', status='成功')
     except Exception as exc:
-        print(f"⚠️  [商拍子系统] LangGraph checkpointer 初始化失败（graph 相关功能降级）: {exc}")
+        log_message(f"⚠️  [商拍子系统] LangGraph checkpointer 初始化失败（graph 相关功能降级）: {exc}", page='系统', business='服务生命周期', status='警告')
         _checkpointer = None
         _checkpointer_cm = None
 
@@ -93,11 +95,11 @@ async def init_wellflow_runtime() -> None:
             raise RuntimeError("持久化 checkpoint 不可用，禁止启动不可恢复的工作流")
         _graph = build_graph(checkpointer=_checkpointer)
         if _checkpointer:
-            print("✅ [商拍子系统] LangGraph 父图编译完成（带 checkpointer）")
+            log_message("✅ [商拍子系统] LangGraph 父图编译完成（带 checkpointer）", page='系统', business='服务生命周期', status='成功')
         else:
-            print("✅ [商拍子系统] LangGraph 父图编译完成（无 checkpointer）")
+            log_message("✅ [商拍子系统] LangGraph 父图编译完成（无 checkpointer）", page='系统', business='服务生命周期', status='成功')
     except Exception as exc:
-        print(f"⚠️  [商拍子系统] LangGraph 父图编译失败: {exc}")
+        log_message(f"⚠️  [商拍子系统] LangGraph 父图编译失败: {exc}", page='系统', business='服务生命周期', status='警告')
         _graph = None
 
 
@@ -115,4 +117,4 @@ async def shutdown_wellflow_runtime() -> None:
             pass
         _checkpointer_cm = None
     _checkpointer = None
-    print("🛑 [商拍子系统] 运行时已关闭")
+    log_message("🛑 [商拍子系统] 运行时已关闭", page='系统', business='服务生命周期', status='记录')

@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 from typing import Any
 
 from wellflow.app.database import session_scope
@@ -96,7 +98,7 @@ def persist_outputs(task_id: str, node4: dict[str, Any]) -> None:
     """
     outputs = node4.get("outputs") or []
     if not outputs:
-        print(f"[graph] task={task_id} done 但 outputs 为空，跳过成品落库", flush=True)
+        log_message(f"[graph] task={task_id} done 但 outputs 为空，跳过成品落库", page='对话', business='结果持久化', status='记录')
         return
 
     from wellflow.app.utils.image_store import save_output_image
@@ -131,6 +133,6 @@ def persist_outputs(task_id: str, node4: dict[str, Any]) -> None:
                 phase="done",
                 payload_json=summary_payload,
             )
-            print(f"[graph] task={task_id} 成品落库 {len(ids)} 张 + workflow_done 事件", flush=True)
+            log_message(f"[graph] task={task_id} 成品落库 {len(ids)} 张 + workflow_done 事件", page='对话', business='结果持久化', status='记录')
     except Exception as e:
-        print(f"[graph] output persist error: {e}", flush=True)
+        log_message(f"[graph] output persist error: {e}", page='对话', business='结果持久化', status='记录')

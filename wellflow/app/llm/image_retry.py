@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+from wellflow.app.logging import log_event
+
 import asyncio
 import math
 import random
@@ -67,6 +69,11 @@ async def generate_with_rate_limit_retry(client, *, log_id, task_id=None, **kwar
     loop = asyncio.get_running_loop()
     remaining_wait = settings.image_retry_deadline
 
+    def record(action, **fields):
+        log_event(action, business="生图请求", task_id=task_id, image_job=log_id,
+                  model=getattr(client, "model", None), **fields)
+
+
     async def acquire():
         await gate.slots.acquire()
         try:
@@ -76,27 +83,40 @@ async def generate_with_rate_limit_retry(client, *, log_id, task_id=None, **kwar
             raise
 
     for attempt in range(settings.image_rate_limit_retries + 1):
-        print(f"[生图请求 {log_id}] 等待共享并发额度/发送间隔/限流冷却 "
-              f"attempt={attempt + 1}/{settings.image_rate_limit_retries + 1}", flush=True)
+        attempt_fields = {"attempt": attempt + 1,
+                          "max_attempts": settings.image_rate_limit_retries + 1}
+        record("等待发送额度", **attempt_fields,
+               call_type="首次调用" if attempt == 0 else "限流后重试")
         wait_started = loop.time()
         try:
             await asyncio.wait_for(acquire(), timeout=remaining_wait)
         except asyncio.TimeoutError as exc:
+            record("排队失败（超时）", **attempt_fields, retry=False,
+                   reason="累计排队或限流等待超过时限，未发送本次请求")
             raise TimeoutError(
                 f"{log_id} 累计排队/限流等待超过 {settings.image_retry_deadline:g} 秒，"
                 "已停止本模型尝试（不含实际生图时间）"
             ) from exc
         remaining_wait = max(0.0, remaining_wait - (loop.time() - wait_started))
         try:
-            print(f"[生图请求 {log_id}] 已获得发送额度，调用上游 "
-                  f"attempt={attempt + 1}/{settings.image_rate_limit_retries + 1} "
-                  f"本次生成独立超时={settings.image_timeout:g}s（不含排队/限流等待）", flush=True)
+            record("开始调用" if attempt == 0 else "开始重试", **attempt_fields,
+                   timeout_s=settings.image_timeout)
+            started = loop.time()
             try:
                 # 每次实际调用单独计时；429 后再次调用或切换模型均获得完整时限。
-                return await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     client.generate_image(**kwargs), timeout=settings.image_timeout,
                 )
+                images = getattr(result, "all_images", [])
+                record("调用成功", **attempt_fields, elapsed_s=round(loop.time() - started, 3),
+                       response_model=getattr(result, "model", None),
+                       image_count=len(images),
+                       result_formats=sorted({kind for item in images
+                                              for kind in ("url", "b64_json") if getattr(item, kind, None)}))
+                return result
             except asyncio.TimeoutError as exc:
+                record("调用失败（超时）", **attempt_fields, elapsed_s=round(loop.time() - started, 3),
+                       retry=False, reason="上游可能仍在生成，避免重复生成和计费，不自动重试")
                 raise TimeoutError(
                     f"{log_id} 本次模型生图调用超过 {settings.image_timeout:g} 秒，"
                     "已停止等待（不含排队/限流等待）"
@@ -104,13 +124,24 @@ async def generate_with_rate_limit_retry(client, *, log_id, task_id=None, **kwar
             except ImageRateLimitError as exc:
                 delay = retry_delay(exc.retry_after, attempt)
                 gate.cooldown_until = max(gate.cooldown_until, loop.time() + delay)
-                if attempt >= settings.image_rate_limit_retries:
+                will_retry = attempt < settings.image_rate_limit_retries
+                record("限流，准备重试" if will_retry else "调用失败，重试次数已用尽",
+                       **attempt_fields, elapsed_s=round(loop.time() - started, 3),
+                       http_status=429, error_type=type(exc).__name__,
+                       error=str(exc).replace("\n", " ")[:1000], retry=will_retry,
+                       retry_after=exc.retry_after, retry_delay_s=round(delay, 3) if will_retry else None,
+                       reason="上游明确返回 HTTP 429，允许重试" if will_retry else "已达到最大调用次数")
+                if not will_retry:
                     raise
                 text = (f"{log_id} 遇到限流，冷却至少 {delay:.1f} 秒后重新竞争发送额度"
                         f"（{attempt + 1}/{settings.image_rate_limit_retries}），已完成图片保留。")
-                print(f"[{log_id}] ⏳ {text}", flush=True)
                 if task_id:
                     from wellflow.app.event_bus import publish
                     publish(task_id, "message", {"text": text})
+            except Exception as exc:
+                record("调用失败", **attempt_fields, elapsed_s=round(loop.time() - started, 3),
+                       error_type=type(exc).__name__, error=str(exc).replace("\n", " ")[:1000],
+                       retry=False, reason="非明确的 HTTP 429 限流错误，不自动重试")
+                raise
         finally:
             gate.slots.release()

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message, page_context
+
 import json as json_mod
 import shutil
 from datetime import datetime
@@ -57,9 +59,9 @@ def _cleanup_sku_upload(sku_no: str) -> None:
             return
         if sku_dir.exists():
             shutil.rmtree(sku_dir, ignore_errors=True)
-            print(f"[products] 🗑️ 回滚清理 sku 素材目录: {sku_dir}", flush=True)
+            log_message(f"[products] 🗑️ 回滚清理 sku 素材目录: {sku_dir}", page='sku商品库', business='商品管理', status='记录')
     except Exception as e:
-        print(f"[products] ⚠️ 清理 sku 素材目录失败: {e}", flush=True)
+        log_message(f"[products] ⚠️ 清理 sku 素材目录失败: {e}", page='sku商品库', business='商品管理', status='警告')
 
 
 def _ensure_brand_and_series(
@@ -98,6 +100,7 @@ def _ensure_brand_and_series(
 # ============================================================================
 
 @router.get("/nav", summary="左侧品牌/系列/SKU 导航树", response_model=StandardResponse[list[dict]])
+@page_context('sku商品库')
 def get_nav(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
     brand_repo = BrandRepo(db)
     series_repo = SeriesRepo(db)
@@ -132,12 +135,14 @@ def get_nav(db: Session = Depends(get_db)) -> list[dict[str, Any]]:
 # ============================================================================
 
 @router.get("/brands", response_model=StandardResponse[list[BrandResponse]], summary="列出所有品牌")
+@page_context('sku商品库')
 def list_brands(db: Session = Depends(get_db)):
     repo = BrandRepo(db)
     return ok([_brand_to_dict(b) for b in repo.list()])
 
 
 @router.get("/brands/{brand_id}", response_model=StandardResponse[BrandResponse], summary="查询单个品牌")
+@page_context('sku商品库')
 def get_brand(brand_id: int, db: Session = Depends(get_db)):
     repo = BrandRepo(db)
     brand = repo.get(brand_id)
@@ -147,6 +152,7 @@ def get_brand(brand_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/brands/{brand_id}", response_model=StandardResponse[BrandResponse], summary="更新品牌信息")
+@page_context('sku商品库')
 def update_brand(brand_id: int, body: BrandUpdateRequest, db: Session = Depends(get_db)):
     repo = BrandRepo(db)
     try:
@@ -158,6 +164,7 @@ def update_brand(brand_id: int, body: BrandUpdateRequest, db: Session = Depends(
 
 
 @router.delete("/brands/{brand_id}", response_model=StandardResponse[dict], summary="删除品牌（有系列时拒绝）")
+@page_context('sku商品库')
 def delete_brand(brand_id: int, db: Session = Depends(get_db)):
     repo = BrandRepo(db)
     ok_repo, msg = repo.delete(brand_id)
@@ -172,6 +179,7 @@ def delete_brand(brand_id: int, db: Session = Depends(get_db)):
 # ============================================================================
 
 @router.get("/series", response_model=StandardResponse[list[SeriesResponse]], summary="列出系列（可按 brand_id 过滤）")
+@page_context('sku商品库')
 def list_series(
     brand_id: int | None = Query(None, description="按品牌 ID 过滤，不传则返回全部系列"),
     db: Session = Depends(get_db),
@@ -186,6 +194,7 @@ def list_series(
 
 
 @router.get("/series/{series_id}", response_model=StandardResponse[SeriesResponse], summary="查询单个系列")
+@page_context('sku商品库')
 def get_series(series_id: int, db: Session = Depends(get_db)):
     repo = SeriesRepo(db)
     series = repo.get(series_id)
@@ -195,6 +204,7 @@ def get_series(series_id: int, db: Session = Depends(get_db)):
 
 
 @router.put("/series/{series_id}", response_model=StandardResponse[SeriesResponse], summary="更新系列（可迁移到其他品牌）")
+@page_context('sku商品库')
 def update_series(series_id: int, body: SeriesUpdateRequest, db: Session = Depends(get_db)):
     repo = SeriesRepo(db)
     try:
@@ -206,6 +216,7 @@ def update_series(series_id: int, body: SeriesUpdateRequest, db: Session = Depen
 
 
 @router.delete("/series/{series_id}", response_model=StandardResponse[dict], summary="删除系列（有 SKU 时拒绝）")
+@page_context('sku商品库')
 def delete_series(series_id: int, db: Session = Depends(get_db)):
     repo = SeriesRepo(db)
     ok_repo, msg = repo.delete(series_id)
@@ -220,6 +231,7 @@ def delete_series(series_id: int, db: Session = Depends(get_db)):
 # ============================================================================
 
 @router.get("/skus", response_model=StandardResponse[SkuListResponse], summary="列出 SKU（分页 + 搜索 + 过滤）")
+@page_context('sku商品库')
 def list_skus(
     search: str | None = Query(None, description="按 SKU 名称/货号/SKU 编号模糊搜索"),
     brand_id: int | None = Query(None, description="按品牌 ID 精确过滤"),
@@ -242,15 +254,17 @@ def list_skus(
 
 
 @router.get("/skus/{sku_id}", response_model=StandardResponse[SkuDetailResponse], summary="查询 SKU 详情")
+@page_context('sku商品库')
 def get_sku(sku_id: int, db: Session = Depends(get_db)):
     repo = SkuRepo(db)
     sku = repo.get(sku_id)
     if not sku:
         raise HTTPException(404, "SKU 不存在")
-    return ok(_sku_to_detail(sku, db))
+    return ok(_sku_to_detail(sku))
 
 
 @router.post("/skus", response_model=StandardResponse[SkuDetailResponse], summary="创建 SKU（multipart，后端直接落盘素材图到 uploads/sku/）")
+@page_context('sku商品库')
 async def create_sku(
     # --- Brand / Series（二选一：id 或 name）---
     brand_id: Annotated[int | None, Form()] = None,
@@ -411,10 +425,11 @@ async def create_sku(
         _cleanup_sku_upload(sku_no)
         raise HTTPException(400, f"创建失败: {e}")
 
-    return ok(_sku_to_detail(sku, db))
+    return ok(_sku_to_detail(sku))
 
 
 @router.put("/skus/{sku_id}", response_model=StandardResponse[SkuDetailResponse], summary="更新 SKU")
+@page_context('sku商品库')
 async def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(get_db)):
     if body.archive_generated_images is not None:
         if body.model_fields_set - {"archive_generated_images"}:
@@ -425,7 +440,7 @@ async def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(
         sku = SkuRepo(db).get(sku_id)
         if sku is None:
             raise HTTPException(404, "商品不存在")
-        return ok(_sku_to_detail(sku, db), message=result["message"])
+        return ok(_sku_to_detail(sku), message=result["message"])
     repo = SkuRepo(db)
     try:
         sku = repo.update(sku_id, **body.model_dump(exclude_none=True, exclude={"archive_generated_images"}))
@@ -439,10 +454,11 @@ async def update_sku(sku_id: int, body: SkuUpdateRequest, db: Session = Depends(
         if "UniqueViolation" in err_str or "unique constraint" in err_str:
             raise HTTPException(409, detail={"message": "该商品已存在"})
         raise HTTPException(400, f"更新失败: {e}")
-    return ok(_sku_to_detail(sku, db))
+    return ok(_sku_to_detail(sku))
 
 
 @router.delete("/skus/{sku_id}", response_model=StandardResponse[dict], summary="删除 SKU（级联清理子表，不动品牌/系列）")
+@page_context('sku商品库')
 def delete_sku(sku_id: int, db: Session = Depends(get_db)):
     repo = SkuRepo(db)
     ok_repo = repo.delete(sku_id)
@@ -457,6 +473,7 @@ def delete_sku(sku_id: int, db: Session = Depends(get_db)):
     response_model=StandardResponse[dict],
     summary="解绑 SKU 图片（只删 ProductImage 行，不动磁盘文件）",
 )
+@page_context('sku商品库')
 def detach_sku_image(sku_id: int, image_id: int, db: Session = Depends(get_db)):
     from wellflow.app.models.asset_models import ProductImage
     from wellflow.app.models.task_models import Task, TaskEvent, TaskImage
@@ -603,7 +620,7 @@ def _sku_to_list_item(sku, db: Session) -> SkuListItem:
     )
 
 
-def _sku_to_detail(sku, db: Session) -> SkuDetailResponse:
+def _sku_to_detail(sku) -> SkuDetailResponse:
     images_out: list[SkuImageResponse] = []
     for img in sku.images or []:
         images_out.append(SkuImageResponse(

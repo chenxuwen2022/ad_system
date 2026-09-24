@@ -6,6 +6,8 @@ See docs/workflow-intents.md for allowed targets, reset rules and model paths.
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 from typing import Any
 from wellflow.app.workflows.decisions import (decision_node, request_interrupt, redo_decision,
                                              GENERATION_NODES, REDO_TARGETS)
@@ -198,9 +200,9 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
         "report_locked": bool(node1_state.get("report_locked")),
         "thinking_text": node1_state.get("thinking_text", ""),
     })
-    print(f"[c1_confirm_report] 🎯 interrupt_value preview: report={current_report[:200]!r}, "
+    log_message(f"[c1_confirm_report] 🎯 interrupt_value preview: report={current_report[:200]!r}, "
           f"sections_keys={list((node1_state.get('report_sections') or {}).keys()) if isinstance(node1_state.get('report_sections'), dict) else 'N/A'}, "
-          f"locked={bool(node1_state.get('report_locked'))}", flush=True)
+          f"locked={bool(node1_state.get('report_locked'))}", page='对话', business='node1产品报告确认', status='记录')
 
     if not interrupt_value:
         return {"phase": "c1_confirm"}
@@ -211,7 +213,7 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     # —— 若已锁定（重复 confirm / stale 请求）→ 走 confirm 分支直接下一个节点，
     #    但保持不改动 node1 的任何字段 ——
     if bool(node1_state.get("report_locked")):
-        print(f"[c1_confirm_report] ⚠️ node1 已锁定，忽略重复 confirm 值，直接放行到 Node2", flush=True)
+        log_message(f"[c1_confirm_report] ⚠️ node1 已锁定，忽略重复 confirm 值，直接放行到 Node2", page='对话', business='node1产品报告确认', status='警告')
         return {
             "phase": "c1_confirm",
             # confirmations.c1 仍要 True（保证 downstream 不回推）
@@ -225,9 +227,9 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     if decision == "refine":
         refine_instruction = interrupt_value.get("refine_instruction", "").strip()
         if not refine_instruction:
-            print("[c1_confirm_report] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
+            log_message("[c1_confirm_report] ⚠️ refine 但无 refine_instruction，拒绝", page='对话', business='node1产品报告确认', status='警告')
             return {"phase": "c1_confirm"}
-        print(f"[c1_confirm_report] 🔧 refine → node1 报告, instruction={refine_instruction}", flush=True)
+        log_message(f"[c1_confirm_report] 🔧 refine → node1 报告, instruction={refine_instruction}", page='对话', business='node1产品报告确认', status='记录')
         # 追加到多轮 refine 历史 —— refine 节点会用它做指令整合（**按 node1 隔离**）
         from wellflow.app.workflows.state import build_refine_history_update
         prev_history = state.get("_refine_history") if isinstance(state, dict) else None
@@ -253,11 +255,8 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     # 优先使用 state 里最新的报告做版本绑定（不是用户传来的 confirmed_report）。
     # 若 hash 不一致 → 说明 refine 已改了报告，但用户还拿着旧版本在点确认 → 拒绝。
     if incoming_hash is not None and incoming_hash != current_hash:
-        print(
-            f"[c1_confirm_report] 🛡️ report_hash 版本不匹配："
-            f"user_sent={incoming_hash[:8]} vs state_current={current_hash[:8]} → 拒绝确认，留在 C1",
-            flush=True,
-        )
+        log_message(f"[c1_confirm_report] 🛡️ report_hash 版本不匹配："
+            f"user_sent={incoming_hash[:8]} vs state_current={current_hash[:8]} → 拒绝确认，留在 C1", page='对话', business='node1产品报告确认', status='记录')
         # 直接留在 C1，让用户看到最新报告版本
         return {"phase": "c1_confirm"}
 
@@ -273,11 +272,8 @@ def _c1_confirm_report(state: dict[str, Any]) -> dict[str, Any]:
     new_node1["report_hash"] = current_hash
     new_node1["confirmed_at"] = _time.time()
 
-    print(
-        f"[c1_confirm_report] ✅ node1 报告已锁定: hash={current_hash[:8]} "
-        f"len={len(new_node1.get('product_insight', ''))}",
-        flush=True,
-    )
+    log_message(f"[c1_confirm_report] ✅ node1 报告已锁定: hash={current_hash[:8]} "
+        f"len={len(new_node1.get('product_insight', ''))}", page='对话', business='node1产品报告确认', status='成功')
 
     # —— 参考图：C1 也可以上传 mannequin 图（可选），scene/outfit 留到 C2 ——
     new_refs = dict(new_node3.get("reference_images") or {"mannequin": [], "scene": [], "outfit": []})
@@ -337,13 +333,13 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     if decision == "refine":
         refine_instruction = interrupt_value.get("refine_instruction", "").strip()
         if not refine_instruction:
-            print("[c2_select] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
+            log_message("[c2_select] ⚠️ refine 但无 refine_instruction，拒绝", page='对话', business='node2商拍方案选择', status='警告')
             return {"phase": "c2_select"}
         # 来自 LLM 意图分类器：决定 refine LLM 能看到哪几套方案
         # 格式兼容：LLM 可能输出 ["0","1"] 或 "all"，后面 refine_node2_schemes 会统一解析
         _refine_sel_idx = interrupt_value.get("refine_selected_indices")
-        print(f"[c2_select] 🔧 refine → node2 商拍方案, instruction={refine_instruction}, "
-              f"refine_selected_indices={_refine_sel_idx}", flush=True)
+        log_message(f"[c2_select] 🔧 refine → node2 商拍方案, instruction={refine_instruction}, "
+              f"refine_selected_indices={_refine_sel_idx}", page='对话', business='node2商拍方案选择', status='记录')
         from wellflow.app.workflows.state import build_refine_history_update
         prev_history = state.get("_refine_history") if isinstance(state, dict) else None
         return {
@@ -369,7 +365,7 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     if (not isinstance(selected, list) or len(selected) != 1
             or type(selected[0]) is not int
             or not 0 <= selected[0] < len(all_schemes)):
-        print(f"[c2_select] ⚠️ 无效方案选择: {selected!r}", flush=True)
+        log_message(f"[c2_select] ⚠️ 无效方案选择: {selected!r}", page='对话', business='node2商拍方案选择', status='警告')
         return {"phase": "c2_select"}
     new_node2["selected_scheme_indices"] = selected
 
@@ -378,11 +374,11 @@ def _c2_select_scheme(state: dict[str, Any]) -> dict[str, Any]:
     n_selected = len(new_node2["selected_scheme_indices"])
     if (not isinstance(counts, list) or len(counts) != n_selected
             or any(type(c) is not int or c < 1 for c in counts)):
-        print(f"[c2_select] ⚠️ 无效 per_scheme_count: {counts!r}", flush=True)
+        log_message(f"[c2_select] ⚠️ 无效 per_scheme_count: {counts!r}", page='对话', business='node2商拍方案选择', status='警告')
         return {"phase": "c2_select"}
     new_node2["per_scheme_count"] = counts
-    print(f"[c2_select] ✅ selected={new_node2['selected_scheme_indices']} "
-          f"per_scheme_count={new_node2['per_scheme_count']}", flush=True)
+    log_message(f"[c2_select] ✅ selected={new_node2['selected_scheme_indices']} "
+          f"per_scheme_count={new_node2['per_scheme_count']}", page='对话', business='node2商拍方案选择', status='成功')
 
     new_node3 = {k: v for k, v in state.get("node3", {}).items()
                  if k in ("reference_images", "ratio", "image_model")}
@@ -430,6 +426,7 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         "hint": "请确认每套方案的最终提示词，可编辑后继续生图",
         "generate_prompts": state.get("node3", {}).get("generate_prompts", []),
         "prompts_detail": state.get("node3", {}).get("prompts_detail", []),
+        "image_model": state.get("node3", {}).get("image_model"),
         "reference_images": state.get("node3", {}).get("reference_images", {"mannequin": [], "scene": [], "outfit": []}),
         "thinking_text": state.get("node3", {}).get("thinking_text", ""),
     })
@@ -449,13 +446,13 @@ def _c3_confirm_prompt(state: dict[str, Any]) -> dict[str, Any]:
         if refine_target not in ("node2", "node3"):
             refine_target = "node3"
         if not refine_instruction:
-            print("[c3_confirm] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
+            log_message("[c3_confirm] ⚠️ refine 但无 refine_instruction，拒绝", page='对话', business='node3生图提示词确认', status='警告')
             return {"phase": "c3_confirm"}
         # node2 refine：方案过滤索引；node3 refine：也透传 selected_indices
         # （"把第1条提示词加人物居中" → selected_indices=["0"]，refine_node3 会用它限定目标）
         _refine_sel_idx = interrupt_value.get("refine_selected_indices")
-        print(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
-              f"refine_selected_indices={_refine_sel_idx}", flush=True)
+        log_message(f"[c3_confirm] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
+              f"refine_selected_indices={_refine_sel_idx}", page='对话', business='node3生图提示词确认', status='记录')
         from wellflow.app.workflows.state import build_refine_history_update
         prev_history = state.get("_refine_history") if isinstance(state, dict) else None
         return {
@@ -538,6 +535,7 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         "phase": "c4_review",
         "hint": node4.get("generation_summary", ""),
         "generation_status": node4.get("generation_status"),
+        "image_model": node4.get("image_model") or node3.get("image_model"),
         "outputs": node4.get("outputs", []),
         "failed_items": node4.get("failed_items", []),
         "reference_images": req.get("product_images", []),
@@ -565,12 +563,12 @@ def _c4_review_result(state: dict[str, Any]) -> dict[str, Any]:
         if refine_target not in ("node2", "node3"):
             refine_target = "node3"
         if not refine_instruction:
-            print("[c4_review] ⚠️ refine 但无 refine_instruction，拒绝", flush=True)
+            log_message("[c4_review] ⚠️ refine 但无 refine_instruction，拒绝", page='对话', business='node4图片结果确认', status='警告')
             return {"phase": "c4_review"}
         # 透传意图分类器的 selected_indices —— node2 用作方案过滤；node3 用作 prompt 目标限定
         _refine_sel_idx = interrupt_value.get("refine_selected_indices")
-        print(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
-              f"refine_selected_indices={_refine_sel_idx}", flush=True)
+        log_message(f"[c4_review] 🔧 refine → {refine_target}, instruction={refine_instruction}, "
+              f"refine_selected_indices={_refine_sel_idx}", page='对话', business='node4图片结果确认', status='记录')
         from wellflow.app.workflows.state import build_refine_history_update
         prev_history = state.get("_refine_history") if isinstance(state, dict) else None
         return {

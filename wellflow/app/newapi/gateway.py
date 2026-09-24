@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.newapi.observability import model_call, event, response_received, request_prepared
+
 import asyncio
 import json
 import time
@@ -19,8 +21,8 @@ from wellflow.app.llm.base import (
     InsufficientCreditsError,
     extract_error_message,
 )
-from wellflow.app.llm.channel_audit import schedule_actual_channel
-
+from wellflow.app.newapi.channel_audit import schedule_actual_channel
+from wellflow.app.newapi.image_client import NewApiImageMixin
 
 def _apply_reasoning_control(payload: dict[str, Any], model: str, reasoning_effort: str) -> None:
     """按模型族关闭/开启 thinking。
@@ -57,8 +59,7 @@ def _apply_reasoning_control(payload: dict[str, Any], model: str, reasoning_effo
         payload["reasoning_effort"] = "none"
     # gemini 等其余模型不传字段即可
 
-
-class NewApiGateway(BaseLLMClient):
+class NewApiGateway(NewApiImageMixin, BaseLLMClient):
     """纯 OpenAI 协议客户端，透传 extra_params 到 payload。"""
 
     MAX_RETRIES = 2
@@ -70,11 +71,15 @@ class NewApiGateway(BaseLLMClient):
         base_url: str | None = None,
         api_key: str | None = None,
         timeout: float = 60.0,
+        max_retries: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
         self.api_key = api_key
         self.timeout = timeout
+        self.max_retries = self.MAX_RETRIES if max_retries is None else max_retries
+        if self.max_retries < 0:
+            raise ValueError("max_retries 不能小于 0")
 
     async def chat(
         self,
@@ -105,7 +110,6 @@ class NewApiGateway(BaseLLMClient):
         user_content: list[dict[str, Any]] = [{"type": "text", "text": user}]
         for uri in image_uris:
             user_content.append({"type": "image_url", "image_url": {"url": uri}})
-        self._log_payload_size(user_content)
         return await self._openai_chat(
             system=system, user=user, response_format=response_format,
             temperature=0.3, reasoning_effort=reasoning_effort,
@@ -125,7 +129,6 @@ class NewApiGateway(BaseLLMClient):
         user_content: list[dict[str, Any]] = [{"type": "text", "text": user}]
         for uri in image_uris:
             user_content.append({"type": "image_url", "image_url": {"url": uri}})
-        self._log_payload_size(user_content)
         async for delta in self._openai_chat_stream(
             system=system, user=user, reasoning_effort=reasoning_effort,
             extra_params=extra_params, user_content=user_content,
@@ -157,21 +160,6 @@ class NewApiGateway(BaseLLMClient):
     # helpers
     # ------------------------------------------------------------------
 
-    def _log_payload_size(self, user_content: Any) -> None:
-        """多模态请求 payload 尺寸摘要，排查 image_url 截断用。"""
-        if not isinstance(user_content, list):
-            return
-        image_blocks = [b for b in user_content if isinstance(b, dict) and b.get("type") == "image_url"]
-        if not image_blocks:
-            return
-        total = 0
-        for block in image_blocks:
-            url = block.get("image_url", {}).get("url", "")
-            comma_idx = url.find(",")
-            total += len(url) - (comma_idx + 1) if comma_idx >= 0 else len(url)
-        est_mb = total * 3 / 4 / 1024 / 1024
-        print(f"[llm-payload] 📦 {len(image_blocks)} 张图, b64 合计 {total:,} chars (≈ {est_mb:.2f}MB)", flush=True)
-
     @staticmethod
     def _build_messages(system: str, user: str, user_content: Any) -> list[dict[str, Any]]:
         msgs: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -194,6 +182,7 @@ class NewApiGateway(BaseLLMClient):
     # 非流式 chat/completions
     # ------------------------------------------------------------------
 
+    @model_call("chat/completions")
     async def _openai_chat(
         self,
         system: str,
@@ -217,26 +206,25 @@ class NewApiGateway(BaseLLMClient):
         if extra_params:
             payload.update(extra_params)
 
-        print(f"[llm] POST {self.base_url}/chat/completions model={self.model} stream=False", flush=True)
         last_exc: Exception | None = None
-        for attempt in range(self.MAX_RETRIES + 1):
+        for attempt in range(self.max_retries + 1):
             try:
                 # 非流式也去掉 timeout —— 上游推理慢（尤其带 thinking 的模型）时不再被 60s 截断
                 async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
+                    request_prepared(payload["model"], "chat/completions", attempt + 1)
                     resp = await client.post(
                         f"{self.base_url}/chat/completions",
                         headers=self._build_headers(),
                         json=payload,
                     )
-                    schedule_actual_channel(resp, self.model, "chat/completions")
-                    if resp.status_code in self.RETRYABLE_STATUS and attempt < self.MAX_RETRIES:
+                    response_received(resp, payload["model"], "chat/completions")
+                    schedule_actual_channel(resp, payload["model"], "chat/completions")
+                    if resp.status_code in self.RETRYABLE_STATUS and attempt < self.max_retries:
+                        event("重试", attempt=attempt + 1, next_attempt=attempt + 2, http_status=resp.status_code)
                         last_exc = httpx.HTTPStatusError(str(resp.status_code), request=resp.request, response=resp)
                         continue
                     if resp.status_code == 402:
-                        print(f"[llm] ❌ HTTP 402 credits: {resp.text[:500]}", flush=True)
                         raise InsufficientCreditsError(extract_error_message(402, resp.text))
-                    if resp.status_code >= 400:
-                        print(f"[llm] ❌ HTTP {resp.status_code} body={resp.text[:1000]}", flush=True)
                     resp.raise_for_status()
                     data = resp.json()
 
@@ -267,14 +255,16 @@ class NewApiGateway(BaseLLMClient):
                 )
             except Exception as e:
                 last_exc = e
-                if attempt >= self.MAX_RETRIES:
+                if attempt >= self.max_retries:
                     raise
+                event("重试", attempt=attempt + 1, next_attempt=attempt + 2, error_type=type(e).__name__)
         raise last_exc  # type: ignore[misc]
 
     # ------------------------------------------------------------------
     # 流式 chat/completions (SSE)
     # ------------------------------------------------------------------
 
+    @model_call("chat/completions:stream")
     async def _openai_chat_stream(
         self,
         system: str,
@@ -301,10 +291,7 @@ class NewApiGateway(BaseLLMClient):
 
         retryable = (httpx.ReadError, httpx.WriteError, httpx.ConnectError, httpx.ConnectTimeout, httpx.HTTPStatusError)
         last_exc: Exception | None = None
-        # 🩺 临时诊断：前 N 条 delta 打印真实字段分布，排查模型把正文写进了 reasoning 还是 content
-        _diag_delta_count = 0
-        _DIAG_MAX = 30
-        for attempt in range(self.MAX_RETRIES + 1):
+        for attempt in range(self.max_retries + 1):
             _stream_started = False
             _content_buf = ""
             _thinking_buf = ""
@@ -322,11 +309,14 @@ class NewApiGateway(BaseLLMClient):
 
             try:
                 async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
-                    print(f"[llm] → POST {self.base_url}/chat/completions model={self.model} stream=True ...", flush=True)
+
+                    request_prepared(payload["model"], "chat/completions:stream", attempt + 1)
                     async with client.stream(
                         "POST", f"{self.base_url}/chat/completions",
                         headers=self._build_headers(accept_sse=True), json=payload,
                     ) as resp:
+                        response_received(resp, payload["model"], "chat/completions:stream")
+                        schedule_actual_channel(resp, payload["model"], "chat/completions:stream")
                         resp.raise_for_status()
                         _stream_started = True
                         async for raw_line in resp.aiter_lines():
@@ -357,28 +347,49 @@ class NewApiGateway(BaseLLMClient):
                             if delta.get("content"):
                                 _content_buf += delta["content"]
 
-                            # 🩺 临时诊断：打印前 N 条 delta 的真实字段分布
-                            if _diag_delta_count < _DIAG_MAX:
-                                _diag_delta_count += 1
-
-   
-
                             if time.time() - _last_flush_ts >= _FLUSH_INTERVAL:
                                 async for item in _flush():
                                     yield item
 
                         async for item in _flush():
                             yield item
-                        schedule_actual_channel(resp, self.model, "chat/completions:stream")
                 return
             except retryable as e:
                 last_exc = e
-                if _stream_started or attempt >= self.MAX_RETRIES:
+                if _stream_started or attempt >= self.max_retries:
                     raise
                 if isinstance(e, httpx.HTTPStatusError):
                     if e.response is None or e.response.status_code not in self.RETRYABLE_STATUS:
                         raise
                 wait = 0.5 * (attempt + 1)
-                print(f"[llm] ⚠️ 流式连接失败 (attempt {attempt + 1}/{self.MAX_RETRIES + 1}): {type(e).__name__}，{wait:.1f}s 后重试", flush=True)
+                event("重试", attempt=attempt + 1, next_attempt=attempt + 2, error_type=type(e).__name__, wait_s=wait)
                 await asyncio.sleep(wait)
         raise last_exc  # type: ignore[misc]
+
+    # ------------------------------------------------------------------
+    # LangChain 兼容层（Tool-Calling Agent 需要）
+    # ------------------------------------------------------------------
+
+    def langchain_compat(self):
+        """返回一个 LangChain ChatModel 兼容对象。"""
+        import httpx
+        from langchain_openai import ChatOpenAI
+        from openai import AsyncOpenAI, OpenAI
+
+        # 显式提供 SDK 客户端，所有连接直连且不继承环境代理。
+        connection = {
+            "base_url": getattr(self, "base_url", None),
+            "api_key": getattr(self, "api_key", "dummy"),
+        }
+        sync_client = OpenAI(**connection, http_client=httpx.Client(trust_env=False))
+        async_client = AsyncOpenAI(**connection, http_client=httpx.AsyncClient(trust_env=False))
+        return ChatOpenAI(
+            client=sync_client.chat.completions,
+            async_client=async_client.chat.completions,
+            root_client=sync_client,
+            root_async_client=async_client,
+            model=getattr(self, "model", "qwen-max"),
+            base_url=getattr(self, "base_url", None),
+            api_key=getattr(self, "api_key", "dummy"),
+            temperature=0.3,
+        )

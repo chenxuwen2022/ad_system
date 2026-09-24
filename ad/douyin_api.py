@@ -2048,7 +2048,7 @@ class DouYinAdService:
         # —— 优先走 wellflow 模型池（自动轮询/熔断/海外兜底）——
         content, used_model = "", ""
         try:
-            from wellflow.app.llm.model_pool import get_model_pool
+            from wellflow.app.newapi.pool import get_model_pool
             import asyncio as _aio
 
             async def _go():
@@ -2189,7 +2189,7 @@ class DouYinAdService:
 
         content, used_model = "", ""
         try:
-            from wellflow.app.llm.model_pool import get_model_pool
+            from wellflow.app.newapi.pool import get_model_pool
             import asyncio as _aio
 
             async def _go():

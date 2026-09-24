@@ -25,6 +25,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 import base64
 import io
 import mimetypes
@@ -98,7 +100,7 @@ def save_upload(
 
         rel_path = f"uploads/{task_id}/{filename}"
         paths.append(rel_path)
-        print(f"[image_store] 💾 {rel_path} ({len(raw)} bytes, mime={content_type or '?'})", flush=True)
+        log_message(f"[image_store] 💾 {rel_path} ({len(raw)} bytes, mime={content_type or '?'})", page='系统', business='图片存储', status='记录')
 
     return paths
 
@@ -182,7 +184,7 @@ def save_asset_upload(
             "height": h,
         })
         tag = "session" if session_id else "asset"
-        print(f"[image_store] 💾 {tag} {rel_path} ({size}B, {mime}, {w}x{h})", flush=True)
+        log_message(f"[image_store] 💾 {tag} {rel_path} ({size}B, {mime}, {w}x{h})", page='系统', business='图片存储', status='记录')
 
     return dir_id, images
 
@@ -240,7 +242,7 @@ def path_to_data_uri(path: str) -> str:
     """
     abs_path = _resolve_path(path)
     if not abs_path.exists():
-        print(f"[image_store] ⚠️ 路径不存在，跳过: {path}", flush=True)
+        log_message(f"[image_store] ⚠️ 路径不存在，跳过: {path}", page='系统', business='图片存储', status='警告')
         return ""
 
     raw = abs_path.read_bytes()
@@ -276,7 +278,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
             continue
         abs_path = _resolve_path(p)
         if not abs_path.exists():
-            print(f"[image_store] ⚠️ 路径不存在，跳过: {p}", flush=True)
+            log_message(f"[image_store] ⚠️ 路径不存在，跳过: {p}", page='系统', business='图片存储', status='警告')
             continue
         path_items.append((p, abs_path.read_bytes()))
 
@@ -301,7 +303,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
         orig_mime = orig_mime or "image/jpeg"
 
         if not pil_available:
-            print(f"[image_store] ⚠️ 未安装 Pillow，无法转换 {p} ({len(raw)/1024/1024:.1f}MB)，原样 base64", flush=True)
+            log_message(f"[image_store] ⚠️ 未安装 Pillow，无法转换 {p} ({len(raw)/1024/1024:.1f}MB)，原样 base64", page='系统', business='图片存储', status='警告')
             b64 = base64.b64encode(raw).decode("ascii")
             result.append(f"data:{orig_mime};base64,{b64}")
             continue
@@ -311,7 +313,7 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
             enc, _, w_orig, h_orig = _pil_compress(raw, quality=90)
             converted_count += 1
         except Exception as e:
-            print(f"[image_store] ⚠️ PIL 转换失败 ({e})，退回原样 base64", flush=True)
+            log_message(f"[image_store] ⚠️ PIL 转换失败 ({e})，退回原样 base64", page='系统', business='图片存储', status='警告')
             b64 = base64.b64encode(raw).decode("ascii")
             result.append(f"data:{orig_mime};base64,{b64}")
             continue
@@ -339,23 +341,17 @@ def paths_to_data_uris(paths: Sequence[str]) -> list[str]:
         kb_orig = len(raw) / 1024
         kb_new = len(enc) / 1024
         if is_reformat or compressed_count == 0 and converted_count == 1:
-            print(
-                f"[image_store] 🗜️ {p}: {kb_orig:.0f}KB → {kb_new:.0f}KB "
+            log_message(f"[image_store] 🗜️ {p}: {kb_orig:.0f}KB → {kb_new:.0f}KB "
                 f"({w_orig}x{h_orig} → {w_new}x{h_new}, q={final_q}){resize_tag} "
-                f"[format: {orig_mime} → JPEG]",
-                flush=True,
-            )
+                f"[format: {orig_mime} → JPEG]", page='系统', business='图片存储', status='记录')
 
         b64 = base64.b64encode(enc).decode("ascii")
         result.append(f"data:image/jpeg;base64,{b64}")
 
     # 4) 汇总日志
     total_raw = sum(len(raw) for _, raw in path_items)
-    print(
-        f"[image_store] ✅ {len(path_items)} 张图片处理完成 "
-        f"(原图合计 {total_raw/1024/1024:.1f}MB, 格式转换 {converted_count} 张, 渐进压缩 {compressed_count} 张, 阈值 {SINGLE_THRESHOLD_MB:.1f}MB/张)",
-        flush=True,
-    )
+    log_message(f"[image_store] ✅ {len(path_items)} 张图片处理完成 "
+        f"(原图合计 {total_raw/1024/1024:.1f}MB, 格式转换 {converted_count} 张, 渐进压缩 {compressed_count} 张, 阈值 {SINGLE_THRESHOLD_MB:.1f}MB/张)", page='系统', business='图片存储', status='成功')
     return result
 
 
@@ -377,21 +373,21 @@ def _compress_single(raw: bytes, threshold_bytes: int) -> tuple[bytes, int, bool
         try:
             enc, _, _, _ = _pil_compress(raw, quality=q)  # max_side=None
         except Exception as e:
-            print(f"[image_store] ⚠️ PIL 压缩失败 (q={q}, {e})", flush=True)
+            log_message(f"[image_store] ⚠️ PIL 压缩失败 (q={q}, {e})", page='系统', business='图片存储', status='警告')
             break
         best_enc = enc
         best_q = q
         if len(enc) <= threshold_bytes:
             return enc, q, False
-        print(f"[image_store] 🔍 q={q} 无resize: {len(enc)/1024:.0f}KB / target={threshold_bytes/1024:.0f}KB", flush=True)
+        log_message(f"[image_store] 🔍 q={q} 无resize: {len(enc)/1024:.0f}KB / target={threshold_bytes/1024:.0f}KB", page='系统', business='图片存储', status='记录')
 
     # quality 降到最低还超限 → 兜底 resize
     try:
         enc, _, _, _ = _pil_compress(raw, quality=best_q, max_side=max_side_fallback)
-        print(f"[image_store] 🔍 兜底 side={max_side_fallback} q={best_q}: {len(enc)/1024:.0f}KB", flush=True)
+        log_message(f"[image_store] 🔍 兜底 side={max_side_fallback} q={best_q}: {len(enc)/1024:.0f}KB", page='系统', business='图片存储', status='记录')
         return enc, best_q, True
     except Exception as e:
-        print(f"[image_store] ⚠️ PIL resize 失败 ({e})，退回 quality-only 结果", flush=True)
+        log_message(f"[image_store] ⚠️ PIL resize 失败 ({e})，退回 quality-only 结果", page='系统', business='图片存储', status='警告')
         return best_enc, best_q, False
 
 
@@ -423,7 +419,7 @@ def bytes_items_to_data_uris(
         orig_mime = mime or "image/jpeg"
 
         if not pil_available:
-            print(f"[image_store] ⚠️ 未安装 Pillow，内存图片 ({len(raw)/1024/1024:.1f}MB) 原样 base64", flush=True)
+            log_message(f"[image_store] ⚠️ 未安装 Pillow，内存图片 ({len(raw)/1024/1024:.1f}MB) 原样 base64", page='系统', business='图片存储', status='警告')
             b64 = _b64.b64encode(raw).decode("ascii")
             result.append(f"data:{orig_mime};base64,{b64}")
             continue
@@ -432,7 +428,7 @@ def bytes_items_to_data_uris(
         try:
             enc, _, _, _ = _pil_compress(raw, quality=90)
         except Exception as e:
-            print(f"[image_store] ⚠️ PIL 转换失败 ({e})，退回原样 base64", flush=True)
+            log_message(f"[image_store] ⚠️ PIL 转换失败 ({e})，退回原样 base64", page='系统', business='图片存储', status='警告')
             b64 = _b64.b64encode(raw).decode("ascii")
             result.append(f"data:{orig_mime};base64,{b64}")
             continue
@@ -445,11 +441,8 @@ def bytes_items_to_data_uris(
             enc, final_q, used_resize = _compress_single(raw, threshold_bytes)
 
         resize_tag = " [resize]" if used_resize else ""
-        print(
-            f"[image_store] 🗜️ 内存图片: {len(raw)/1024:.0f}KB → {len(enc)/1024:.0f}KB "
-            f"(q={final_q}){resize_tag} [format: {orig_mime} → JPEG]",
-            flush=True,
-        )
+        log_message(f"[image_store] 🗜️ 内存图片: {len(raw)/1024:.0f}KB → {len(enc)/1024:.0f}KB "
+            f"(q={final_q}){resize_tag} [format: {orig_mime} → JPEG]", page='系统', business='图片存储', status='记录')
         b64 = _b64.b64encode(enc).decode("ascii")
         result.append(f"data:image/jpeg;base64,{b64}")
 
@@ -498,7 +491,7 @@ def save_output_image(task_id: str, name: str, image_url: str) -> str:
     save_path.write_bytes(base64.b64decode(b64))
 
     rel_path = f"uploads/{task_id}/outputs/{filename}"
-    print(f"[image_store] 💾 成品图落盘 {rel_path} ({len(b64)//1024:.0f}KB b64)", flush=True)
+    log_message(f"[image_store] 💾 成品图落盘 {rel_path} ({len(b64)//1024:.0f}KB b64)", page='系统', business='图片存储', status='记录')
     return rel_path
 
 
@@ -544,7 +537,7 @@ def save_sku_assets(
         rel_path = f"uploads/sku/{sku_no}/{filename}"
         paths.append(rel_path)
         mime = content_type or mimetypes.guess_type(filename)[0] or "image/jpeg"
-        print(f"[image_store] 💾 sku {rel_path} ({len(raw)}B, {mime})", flush=True)
+        log_message(f"[image_store] 💾 sku {rel_path} ({len(raw)}B, {mime})", page='系统', business='图片存储', status='记录')
 
     return paths
 
@@ -562,12 +555,12 @@ def delete_task_files(task_id: str) -> None:
 
     # 安全校验：task_dir 必须严格位于 upload_dir 之下
     if upload_dir not in task_dir.parents and task_dir != upload_dir:
-        print(f"[image_store] ⚠️ 路径穿越拒绝: task_dir={task_dir} upload_dir={upload_dir}", flush=True)
+        log_message(f"[image_store] ⚠️ 路径穿越拒绝: task_dir={task_dir} upload_dir={upload_dir}", page='系统', business='图片存储', status='警告')
         return
 
     if not task_dir.exists():
-        print(f"[image_store] ℹ️ 目录不存在，跳过删除: {task_dir}", flush=True)
+        log_message(f"[image_store] ℹ️ 目录不存在，跳过删除: {task_dir}", page='系统', business='图片存储', status='记录')
         return
 
     shutil.rmtree(task_dir, ignore_errors=True)
-    print(f"[image_store] 🗑️ 已删除任务目录: {task_dir}", flush=True)
+    log_message(f"[image_store] 🗑️ 已删除任务目录: {task_dir}", page='系统', business='图片存储', status='记录')

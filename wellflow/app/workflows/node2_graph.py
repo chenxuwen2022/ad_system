@@ -7,6 +7,10 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
+from wellflow.app.newapi.observability import business_operation
+
 import time
 from typing import Any
 
@@ -30,6 +34,7 @@ def build_graph():
     return graph.compile()
 
 
+@business_operation("Node2/商拍方案")
 async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     """VLM 流式产出配置数量的完整方案，结束时拆分并推送方案列表。
 
@@ -62,8 +67,8 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         from wellflow.app.utils.image_store import paths_to_data_uris
         product_images = await asyncio.to_thread(paths_to_data_uris, product_image_paths)
 
-    print(f"[node2] _plan_schemes 输入: user_requirement={'有' if user_requirement else '无'}, "
-          f"product_images={len(product_images)}", flush=True)
+    log_message(f"[node2] _plan_schemes 输入: user_requirement={'有' if user_requirement else '无'}, "
+          f"product_images={len(product_images)}", page='对话', business='node2商拍方案', status='记录')
 
     # reasoning_effort 从 settings.node2_reasoning_effort 读取（默认 low，可配）
     effort = _settings.node2_reasoning_effort
@@ -77,7 +82,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     first_think_ts = None
 
     # ---- 开始流式 VLM ----
-    print(f"[node2] 📌 reasoning_effort={effort} → 流式 stream_plan_schemes", flush=True)
+    log_message(f"[node2] 📌 reasoning_effort={effort} → 流式 stream_plan_schemes", page='对话', business='node2商拍方案', status='记录')
 
     async for item in _ps.stream_plan_schemes(
         product_insight=product_insight,
@@ -102,7 +107,7 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         if item_type == "thinking":
             if first_think_ts is None:
                 first_think_ts = time.time()
-                print(f"[node2] 💭 首 thinking token TTFB={first_think_ts - t0:.2f}s", flush=True)
+                log_message(f"[node2] 💭 首 thinking token TTFB={first_think_ts - t0:.2f}s", page='对话', business='node2商拍方案', status='记录')
             think_parts.append(text)
             think_chunk_index += 1
             if task_id:
@@ -110,9 +115,8 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
         else:
             if first_content_ts is None:
                 first_content_ts = time.time()
-                print(f"[node2] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
-                      + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else "")
-                      , flush=True)
+                log_message(f"[node2] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
+                      + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else ""), page='对话', business='node2商拍方案', status='记录')
             content_parts.append(text)
             content_chunk_index += 1
             if task_id:
@@ -125,13 +129,12 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     schemes = _ps.split_scheme_reports(raw_text, expected_count=scheme_count)
 
     total_ts = time.time()
-    print(f"[node2] ✅ 流式 VLM 完成: schemes={len(schemes)} 套, "
+    log_message(f"[node2] ✅ 流式 VLM 完成: schemes={len(schemes)} 套, "
           f"raw={len(raw_text)} 字, thinking={len(full_thinking)} 字, "
           f"content_chunks={content_chunk_index}, think_chunks={think_chunk_index}, "
           f"总耗时={total_ts - t0:.2f}s"
           + (f", 首think={first_think_ts - t0:.2f}s" if first_think_ts else "")
-          + (f", 首content={first_content_ts - t0:.2f}s" if first_content_ts else "")
-          , flush=True)
+          + (f", 首content={first_content_ts - t0:.2f}s" if first_content_ts else ""), page='对话', business='node2商拍方案', status='成功')
 
     # 推送完整文本报告；载体结构只用于现有 C2 确认流程。
     if task_id:
@@ -153,5 +156,5 @@ async def _plan_schemes(state: dict[str, Any]) -> dict[str, Any]:
     }
 
     output = {"initial_schemes": state.get("initial_schemes") or schemes, "_redo_target": None, "_redo_instruction": None, "phase": "node2_plan_scheme", "node2": new_node2}
-    print(f"[node2] _plan_schemes 输出: {len(schemes)} 套商拍方案", flush=True)
+    log_message(f"[node2] _plan_schemes 输出: {len(schemes)} 套商拍方案", page='对话', business='node2商拍方案', status='记录')
     return output
