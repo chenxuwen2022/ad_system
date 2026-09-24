@@ -19,7 +19,6 @@ class Settings(BaseSettings):
 
     # ====== new-api 渠道 ID ======
     # LLM / VLM / text 模型统一走这个渠道拉列表 + 分发（Node1/Node2/Node3/意图识别/refine/outfit/mannequins 全部继承）
-    # Node4 生图渠道单独配 node4_image_channel_id（语义不同，不要合并）
     llm_channel_id: int = 4
 
     # 🎯 意图分类固定走 deepseek-v4-flash，不参与动态模型池轮询
@@ -50,9 +49,8 @@ class Settings(BaseSettings):
     node4_gen_concurrency: int = Field(default=2, ge=1)                 # Node4 生图队列 worker 数，对齐上游限流配额防 429
     image_request_concurrency: int = Field(default=2, ge=1)  # 同一进程所有任务共享
     image_request_interval: float = Field(default=1.0, ge=0)  # 请求启动最小间隔（秒）
-    image_rate_limit_retries: int = Field(default=3, ge=0, le=10)
-    image_retry_deadline: float = Field(default=600.0, gt=0)  # 单个模型排队+重试总时限
-    node4_image_channel_id: int = 4                # new-api 生图渠道 ID
+    image_rate_limit_retries: int = Field(default=1, ge=0, le=10)
+    image_retry_deadline: float = Field(default=600.0, gt=0)  # 单个模型累计排队/限流等待上限，不含实际生成
     llm_model_responses: str = "gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
     image_ratio_to_pixel_size_gpt: dict[str, str] = {
         "9:16": "1024x1536",   # 降级：用 3:4 近似 9:16
@@ -73,7 +71,7 @@ class Settings(BaseSettings):
 
     # ====== 其他 ======
     llm_timeout: float = 60.0                     # VLM / 文本 LLM 超时（秒）
-    image_timeout: float = 180.0                   # 生图超时（秒）
+    image_timeout: float = Field(default=300.0, gt=0)  # 每次实际生图调用的独立时限，不含排队/限流等待
 
     image_single_compress_threshold_mb: float = 1.5  # 单张图片超过此值触发渐进压缩（raw bytes）
 

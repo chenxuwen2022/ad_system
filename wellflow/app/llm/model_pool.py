@@ -403,7 +403,7 @@ def get_model_pool(
       - channel_id=None    → 走 settings.llm_channel_id（默认 4，LLM/VLM 统一渠道）
       - preferred_model='qwen3.8-flash' → 优先用 qwen3.8-flash，失败降级
 
-    node4 生图走 node4_image_channel_id=4（语义不同，不要复用）。
+    node4 生图模型由前端指定，不使用模型池。
     """
     channel_id = channel_id or settings.llm_channel_id  # None → config 统一渠道
     key = task_id or "__shared__"
@@ -434,5 +434,3 @@ async def prepare_task_models(task_id: str) -> ModelPool:
 
 def clear_task_models(task_id: str) -> None:
     _pool_instances.pop(task_id, None)
-    from wellflow.app.llm.image_gen_service import clear_task_image_models
-    clear_task_image_models(task_id)

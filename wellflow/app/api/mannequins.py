@@ -483,6 +483,7 @@ async def optimize_prompt(
 )
 async def generate_mannequin_images(
     prompt: str = Form(...),
+    generate_model: str = Form("qwen-image-3.0"),
     num_output: int = Form(3),
     size: str = Form("1024x1536"),
     ref_images: list[UploadFile] = File(default_factory=list),
@@ -492,9 +493,7 @@ async def generate_mannequin_images(
     **流程定位**：路径 B（AI 生成）的 **必须步骤**。
 
     **入参**：全部 multipart。参考图二进制 → data URI 直接喂生图模型。
-    **generate_model** 参数保留以保持 API 签名兼容，后端内部忽略它，
-    统一走 node4 同源的「动态拉 new-api 渠道模型列表 + 降级链」逻辑，
-    确保与 LangGraph Node4 行为一致。
+    **generate_model** 指定本轮生图模型，失败不会自动切换模型。
 
     **返回**：images[] 每项只有 index + base64。**没有 storage_uri / url / revised_prompt**。
     生成图在整个准备阶段都只活在前端内存里。
@@ -502,8 +501,6 @@ async def generate_mannequin_images(
     import asyncio as _asyncio
     from wellflow.app.llm.image_gen_service import generate_single_image
 
-    # generate_model 参数按「选项 C + 与 node4 一致」处理：API 签名保留但内部忽略，
-    # 让共享 service 统一拉 new-api 渠道模型链并自动降级。
     num_output = max(1, min(num_output, 6))
 
     ref_data_uris = await _files_to_data_uris(ref_images) if ref_images else None
@@ -512,14 +509,15 @@ async def generate_mannequin_images(
 
     print(f"[mannequin/generate] 📤 n={num_output} "
           f"refs={len(ref_data_uris) if ref_data_uris else 0} size={size} "
-          f"(model via node4 image_gen_service)", flush=True)
+          f"model={generate_model}", flush=True)
 
-    # 收集所有成功生图实际用到的模型名（降级链里可能不同）
+    # 收集成功生图实际使用的模型名
     _used_models: list[str] = []
 
     async def _one(i: int) -> GeneratedImage:
         async with sem:
             r = await generate_single_image(
+                model=generate_model,
                 prompt=prompt,
                 size=size,
                 ref_data_uris=ref_data_uris,

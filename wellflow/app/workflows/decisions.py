@@ -110,3 +110,30 @@ def redo_decision(state, current_node, values):
                                          if k in GENERATION_NODES and int(k[-1]) < stage})
     update.update(_redo_target=target, _redo_instruction=values.get("redo_instruction") or "")
     return update
+
+
+def completed_edit_update(state, operation):
+    """Resume a completed task's upstream edit without touching archived assets."""
+    target = operation.get("target")
+    mode = operation.get("mode")
+    instruction = (operation.get("instruction") or "").strip()
+    if target not in ("node2", "node3") or mode not in ("refine", "regenerate"):
+        raise ValueError("已完成任务只允许修改或重新生成商拍方案、提示词")
+    validate_redo(state, "c4", target)
+    if mode == "regenerate":
+        return {"phase": "processing", **redo_decision(state, "c4", {
+            "redo_target": target, "redo_instruction": instruction,
+        })}
+    if not instruction:
+        raise ValueError("请提供具体修改要求")
+    if not (state.get(target) or {}).get("schemes" if target == "node2" else "generate_prompts"):
+        raise ValueError("缺少可修改的原产物，请先重新生成")
+    from wellflow.app.workflows.state import build_refine_history_update
+    return {
+        **invalidate(state, int(target[-1])), "phase": "processing",
+        "_refine_target": target, "_refine_instruction": instruction,
+        "_refine_selected_indices": operation.get("selected_indices"),
+        "_refine_scheme_count": operation.get("scheme_count"),
+        "_refine_scheme_source": operation.get("scheme_source"),
+        "_refine_history": build_refine_history_update(state.get("_refine_history"), target, instruction),
+    }
