@@ -34,7 +34,7 @@ class ModelOptionsResponse(BaseModel):
     items: list[ModelOption] = Field(default_factory=list)
 
 
-IMAGE_HINTS = ("image", "gpt-image", "dall", "flux", "sdxl", "midjourney", "mj", "banana")
+IMAGE_HINTS = ("image", "gpt-image", "dall", "flux", "sdxl", "midjourney", "mj", "banana", "seedream")
 VIDEO_HINTS = ("video", "kling", "sora", "veo", "wan", "hailuo", "vidu", "runway")
 EMBEDDING_HINTS = ("embedding", "embed", "bge", "text-embedding")
 RERANK_HINTS = ("rerank", "reranker")
