@@ -82,6 +82,18 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     if outfit_paths:
         outfit_images = await asyncio.to_thread(paths_to_data_uris, outfit_paths)
 
+    for label, paths, images in (
+        ("模特图", mannequin_paths, mannequin_images),
+        ("场景图", scene_paths, scene_images),
+        ("穿搭图", outfit_paths, outfit_images),
+    ):
+        if len(paths) != len(images):
+            raise ValueError(f"{label}读取不完整，请重新上传后再生成提示词")
+
+    required_binding = _pg.reference_binding_block(product_images, {
+        "mannequin": mannequin_images, "scene": scene_images, "outfit": outfit_images,
+    })
+
     # 过滤出选中的方案
     selected_schemes: list[dict[str, Any]] = [schemes[i] for i in selected_indices if 0 <= i < len(schemes)]
 
@@ -160,7 +172,9 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
                 content_parts.append(text)
 
         raw_content = "".join(content_parts)
-        generated = _pg.split_generated_prompts(raw_content, n_variants)
+        generated = _pg.split_generated_prompts(
+            raw_content, n_variants, required_binding=required_binding,
+        )
         elapsed = round(time.time() - started, 1)
         for vi, item in enumerate(generated):
             prompt_text = item["prompt"]
