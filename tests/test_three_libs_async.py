@@ -107,8 +107,16 @@ d = r.json().get("data", {})
 check("B1 穿搭拆解秒回", r.status_code == 200 and d.get("status") == "extracting"
       and d.get("outfit_id"), f"resp={d}")
 oid = d.get("outfit_id"); tid = d.get("task_id")
-r = requests.get(f"{BASE}/api/outfit/ai-status", params={"task_id": tid}, timeout=15)
-check("B2 穿搭轮询 done", r.json().get("data", {}).get("status") == "done")
+ostatus = ""
+if tid:
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        r = requests.get(f"{BASE}/api/outfit/ai-status", params={"task_id": tid}, timeout=15)
+        ostatus = r.json().get("data", {}).get("status")
+        if ostatus in ("done", "failed"):
+            break
+        time.sleep(3)
+check("B2 穿搭轮询 done", ostatus == "done", f"status={ostatus}")
 r = requests.get(f"{BASE}/api/outfit/{oid}", timeout=15)
 check("B3 穿搭详情待选件", r.json().get("data", {}).get("status") == "pending_select"
       and len(r.json().get("data", {}).get("items", [])) == 6)
