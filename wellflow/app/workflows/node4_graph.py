@@ -38,10 +38,18 @@ def resolve_prompt_indices(selection, count: int) -> list[int]:
         return list(range(count))
     if selection == "last":
         return [count - 1]
-    if (not isinstance(selection, list) or not selection
-            or any(type(i) is not int or not 0 <= i < count for i in selection)):
+    if not isinstance(selection, list) or not selection:
         raise ValueError(f"提示词选择无效，请选择第 1 到 {count} 条提示词")
-    return list(dict.fromkeys(selection))
+    indices = []
+    for index in selection:
+        # 意图识别可能返回 ["1"]；与 [1] 一样表示零基索引的第二条。
+        # 只兼容十进制数字字符串，不能将布尔值或小数强制转为索引。
+        if isinstance(index, str) and index.isascii() and index.isdecimal():
+            index = int(index)
+        if type(index) is not int or not 0 <= index < count:
+            raise ValueError(f"提示词选择无效，请选择第 1 到 {count} 条提示词")
+        indices.append(index)
+    return list(dict.fromkeys(indices))
 
 
 def prepare_image_redo(node4: dict, selected_prompt_indices=None) -> dict:

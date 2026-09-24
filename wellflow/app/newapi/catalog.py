@@ -24,7 +24,7 @@ class ModelOption(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
-IMAGE_HINTS = ("image", "gpt-image", "dall", "flux", "sdxl", "midjourney", "mj", "banana")
+IMAGE_HINTS = ("image", "gpt-image", "dall", "flux", "sdxl", "midjourney", "mj", "banana", "seedream")
 VIDEO_HINTS = ("video", "kling", "sora", "veo", "wan", "hailuo", "vidu", "runway")
 EMBEDDING_HINTS = ("embedding", "embed", "bge", "text-embedding")
 RERANK_HINTS = ("rerank", "reranker")
