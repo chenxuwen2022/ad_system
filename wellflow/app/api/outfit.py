@@ -110,7 +110,8 @@ _PID = str(os.getpid())                 # 任务文件判死用:重启后 pid �
 
 def _task_store() -> TaskStore:
     """惰性单例:任务文件存储(共享库)。"""
-    return TaskStore(TASK_DIR, row_id_field="outfit_id", mark_row_failed=_mark_outfit_status)
+    return TaskStore(TASK_DIR, row_id_field="outfit_id",
+                     mark_row_failed=lambda rid: _mark_outfit_status(rid, "failed"))
 
 
 def _bg_tasks() -> BackgroundTasks:
