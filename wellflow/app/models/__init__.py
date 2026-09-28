@@ -17,6 +17,7 @@ from wellflow.app.models.mannequin_models import (
     MannequinTag,
     MannequinGenerateLog,
 )
+from wellflow.app.models.prompt_models import PromptTemplate, PromptRevision, PromptRelease, PromptReleaseItem
 
 __all__ = [
     "Task",
@@ -32,4 +33,5 @@ __all__ = [
     "Mannequin",
     "MannequinTag",
     "MannequinGenerateLog",
+    "PromptTemplate", "PromptRevision", "PromptRelease", "PromptReleaseItem",
 ]

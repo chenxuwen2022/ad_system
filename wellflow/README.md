@@ -63,10 +63,16 @@ wellflow-saas-backend/
 │   │   ├── platform_trend.py
 │   │   └── competitor.py
 │   │
-│   ├── llm/                 # LLM 网关抽象
-│   │   ├── base.py              # BaseLLMClient 协议
-│   │   ├── factory.py           # 工厂（统一走 new-api）
-│   │   └── newapi_gateway.py    # NewApiGateway 实现
+│   ├── llm/                 # 通用接口与业务调度
+│   │   └── base.py              # 客户端契约、响应和异常
+│   │
+│   ├── newapi/              # New API 连接实现（详见 newapi/README.md）
+│   │   ├── client_factory.py    # 配置、模型名规范化、客户端创建
+│   │   ├── gateway.py           # 文本、多模态、SSE、LangChain
+│   │   ├── image_client.py      # generations / edits / responses 生图
+│   │   ├── catalog.py           # 模型目录、能力识别及数据结构
+│   │   ├── pool.py              # 模型轮询、熔断和任务缓存
+│   │   └── channel_audit.py     # 实际渠道审计
 │   │
 │   ├── contracts/           # 跨节点数据契约（TypedDict）
 │   │   ├── generation.py
@@ -213,3 +219,70 @@ git pull
 - LangGraph checkpointer 连接失败时应用会降级启动（图持久化不可用，但 API 正常）
 - `uploads/` 目录通过 docker volume 挂载到宿主机 `/data/wellflow/uploads`，便于备份
 - 修改模型后务必生成新迁移：`alembic revision --autogenerate -m "描述"`
+
+## SKU 图片分类与生成图入库
+
+部署本功能前先执行 `alembic upgrade head`（在此目录运行），迁移版本为
+`f2a6b8d9e0c1`。旧 `product_image` 行默认补为 `image_type=product`；
+`ad` 表示投流图，`category` 仍表示正面、侧面等角度。新增可空的
+`source_task_id` 记录来源，未增加 `source_output_id` 列。
+
+- 首次 `POST /api/chat` 传 `sku_id`，保存到 conversation；后续不能换绑。
+- 历史无关联对话可调用 `PUT /api/conversations/{id}/sku`，JSON 为 `{"sku_id": 7}`。
+- SKU 删除将 conversation.sku_id 置空；删除对话不删除已入库图片。
+- 商品图和投流图统一由 SKU 详情的 `images[].image_type` 区分。
+- C4 入库调用 `PUT /api/products/skus/{id}`，仅提交以下新增字段：
+
+```json
+{
+  "archive_generated_images": {
+    "conversation_id": "conversation-id",
+    "task_id": "current-task-id",
+    "images": [{ "task_id": "source-task-id", "image_key": "64位SHA256值" }]
+  }
+}
+```
+
+`image_key` 是返回给前端的临时选择标识（生成图片 URL 的 SHA256），随生图事件、
+C4 interrupt 和历史 timeline 返回，不新增数据库列。后端查验同一对话的生成记录，
+仅追加选中的图片；文件按内容摘要保存到 `uploads/sku/{sku_id}/ad/`。
+SKU 行锁和已保存路径防止并发重复入库。
+
+图片和 `sku_images_archived` 回执先提交，随后完成 C4 checkpoint，再原子提交任务
+完成状态、选中图的 TaskImage 和 workflow_done。中断时 phase 为 `archive_pending`；
+会话详情的 `pending_archive` 返回已保存选择，重试可以增减或更换选择。
+每次按 SKU 当前关联去重：未关联的补充关联，已关联的跳过；已完成任务也支持补充入库。
+成功响应保留 SKU 详情，`message` 返回“入库完成：新增关联 N 张，已关联跳过 M 张”。
+完成入库后同时持久化 `sku_archive_result` 事件，payload 保存同一 message 和本次新增/跳过数量；
+前端即时追加结果消息，刷新后从对话 timeline 恢复，失败的入库不记录成功消息。
+旧 C4 resume/chat 的直接确认改为引导用户勾选后入库。普通 SKU 基本信息 PUT 不受影响。
+
+回归测试（不连接实际数据库）：在仓库根目录运行 `python3 -m unittest discover -s tests -v`。
+
+
+### 对话中重新生图
+
+图片确认阶段输入“重新生成”“重新生成几张图”“再来几张”，默认沿用当前方案、
+提示词和生成配置，仅重跑 node4。已完成入库的任务也可通过聊天生成新一批图片；
+新批次使用新的生成版本，历史结果、已入库图片以及入库消息保留。
+正在入库或执行中的任务仍受互斥保护。只有明确修改商品报告才触发报告锁定提示；
+目标不明的重做请求会询问要修改的内容。
+
+
+### 依赖与调用链检查
+
+`wellflow/tests/test_code_quality.py` 检查整个 WellFlow 的导入依赖（包含函数内导入），并验证事件队列和 SSE 输出行为。
+在仓库根目录运行 `python -m unittest discover -s wellflow/tests -v`；现有业务回归继续使用 `python -m unittest discover -s tests -v`。
+
+工作流启动统一使用 `workflow_execution.launch_graph`，API 层不再包装转发函数。New API 生图只发送一次请求，429 重试仍由共享生图服务负责。
+已移除未使用的内部参数、SSE 路由多余的数据库依赖，以及恢复任务接口中原本不生效的 `scheme_count` 表单参数；方案数量继续由 `per_scheme_count` 提交。
+抽象客户端接口与数据库事件回调保留契约要求的参数。广告模块的两处模型池导入统一使用 `newapi.pool`，业务逻辑不变。
+
+
+## 切换模型重新生图
+
+`POST /api/chat` 接收可选的 `image_model`。在 C4 输入“重新生成”，或已完成任务重新生图时，
+后端在执行锁内将新选择保存到 `node3.image_model`，使用原提示词重跑 Node4。
+不传该字段则沿用已有模型，空值会被拒绝；动态模型名不受前端旧选项列表限制，不自动换模型。
+C4 `/resume` 的 redo 同样接受 `image_model`。每轮 `node4.image_model`、生成批次日志和 C4 事件
+记录该轮模型，旧事件和已入库图片保持不变；前后端需配套更新。

@@ -1,32 +1,73 @@
 """Node 4 子图：Node 3 的 generate_prompts 数组 → 调 LLM /images/generations → 归档 outputs。
 
-三源输入：
-  - request.product_images: Node 1 用户上传的商品图（文件路径列表）
-  - node3.model_images:     C1 interrupt 用户上传的模特图（文件路径列表，可选）
-  - node3.generate_prompts: Node 3 prompt_generation 产出的 prompt 数组（已按 C2
-                            per_scheme_count 展开成多份变体 prompt）
-  - node3.per_prompt_size:  C3 interrupt 用户选的每套 prompt 的图片规格（如 ["3:4", "3:4"]）
+两源输入：
+  - node1.compressed_images: Node 1 已压缩好的商品图 data URI（**优先复用，避免重复 PIL**）
+  - node3.reference_images: 三类参考图 {"mannequin": [...], "scene": [...], "outfit": [...]}（文件路径，Node4 现场转 data URI）
+  - node3.generate_prompts:  Node 3 prompt_generation 产出的 prompt 数组
+  - node3.per_prompt_size:   C3 interrupt 用户选的每套 prompt 的图片规格（如 ["3:4", "3:4"]）
 
-完整流程：
-  1. _prepare:  收集商品图+模特图路径 → 读 generate_prompts → 一 prompt 一 work_item
-  2. _run_gen:  并发逐 work_item 独立调 LLM /images/generations（n 强制 =1）→ data URI
-  3. _archive:  归档 outputs
+完整流程（2 节点，子图内部 2 边）：
+  1. _prepare:  组装 work_items（一 prompt 一 item，N 强制 =1）+ 统一转一次所有参考图 data URI
+  2. _run_gen:  并发逐 work_item 独立调 LLM /images/generations → 写 outputs/failed_items
 
 ⚠️ 新语义：per_prompt_count 已彻底删除。Node4 不再有批量 n>1 概念，
   每张图 = 一次独立 API 调用。redo/confirm 机制在 parent_graph 的 c4_review 实现。
 
-⚠️ 模型策略：
-  Node4 生图动态从 new-api 拉 image 模型列表（qwen-image-3.0 优先），
-  不从前端 interrupt、chat.py 分类器、state.node3.image_model 里取模型。
-  底层「模型拉取 + 单次生图 + 降级链」已抽至 wellflow.app.llm.image_gen_service，
-  API 端点（mannequin /generate）也共用同一份逻辑，确保行为一致。
+模型由前端通过 image_model 提交并保存到 node3，生图时只使用该模型。
+共享服务负责单次生图、并发限制和同模型重试。
 """
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
+from wellflow.app.newapi.observability import business_operation
+
+import hashlib
+
 from typing import Any
 
-from wellflow.app.llm.image_gen_service import get_image_models, generate_single_image
+from wellflow.app.llm.image_gen_service import generate_single_image
+
+
+def resolve_prompt_indices(selection, count: int) -> list[int]:
+    """Resolve against saved prompts; never silently widen an invalid selection."""
+    if count < 1:
+        raise ValueError("缺少已确认的提示词，无法生成图片")
+    if selection is None or selection == "all":
+        return list(range(count))
+    if selection == "last":
+        return [count - 1]
+    if not isinstance(selection, list) or not selection:
+        raise ValueError(f"提示词选择无效，请选择第 1 到 {count} 条提示词")
+    indices = []
+    for index in selection:
+        # 意图识别可能返回 ["1"]；与 [1] 一样表示零基索引的第二条。
+        # 只兼容十进制数字字符串，不能将布尔值或小数强制转为索引。
+        if isinstance(index, str) and index.isascii() and index.isdecimal():
+            index = int(index)
+        if type(index) is not int or not 0 <= index < count:
+            raise ValueError(f"提示词选择无效，请选择第 1 到 {count} 条提示词")
+        indices.append(index)
+    return list(dict.fromkeys(indices))
+
+
+def prepare_image_redo(node4: dict, selected_prompt_indices=None) -> dict:
+    """用户要求重新生成时，重置本轮全部图片，不复用上一轮结果。"""
+    result = dict(node4)
+    result["selected_prompt_indices"] = selected_prompt_indices
+    # 覆盖旧 checkpoint 中的补图标记，避免恢复任务时沿用旧行为。
+    result["retry_failed_only"] = False
+    result["work_items"] = [
+        {key: value for key, value in {**item, "status": "pending"}.items() if key != "error"}
+        for item in node4.get("work_items", [])
+    ]
+    result["outputs"] = []
+    result["failed_items"] = []
+    result["generation_status"] = "pending"
+    result["generation_summary"] = ""
+    result["completed_count"] = 0
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -60,12 +101,10 @@ def build_graph():
 
     graph.add_node("prepare_work_items", _prepare)
     graph.add_node("run_generation", _run_gen)
-    graph.add_node("archive_outputs", _archive)
 
     graph.add_edge(START, "prepare_work_items")
     graph.add_edge("prepare_work_items", "run_generation")
-    graph.add_edge("run_generation", "archive_outputs")
-    graph.add_edge("archive_outputs", END)
+    graph.add_edge("run_generation", END)
 
     return graph.compile()
 
@@ -76,68 +115,76 @@ def build_graph():
 
 
 async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
-    """收集参考图路径 → 读 generate_prompts → 一 prompt 一 work_item（N 强制 =1）。"""
+    """组装 work_items（一 prompt 一 item，N 强制 =1）。
+
+    🔑 data URI 策略（与 Node2/Node3 一致）：
+      - 商品图：优先复用 node1.compressed_images（Node1 已压缩好的 data URI 缓存），
+        只有在缓存缺失时才用 request.product_images 现场转。
+      - 三类参考图：node3.reference_images 是用户上传的文件路径，Node4 首次用到，现场统一转一次。
+    """
+    import asyncio
     import time as _time
 
     from wellflow.app.event_bus import publish as _eb
+    from wellflow.app.utils.image_store import paths_to_data_uris
 
     task_id = state.get("task_id", "")
     if task_id:
         _eb(task_id, "phase", {"phase": "node4_prepare"})
 
-    node3 = state.get("node3", {})
+    node1 = state.get("node1", {}) or {}
+    node3 = state.get("node3", {}) or {}
     node4_in = state.get("node4", {}) or {}
     req = state.get("request", {})
 
-    # ---- 收集参考图路径 ----
-    product_paths: list[str] = req.get("product_images") or []
-    model_paths: list[str] = node3.get("model_images") or []
-    ref_paths = [*product_paths, *model_paths]
+    # ---- 商品图：优先吃 Node1 缓存，避免重复 PIL 压缩 ----
+    product_uris: list[str] = node1.get("compressed_images") or []
+    if not product_uris:
+        _t0 = _time.time()
+        product_paths: list[str] = req.get("product_images") or []
+        if product_paths:
+            product_uris = await asyncio.to_thread(paths_to_data_uris, product_paths)
+            log_message(f"[node4] prepare: 商品图缓存缺失，现场转 data URI {len(product_paths)} 张，耗时 {_time.time() - _t0:.2f}s", page='对话', business='node4图片生成', status='记录')
 
-    # ---- 一次性组装全部 data URIs ----
-    import asyncio
-    from wellflow.app.utils.image_store import paths_to_data_uris
+    # ---- 三类参考图：首次用到，现场统一转一次 data URI ----
+    ref_images: dict[str, list[str]] = node3.get("reference_images") or {}
+    mannequin_paths = ref_images.get("mannequin") or []
+    scene_paths = ref_images.get("scene") or []
+    outfit_paths = ref_images.get("outfit") or []
 
-    _t0 = _time.time()
-    tasks = []
-    if product_paths:
-        tasks.append(asyncio.to_thread(paths_to_data_uris, product_paths))
-    else:
-        tasks.append(asyncio.sleep(0, result=[]))
-    if model_paths:
-        tasks.append(asyncio.to_thread(paths_to_data_uris, model_paths))
-    else:
-        tasks.append(asyncio.sleep(0, result=[]))
-
-    product_uris, model_uris = await asyncio.gather(*tasks)
     _t1 = _time.time()
-    print(f"[node4]  prepare 开始 task={task_id[:8]}: "
-          f"商品图 {len(product_paths)} 张, 模特图 {len(model_paths)} 张, "
-          f"参考图 data URI 转换耗时 {_t1 - _t0:.2f}s", flush=True)
+    mannequin_uris = await asyncio.to_thread(paths_to_data_uris, mannequin_paths) if mannequin_paths else []
+    scene_uris = await asyncio.to_thread(paths_to_data_uris, scene_paths) if scene_paths else []
+    outfit_uris = await asyncio.to_thread(paths_to_data_uris, outfit_paths) if outfit_paths else []
 
-    all_ref_uris = [*product_uris, *model_uris]
+    all_ref_uris = [*product_uris, *mannequin_uris, *scene_uris, *outfit_uris]
+
+    _t2 = _time.time()
+    log_message(f"[node4]  prepare 开始 task={task_id[:8]}: "
+          f"商品图 {len(product_uris)} 张(缓存={bool(product_uris)}), "
+          f"mannequin {len(mannequin_paths)}, scene {len(scene_paths)}, outfit {len(outfit_paths)}, "
+          f"data URI 转换耗时 {_t2 - _t1:.2f}s", page='对话', business='node4图片生成', status='记录')
 
     # ---- 读 Node 3 的 generate_prompts ----
     prompts: list[str] = node3.get("generate_prompts") or []
-    # ✅ 新链路：per_scheme_count 已经在 Node3 被展开成多份 prompt
-    # Node4 永远一个 prompt → 一个 work_item → n=1，不再调用 LLM 的 n>1 批量参数
 
     per_prompt_size: list[str] = node3.get("per_prompt_size") or []
 
-    # ✅ 始终构造新 dict 返回，不原地 mutate state 里的 node4
+    # 始终构造新 dict 返回，不原地 mutate state 里的 node4
     node4: dict[str, Any] = dict(node4_in)
     node4["reference_images_data_uris"] = all_ref_uris
 
     if not prompts:
-        print("[node4] ⚠️ generate_prompts 为空，无法生成 work_items", flush=True)
-        node4["work_items"] = []
-        node4["reference_images"] = ref_paths
-        return {"phase": "node4_prepare", "node4": node4}
+        raise ValueError("缺少已确认的提示词，无法生成图片")
 
+    node4["outputs"] = []
+    node4["failed_items"] = []
+    node4["retry_failed_only"] = False
     # ---- 组装 work_items —— 一 prompt 一 work_item ----
     work_items: list[dict[str, Any]] = []
     shot_names: list[str] = []
-    for pi, prompt in enumerate(prompts):
+    for pi in resolve_prompt_indices(node4_in.get("selected_prompt_indices"), len(prompts)):
+        prompt = prompts[pi]
         ratio_str = per_prompt_size[pi] if pi < len(per_prompt_size) else "3:4"
         size = _ratio_to_size(ratio_str)
         shot_id = f"shot-{pi+1:02d}"
@@ -145,208 +192,207 @@ async def _prepare(state: dict[str, Any]) -> dict[str, Any]:
         work_items.append({
             "work_item_id": shot_id,
             "prompt_index": pi,
-            "variant_index": 0,
             "prompt": prompt,
             "ratio": ratio_str,
             "size": size,
             "status": "pending",
         })
 
+    from wellflow.app.generation_journal import generation_id, prepare_batch
+    node4["image_model"] = node3.get("image_model")
+    node4["generation_id"] = generation_id(state, work_items)
     node4["work_items"] = work_items
-    node4["reference_images"] = ref_paths
-    print(f"[node4] 📥 入队 {len(work_items)} 张（按 prompt_index 顺序）: "
-          f"{', '.join(shot_names)}", flush=True)
+    await asyncio.to_thread(prepare_batch, task_id, node4, state.get("workflow_revision", 0))
+    node4["reference_images"] = all_ref_uris  # data URI 列表，供 run_gen 备用
+    log_message(f"[node4] 📥 入队 {len(work_items)} 张（按 prompt_index 顺序）: "
+          f"{', '.join(shot_names)}", page='对话', business='node4图片生成', status='记录')
     return {"phase": "node4_prepare", "node4": node4}
 
 
 # ---------------------------------------------------------------------------
-# 节点 2：调 LLM 生图
+# 节点 2：调 LLM 生图（含原来 archive 的输出落盘逻辑）
 # ---------------------------------------------------------------------------
 
 
+@business_operation("Node4/生图")
 async def _run_gen(state: dict[str, Any]) -> dict[str, Any]:
     """并发调 LLM 生图 —— 每个 work_item 独立一次 API 调用（n 强制 =1）。
 
-    模型选择：动态从 new-api 拉 image 模型列表（qwen-image-3.0 优先），
-    不从 state.node3.image_model 读取。
+    模型选择：使用前端确认提示词时提交的 state.node3.image_model。
     """
     import asyncio
     import time
 
     from wellflow.app.event_bus import publish as _eb
-    from wellflow.app.utils.image_store import paths_to_data_uris
 
     task_id = state.get("task_id", "")
     if task_id:
         _eb(task_id, "phase", {"phase": "node4_generation"})
 
-    node4_in = state.get("node4", {}) or {}
-    work_items = list(node4_in.get("work_items", []) or [])  # 拷贝 list，in-place 状态更新就不会碰 state
-    ref_paths: list[str] = node4_in.get("reference_images", [])
+    from wellflow.app.generation_journal import restore_completed, persist_image
+    node4_in = await asyncio.to_thread(restore_completed, task_id, state.get("node4", {}) or {})
+    work_items = [dict(it) for it in node4_in.get("work_items", []) or []]
     cached_ref_uris: list[str] = node4_in.get("reference_images_data_uris") or []
 
-    # refs 统一在这儿转好 data URIs（_prepare 通常已缓存 cached_ref_uris，
-    # fallback 才用 ref_paths 现场转，避免 per-item 重复读文件）
-    if cached_ref_uris:
-        ref_uris: list[str] = list(cached_ref_uris)
-    elif ref_paths:
-        ref_uris = paths_to_data_uris(ref_paths)
-    else:
-        ref_uris = []
+    refs = cached_ref_uris  # _prepare 已经保证有 URI；没有就空列表
 
-    pending_items = [it for it in work_items if it.get("status") in ("pending", "redo")]
-    outputs: list[dict[str, Any]] = []
+    pending_items = [it for it in work_items if it.get("status") in ("pending", "redo", "failed")]
+    pending_ids = {it["work_item_id"] for it in pending_items}
+    outputs: list[dict[str, Any]] = [
+        dict(out) for out in node4_in.get("outputs", [])
+        if out.get("work_item_id") not in pending_ids
+    ]
+    retained_count = len(outputs)
     from wellflow.app.config import settings
     WORKERS = settings.node4_gen_concurrency
 
-    # 模型链一次拉取（供日志用），generate_single_image 内部也会自己拉一份
-    try:
-        _plan_models = await get_image_models()
-        _plan_first = _plan_models[0] if _plan_models else "(未指定)"
-    except Exception:
-        _plan_first = "(未指定)"
+    image_model = ((state.get("node3") or {}).get("image_model") or "").strip()
+    if not image_model:
+        raise ValueError("缺少生图模型，请先选择生图模型")
 
-    print(f"[node4] 🏃 run_gen 启动 task={task_id[:8]}: "
-          f"入队 {len(pending_items)} 张, worker={WORKERS}, "
-          f"计划模型={_plan_first}, 参考图 refs={len(ref_uris)}", flush=True)
+    log_message(f"[node4] 🏃 run_gen 启动 task={task_id[:8]}: "
+          f"本轮待生成={len(pending_items)} 张, worker配置上限={WORKERS}, "
+          f"计划模型={image_model}, 参考图 refs={len(refs)}", page='对话', business='node4图片生成', status='记录')
 
     queue: asyncio.Queue[dict] = asyncio.Queue()
     for it in pending_items:
         queue.put_nowait(it)
     result_q: asyncio.Queue[tuple[dict, str | None, float]] = asyncio.Queue()
-    _gen_start_t = time.time()
+    _gen_start_t = time.monotonic()
+    from wellflow.app.llm.image_queue_log import ImageQueueLog
+    queue_log = ImageQueueLog(task_id, len(pending_items), min(WORKERS, len(pending_items)))
 
     async def _gen_one(item: dict) -> tuple[dict, str | None, float, str]:
         prompt = item.get("prompt", "")
         size = item.get("size", _ratio_to_size(item.get("ratio", "3:4")))
-        t0 = time.time()
+        t0 = time.monotonic()
         wid = item.get("work_item_id", "?")
-        print(f"[{wid}] 📤 请求发出 size={size} model={_plan_first} refs={len(ref_uris)} "
-              f"prompt({len(prompt)}chars)={prompt[:60]}...", flush=True)
+        log_message(f"[{queue_log.prefix} shot={wid}] 准备生图（尚未发请求） size={size} model={image_model} refs={len(refs)} "
+              f"prompt_chars={len(prompt)}", page='对话', business='node4图片生成', status='记录')
         try:
             result = await generate_single_image(
-                prompt=prompt, size=size, ref_data_uris=ref_uris,
+                prompt=prompt, size=size, ref_data_uris=refs, log_id=f"{queue_log.prefix} shot={wid}",
+                task_id=task_id,
+                model=image_model,
             )
-            dt = time.time() - t0
+            dt = time.monotonic() - t0
             url = result.data_uri or result.url
-            model_label = result.model or _plan_first
+            model_label = result.model or image_model
             if url:
                 item["status"] = "done"
+                item.pop("error", None)
                 return (item, url, dt, model_label)
             else:
                 item["status"] = "failed"
                 item["error"] = "API 返回无有效图片"
                 return (item, None, dt, model_label)
         except Exception as exc:
-            dt = time.time() - t0
+            dt = time.monotonic() - t0
             item["status"] = "failed"
             item["error"] = str(exc)
-            return (item, None, dt, "(失败)")
+            return (item, None, dt, image_model)
 
     async def _worker(idx: int) -> None:
         wid = f"worker-{idx}"
-        active = 0
         while True:
             try:
                 item = queue.get_nowait()
             except asyncio.QueueEmpty:
-                if active == 0:
-                    print(f"[{wid}] 🛑 启动后无任务，退出", flush=True)
-                else:
-                    print(f"[{wid}] ⏸️ 队列空（剩余 {queue.qsize()}），退出 —— 累计处理 {active} 张", flush=True)
+                queue_log.worker_exit(wid)
                 return
             shot = item.get("work_item_id", "?")
-            active += 1
+            queue_log.claim(wid, shot)
             item, url, dt, model_used = await _gen_one(item)
-            if url:
-                print(f"[{wid}] ✅ {shot} 完成 {dt:.1f}s model={model_used}  队列剩余 {queue.qsize()}", flush=True)
-            else:
-                print(f"[{wid}] ❌ {shot} 失败 {dt:.1f}s model={model_used} — {item.get('error', '未知错误')[:120]}", flush=True)
+            queue_log.finish(wid, shot, bool(url), dt, model_used, item.get("error", ""))
             await result_q.put((item, url, dt))
 
-    print(f"[node4] 🔀 启动 {min(WORKERS, len(pending_items))} 个 worker "
-          f"(总入队 {len(pending_items)})", flush=True)
+    log_message(f"[node4 {queue_log.prefix}] 🔀 启动 {min(WORKERS, len(pending_items))} 个 worker "
+          f"(总入队 {len(pending_items)})", page='对话', business='node4图片生成', status='记录')
     workers = [asyncio.create_task(_worker(i)) for i in range(min(WORKERS, len(pending_items)))]
     n_done = 0
     n_failed = 0
     n_total = len(pending_items)
     failed_items: list[dict[str, Any]] = []
 
-    for _ in range(n_total):
-        item, url, dt = await result_q.get()
-        shot = item.get("work_item_id", "?")
-        if url:
-            n_done += 1
-            outputs.append({
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "variant_index": item.get("variant_index", 0),
-                "prompt": item.get("prompt", ""),
-                "image_url": url,
-            })
-            _eb(task_id, "node4_image_done", {
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "variant_index": item.get("variant_index", 0),
-                "prompt": item.get("prompt", ""),
-                "image_url": url,
-                "elapsed": round(dt, 1),
-                "n_done": n_done,
-                "n_total": n_total,
-            })
-        else:
-            n_failed += 1
-            if not item.get("error"):
-                item["error"] = "生成异常"
-            err = item.get("error", "")
-            failed_items.append({
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "variant_index": item.get("variant_index", 0),
-                "prompt": item.get("prompt", ""),
-                "error": err,
-            })
-            _eb(task_id, "node4_image_failed", {
-                "work_item_id": item["work_item_id"],
-                "prompt_index": item.get("prompt_index", 0),
-                "variant_index": item.get("variant_index", 0),
-                "prompt": item.get("prompt", ""),
-                "error": err,
-                "elapsed": round(dt, 1),
-                "n_done": n_done,
-                "n_total": n_total,
-            })
-        print(f"[队列] {n_done + n_failed}/{n_total}  shot={shot} "
-              f"耗时 {dt:.1f}s  ✅={n_done}  ❌={n_failed}", flush=True)
+    completed = False
+    try:
+        for _ in range(n_total):
+            item, url, dt = await result_q.get()
+            shot = item.get("work_item_id", "?")
+            if url:
+                n_done += 1
+                output = await asyncio.to_thread(persist_image, task_id, node4_in["generation_id"], {
+                    "work_item_id": item["work_item_id"],
+                    "prompt_index": item.get("prompt_index", 0),
+                    "prompt": item.get("prompt", ""), "image_url": url,
+                })
+                outputs.append(output)
+                _eb(task_id, "node4_image_done", {
+                    **output, "elapsed": round(dt, 1),
+                    "n_done": n_done + retained_count, "n_total": len(work_items),
+                })
+            else:
+                n_failed += 1
+                if not item.get("error"):
+                    item["error"] = "生成异常"
+                err = item.get("error", "")
+                failed_items.append({
+                    "work_item_id": item["work_item_id"],
+                    "prompt_index": item.get("prompt_index", 0),
+                    "prompt": item.get("prompt", ""),
+                    "error": err,
+                })
+                _eb(task_id, "node4_image_failed", {
+                    "work_item_id": item["work_item_id"],
+                    "prompt_index": item.get("prompt_index", 0),
+                    "prompt": item.get("prompt", ""),
+                    "error": err,
+                    "elapsed": round(dt, 1),
+                    "n_done": n_done + retained_count,
+                    "n_total": len(work_items),
+                })
 
-    await asyncio.gather(*workers)
 
-    t_all = time.time() - _gen_start_t
-    throughput = n_total / t_all if t_all > 0 else 0
-    print(f"[node4] 🏁 run_gen 完成 task={task_id[:8]}: "
+        await asyncio.gather(*workers)
+        completed = True
+    finally:
+        for worker in workers:
+            if not worker.done():
+                worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        queue_log.close(completed)
+
+    t_all = time.monotonic() - _gen_start_t
+    throughput = n_done / t_all if t_all > 0 else 0
+    log_message(f"[node4 {queue_log.prefix}] 本轮处理结束: "
           f"成功 {n_done}/{n_total}, 失败 {n_failed} 张, "
-          f"总耗时 {t_all:.1f}s, 吞吐 {throughput:.2f} 张/s", flush=True)
+          f"总耗时 {t_all:.1f}s, 成功图片吞吐 {throughput:.2f} 张/s", page='对话', business='node4图片生成', status='记录')
 
-    node4_out: dict[str, Any] = dict(node4_in)
-    node4_out["outputs"] = outputs
-    node4_out["failed_items"] = failed_items
-    return {"phase": "node4_generation", "node4": node4_out}
-
-
-# ---------------------------------------------------------------------------
-# 节点 3：归档
-# ---------------------------------------------------------------------------
-
-
-def _archive(state: dict[str, Any]) -> dict[str, Any]:
-    from wellflow.app.event_bus import publish as _eb
-
-    task_id = state.get("task_id", "")
+    # 汇总 phase（原 _archive 的语义，合并到这里）
     if task_id:
         _eb(task_id, "phase", {"phase": "node4_archive"})
 
-    node4_in = state.get("node4", {}) or {}
-    node4: dict[str, Any] = dict(node4_in)  # 始终构造新 dict 返回，不原地 mutate
-    outputs = node4.get("outputs", [])
-    print(f"[node4] _archive: {len(outputs)} 个 outputs 已归档", flush=True)
-    return {"phase": "node4_archive", "node4": node4}
+    node4_out: dict[str, Any] = dict(node4_in)
+    node4_out["image_model"] = image_model
+    outputs.sort(key=lambda out: out.get("prompt_index", 0))
+    node4_out["work_items"] = work_items
+    node4_out["generation_status"] = (
+        "complete" if work_items and not failed_items
+        and {out.get("work_item_id") for out in outputs if out.get("image_url")}
+        == {item["work_item_id"] for item in work_items}
+        else "partial" if outputs else "failed"
+    )
+    node4_out["requested_count"] = len(work_items)
+    node4_out["completed_count"] = len(outputs)
+    summary = (f"生图全部完成：{len(outputs)}/{len(work_items)} 张。"
+               if node4_out["generation_status"] == "complete" else
+               f"生图未全部完成：{len(outputs)}/{len(work_items)} 张。已保留本轮成功图片；选择重新生成将重新生成全部图片。")
+    node4_out["generation_summary"] = summary
+    if task_id:
+        _eb(task_id, "message", {"text": summary})
+    node4_out["outputs"] = outputs
+    node4_out["failed_items"] = failed_items
+    log_message(f"[node4 {queue_log.prefix}] 结果汇总：本轮新增成功={n_done} 张，"
+          f"保留历史结果={retained_count} 张，当前有效图片={len(outputs)}/{len(work_items)}，"
+          f"状态={node4_out['generation_status']}", page='对话', business='node4图片生成', status='记录')
+    return {"phase": "node4_archive", "node4": node4_out}

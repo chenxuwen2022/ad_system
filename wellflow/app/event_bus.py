@@ -3,7 +3,7 @@
 设计：
   - 全局 dict: {task_id: asyncio.Queue}，每个任务一个队列
   - publish(task_id, event_type, data) 往队列里扔事件
-  - subscribe(task_id) 返回 async iterator，阻塞等事件（queue.get + timeout）
+  - subscribe(task_id) 返回 Queue；等待与心跳由 SSE 层负责
   - queue 满了自动淘汰最旧的（防内存泄漏）
   - 无外部依赖（不需要 Redis/LISTEN NOTIFY）
 
@@ -48,17 +48,11 @@ def is_running(task_id: str) -> bool:
 
 
 def _get_or_create_queue(task_id: str) -> asyncio.Queue:
-    """获取或创建队列；满了就淘汰最旧事件（FIFO）。"""
+    """获取或创建队列；订阅操作不消费已有事件。"""
     q = _queues.get(task_id)
     if q is None:
         q = asyncio.Queue(maxsize=settings.event_bus_queue_max_size)
         _queues[task_id] = q
-    elif q.full():
-        # 丢一个最旧的，让新事件能塞进去
-        try:
-            q.get_nowait()
-        except asyncio.QueueEmpty:
-            pass
     return q
 
 
@@ -75,7 +69,7 @@ def publish(task_id: str, event_type: str, data: dict[str, Any]) -> None:
             "ts": time.time(),
         })
     except asyncio.QueueFull:
-        # 理论上 _get_or_create_queue 已经防了，这里兜底
+        # 队列已满时，仅发布新事件才淘汰最旧事件
         try:
             q.get_nowait()
             q.put_nowait({"type": event_type, "data": data, "ts": time.time()})
@@ -83,12 +77,11 @@ def publish(task_id: str, event_type: str, data: dict[str, Any]) -> None:
             pass  # 实在塞不进去就丢了，轮询 fallback 能补
 
 
-async def subscribe(task_id: str, heartbeat_interval: float = 15.0) -> "asyncio.Queue[dict[str, Any]]":
+async def subscribe(task_id: str) -> "asyncio.Queue[dict[str, Any]]":
     """订阅指定任务的事件。返回一个 Queue，订阅者 get() 即可。
 
     Args:
         task_id: 任务 ID
-        heartbeat_interval: 多久没事件就塞一个 ping，防止 SSE 连接被代理掐掉
 
     Returns:
         asyncio.Queue — 订阅者 await queue.get() 拿事件

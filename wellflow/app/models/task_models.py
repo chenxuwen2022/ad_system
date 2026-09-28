@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, JSON, Integer, Boolean
+from sqlalchemy import BIGINT, DateTime, ForeignKey, String, Text, JSON, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from wellflow.app.database import Base
@@ -21,6 +21,11 @@ class TaskPhase(str, Enum):
     DONE = "done"
     FAILED = "failed"
     NEEDS_RETRY = "needs_retry"
+    C2_SELECT = "c2_select"
+    C3_CONFIRM = "c3_confirm"
+    C4_REVIEW = "c4_review"
+    PROCESSING = "processing"
+    ARCHIVE_PENDING = "archive_pending"
 
 
 class Task(Base):
@@ -90,7 +95,6 @@ class TaskImage(Base):
     shot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)   # output 用，= work_item_id
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)          # output 用
     prompt_index: Mapped[int | None] = mapped_column(Integer, nullable=True) # output 用
-    variant_index: Mapped[int | None] = mapped_column(Integer, nullable=True)# output 用
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -111,6 +115,9 @@ class Conversation(Base):
     __tablename__ = "conversation"
 
     conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    sku_id: Mapped[int | None] = mapped_column(
+        BIGINT, ForeignKey("product_sku.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
     # 短 ID（conversation_id 去掉 '-' 后的前 12 位），用于兼容前端用短格式 URL 查询
     conversation_id_short: Mapped[str] = mapped_column(String(12), nullable=False, unique=True)
     title: Mapped[str] = mapped_column(String(128), default="新对话")

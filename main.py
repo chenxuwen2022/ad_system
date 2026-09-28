@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import sys
 import os
 from pathlib import Path
@@ -32,6 +32,7 @@ from ad.routes.upload_routes import router as upload_router
 from ad.routes.ad_routes import router as ad_router
 from ad.routes.shops_routes import router as shops_router, init_ads_shops
 from wellflow.app.api.outfit import router as wf_outfit_router
+from wellflow.app.api.scenes import router as wf_scene_router
 from wellflow.app.api.uploads import router as wf_uploads_router
 from ad.config import MEDIA_STORAGE_PATH
 from ad.db import init_db
@@ -44,6 +45,7 @@ from wellflow.app.api.mannequins import router as wf_mannequins_router
 from wellflow.app.api.chat import router as wf_chat_router
 from wellflow.app.api.conversations import router as wf_conversations_router
 from wellflow.app.api.model_options import router as wf_model_options_router
+from wellflow.app.api.prompts import router as wf_prompts_router
 from wellflow.app.sse import router as wf_sse_router
 from wellflow.app.config import settings as wf_settings
 from wellflow.app.runtime import (
@@ -118,6 +120,7 @@ app.include_router(upload_router)
 app.include_router(ad_router)
 app.include_router(shops_router, prefix="/api/shops")  # 店铺广告主账户 CRUD
 app.include_router(wf_outfit_router, prefix="/api")    # 穿搭库(数据库版,wellflow/app/api/outfit.py)
+app.include_router(wf_scene_router, prefix="/api")     # 场景库(wellflow/app/api/scenes.py)
 app.include_router(wf_uploads_router, prefix="/api")  # WellFlow 统一图片上传
 
 # ── 子系统二：电商商拍（WellFlow，API 路径与独立运行时一致）──
@@ -125,6 +128,7 @@ app.include_router(wf_tasks_router, prefix="/api")
 app.include_router(wf_products_router, prefix="/api")
 app.include_router(wf_mannequins_router, prefix="/api")
 app.include_router(wf_model_options_router, prefix="/api")
+app.include_router(wf_prompts_router, prefix="/api")
 
 # WellFlow 通用图片上传（不绑定 task，供 SKU/模特/任意素材库先传后提）
 from wellflow.app.api.uploads import router as wf_uploads_router

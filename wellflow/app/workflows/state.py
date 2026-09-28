@@ -151,20 +151,16 @@ class Node1State(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------
-# Node2：PlanningScheme — VLM 生成 3 套候选商拍方案（12 维 JSON，C2 让用户选定 1 套）
+# Node2：PlanningScheme — VLM 生成多套自由文本商拍方案，C2 选定一套
 # ---------------------------------------------------------------------------
 
 
 class SchemeState(TypedDict, total=False):
-    schemes: list[dict[str, Any]]          # N 套完整 12 维 JSON（由 PLANNING_AGENT_SYSTEM_PROMPT 输出）
-    scheme_raw: str                         # VLM 原始 JSON 文本（前端展示/调试）
+    schemes: list[dict[str, Any]]          # 多套方案载体，每套包含 report_text
+    scheme_raw: str                         # VLM 原始报告文本
     selected_scheme_indices: list[int]      # C2 用户选定的方案索引（新链路通常只有 1 套被锁）
-    per_scheme_count: list[int]             # C2 每套选中方案要生成几份 prompt，默认 [5]
+    per_scheme_count: list[int]             # 前端为每套选中方案指定的 prompt 数量
     thinking_text: str                      # VLM 深度思考过程文本
-    # —— 诊断锚点：Node2 正向产出时写入，表示"本次任务原始应该有几套方案"——
-    # 防止 LangGraph checkpoint 异常合并或中间步骤脏写导致 schemes 数量被污染
-    # （例如 Node3 的 prompt_detail 被错误混入，出现 3×4=12 条脏方案）
-    base_scheme_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +169,8 @@ class SchemeState(TypedDict, total=False):
 
 
 class PromptState(TypedDict, total=False):
-    model_images: list[str]                 # C1 用户上传的模特图文件路径（可选）
+    # 三类结构化参考图（C2 阶段用户上传，可选；空列表=没传）
+    reference_images: dict[Literal["mannequin", "scene", "outfit"], list[str]]
     ratio: str                              # C1 用户选的画面比例
     image_model: str                        # 生图模型选择
 
@@ -184,7 +181,6 @@ class PromptState(TypedDict, total=False):
 
     # C3 interrupt 后 resume 写入
     per_prompt_size: list[str]              # 每个 prompt 的图片规格，如 ["3:4", "3:4"]
-    compressed_model_images: list[str]      # 模特图 data URI 缓存
     thinking_text: str                      # VLM 深度思考过程文本（多个方案的 thinking 拼接）
 
 
@@ -194,11 +190,18 @@ class PromptState(TypedDict, total=False):
 
 
 class Node4State(TypedDict, total=False):
+    selected_prompt_indices: list[int] | None
+    generation_id: str
     reference_images: list[str]             # 商品图+模特图文件路径列表
     reference_images_data_uris: list[str]   # 一次性缓存的 data URI（避免重复 PIL）
     work_items: list[dict[str, Any]]
     outputs: list[dict[str, Any]]
     failed_items: list[dict[str, Any]]
+    retry_failed_only: bool
+    generation_status: str
+    generation_summary: str
+    requested_count: int
+    completed_count: int
     human_review: dict[str, Any]
 
 
@@ -214,6 +217,7 @@ class TaskState(TypedDict, total=False):
     # 都会 update phase/nodeX/request 等字段，而目标 node 自己又会 return 这些字段，
     # 所以同 step 多写入是**必然**会发生的，不能依赖"不会撞"。
     # reducer 策略：dict 做字段级 | merge，标量/list 后来者覆盖（符合"更新"语义）。
+    workflow_revision: Annotated[int, REDUCER]
     task_id: Annotated[str, REDUCER]
     phase: Annotated[str, REDUCER]
     request: Annotated[dict[str, Any], REDUCER]
@@ -238,9 +242,13 @@ class TaskState(TypedDict, total=False):
     # node2 refine 专用：LLM 意图分类器返回的 selected_indices
     # 决定 refine_node2_schemes 能看到哪几套原方案（用户明确点名了哪些 → 只传那些；"all"或None → 全部传）
     _refine_selected_indices: Annotated[list[int] | str | None, REDUCER]
+    _refine_scheme_count: Annotated[int | None, REDUCER]
+    _refine_scheme_source: Annotated[str | None, REDUCER]
+    initial_schemes: Annotated[list[dict[str, Any]], REDUCER]
     # 多轮 refine 历史（按 node 隔离，避免 node1/node2/node3 指令互相污染）
     # 旧格式兼容：如果 checkpoint 里还是 list（老任务），_get_node_refine_history helper 会自动 wrap 成 {'nodeX': list}
     # refine 节点用它做指令整合（处理"用户前一轮让你补品牌调性，这一轮品牌名已明确 → 自动去重"）
     _refine_history: Annotated[dict[str, list[str]], REDUCER]  # {node1|node2|node3: [instruction,...]}，含本轮
-    # redo 路径：仅 C4 redo→node4 保留（其他节点都走 refine）
-    _redo_target: Annotated[str | None, REDUCER]         # "node4" | None
+    # redo reruns the original generator for the selected product.
+    _redo_target: Annotated[str | None, REDUCER]         # "node1" | "node2" | "node3" | "node4" | None
+    _redo_instruction: Annotated[str | None, REDUCER]

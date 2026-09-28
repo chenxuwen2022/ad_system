@@ -1,4 +1,4 @@
-﻿import os
+import os
 from datetime import datetime
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -799,7 +799,7 @@ class SplitPlansBody(BaseModel):
 @router.post("/api/image_split/generate_plans")
 async def generate_split_plans(body: SplitPlansBody):
     """根据变化类型和补充想法，AI 生成 3 套模特动作方案。"""
-    import os, requests
+    import os, httpx
     api_key = os.environ.get("NEWAPI_API_KEY", "")
     base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
     if not api_key:
@@ -825,7 +825,7 @@ async def generate_split_plans(body: SplitPlansBody):
     text = ""
     for model in ["deepseek-v4-flash", "deepseek-v3.2-thinking", "gemini-3.8-flash", "qwen3.8-flash", "gpt-5.4-mini"]:
         try:
-            resp = requests.post(
+            resp = httpx.post(
                 f"{base}/chat/completions",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
@@ -837,6 +837,7 @@ async def generate_split_plans(body: SplitPlansBody):
                     "temperature": 0.7,
                 },
                 timeout=60,
+                trust_env=False,
             )
             rj = resp.json()
             if resp.status_code == 200 and "choices" in rj:
@@ -869,7 +870,7 @@ class GenImageBody(BaseModel):
 @router.post("/api/image_split/generate_image")
 async def generate_split_image(body: GenImageBody):
     """根据原图和动作描述，调用 AI 生成图片裂变结果。"""
-    import os, requests, base64, time
+    import os, httpx, base64, time
     api_key = os.environ.get("NEWAPI_API_KEY", "")
     base = os.environ.get("NEWAPI_BASE", "http://192.168.110.254/v1")
     if not api_key:
@@ -896,7 +897,7 @@ async def generate_split_image(body: GenImageBody):
     last_err = "unknown"
     for model in ["gpt-image-2", "mai-image-2.5", "qwen-image-3.0"]:
         try:
-            resp = requests.post(
+            resp = httpx.post(
                 f"{base}/images/generations",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
@@ -907,6 +908,7 @@ async def generate_split_image(body: GenImageBody):
                     "image": data_url,
                 },
                 timeout=120,
+                trust_env=False,
             )
             rj = resp.json()
             if resp.status_code == 200 and rj.get("data"):

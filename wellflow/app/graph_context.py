@@ -1,20 +1,12 @@
-"""从 LangGraph checkpoint / DB 多源反推 current_node（c1 ~ c4）。
+"""Checkpoint-backed operational state. Product presence is diagnostic only.
 
-这是 **单一真相源**：所有意图分类、dispatch、守卫校验都应该从这里拿 current_node，
-不再自己手写 DB 查询 / phase 反推等分散逻辑。
-
-优先级（由高到低）：
-  1. snapshot.next 里的 interrupt 节点名 → 100% 准确（LangGraph 停下就是因为 interrupt）
-  2. snapshot.tasks[i].interrupts 里的 interrupt 对象（与 next 等价）
-  3. state["phase"] —— LangGraph 写入的 phase 字段（不是 DB 的 phase 列！）
-  4. state["confirmations"] —— 哪些 cX 已经确认（兜底推断"最后通过的 cX 就是当前阶段"）
-  5. DB interrupt_json["node"] —— DB 层持久化的 interrupt 信息
-  6. DB phase 列 —— 仅覆盖少量 *_confirm 阶段，兜底用
-
-冲突检测：如果高优先级源和低优先级源不一致，会打印 WARN 但仍取高优先级。
+Only recorded checkpoint interrupts authorize a decision. DB phase and historic
+products cannot manufacture a pause or declare a task complete.
 """
 
 from __future__ import annotations
+
+from wellflow.app.logging import log_message
 
 from dataclasses import dataclass, field
 from typing import Any
@@ -98,39 +90,24 @@ def check_graph_runtime_state(snapshot: Any) -> tuple[str, float | None]:
         "none"           — snapshot 为 None（checkpoint 不存在）
         "done"           — snapshot.next 为空列表（graph 已到 END，finalize 完成）
     """
-    if snapshot is None or not hasattr(snapshot, "next"):
-        return _GRAPH_STATE_NEVER_STARTED, None
-
-    # snapshot.next 有 interrupt 节点 → 暂停
-    try:
-        next_nodes = snapshot.next or []
-    except Exception:
-        next_nodes = []
-
-    if any(str(n) in INTERRUPT_NODE_TO_C for n in next_nodes):
-        return _GRAPH_STATE_INTERRUPT, None
-
-    # snapshot.next 为空列表 → graph 已到 END（finalize 完成）
-    if not next_nodes:
+    from wellflow.app.workflow_status import checkpoint_view
+    phase, interrupt = checkpoint_view(snapshot)
+    if phase == "missing":
+        return "none", None
+    if interrupt:
+        return "paused", None
+    if phase == "done":
         return "done", None
-
-    # 全是执行节点 → 看 checkpoint 年龄
-    created_at = getattr(snapshot, "created_at", None)
+    if phase == "needs_retry":
+        return "stale", None
     from datetime import datetime, timezone
-    now = datetime.now(timezone.utc)
-    age_seconds: float | None = None
-    parsed = None
-    if isinstance(created_at, str):
-        parsed = _parse_iso_time(created_at)
-    if parsed is not None:
-        # 确保 aware
+    parsed = _parse_iso_time(getattr(snapshot, "created_at", None))
+    age = None
+    if parsed:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
-        age_seconds = (now - parsed).total_seconds()
-
-    if age_seconds is None or age_seconds < settings.graph_stale_threshold_seconds:
-        return _GRAPH_STATE_RUNNING_FRESH, age_seconds
-    return _GRAPH_STATE_RUNNING_STALE, age_seconds
+        age = (datetime.now(timezone.utc) - parsed).total_seconds()
+    return ("stale" if age is None or age >= settings.graph_stale_threshold_seconds else "running"), age
 
 
 def is_graph_paused(snapshot: Any) -> bool:
@@ -171,197 +148,19 @@ def resolve_current_node(
     task_phase: str | None = None,  # 别名
     verbose: bool = True,
 ) -> GraphContext:
-    """多源校验求 current_node。
-
-    参数可以都不传（例如新任务），也可以只传某几个。函数会自动跳过 None 的源。
-
-    Usage (chat.py 推荐写法)::
-
-        snapshot = await g.aget_state(config)
-        graph_state = snapshot.values if snapshot and hasattr(snapshot, "values") else None
-        ctx = resolve_current_node(
-            snapshot=snapshot,
-            state=graph_state,
-            db_interrupt_json=task.interrupt_json,
-            db_phase=task.phase,
-        )
-        current_node = ctx.current_node
-    """
+    """Resolve an actionable node from the checkpoint's actual interrupts."""
+    from wellflow.app.workflow_status import checkpoint_view
+    phase, interrupt = checkpoint_view(snapshot)
     ctx = GraphContext(
-        current_node=None,
-        confidence="unknown",
+        current_node=interrupt.get("node") if interrupt else None,
+        confidence="checkpoint_interrupt" if interrupt else phase,
+        source_next=list(getattr(snapshot, "next", ()) or ()),
+        source_state_phase=(state or {}).get("phase"),
         source_db_phase=task_phase or db_phase,
-        source_db_interrupt_node=(db_interrupt_json or {}).get("node") if db_interrupt_json else None,
-        source_state_phase=(state or {}).get("phase") if state else None,
+        source_db_interrupt_node=(db_interrupt_json or {}).get("node"),
     )
-    ctx.source_confirmations = _normalize_confirmations(state)
-
-    # --------- 1. snapshot.next (最优先) ---------
-    next_nodes: list[str] = []
-    if snapshot is not None and hasattr(snapshot, "next"):
-        try:
-            raw = snapshot.next
-            next_nodes = [str(n) for n in (raw or [])]
-        except Exception:
-            next_nodes = []
-    ctx.source_next = next_nodes
-
-    for n in next_nodes:
-        if n in INTERRUPT_NODE_TO_C:
-            ctx.current_node = INTERRUPT_NODE_TO_C[n]
-            ctx.confidence = "snapshot_next"
-            break
-
-    # --------- 1b. snapshot.next 里的执行节点 → 映射到它后面的 cX ---------
-    # graph 正在跑某个执行节点（比如 node4_generate_image），
-    # 跑完会停在它对应的 interrupt（c4）。此时 snapshot.next 里只有执行节点，
-    # 直接用 EXEC_NODE_NEXT_INTERRUPT 映射到下一个 cX，比 step 3 的 confirmations 兜底靠谱。
-    if ctx.current_node is None:
-        for n in next_nodes:
-            if n in EXEC_NODE_NEXT_INTERRUPT:
-                mapped_c = EXEC_NODE_NEXT_INTERRUPT[n]
-                if mapped_c:  # finalize 映射到 ""，跳过
-                    ctx.current_node = mapped_c
-                    ctx.confidence = "snapshot_next_exec"
-                    break
-
-    # --------- 2. snapshot.tasks[].interrupts (等价于 next，备用) ---------
-    if ctx.current_node is None and snapshot is not None and hasattr(snapshot, "tasks"):
-        try:
-            tasks = snapshot.tasks or []
-            for t in tasks:
-                interrupts = getattr(t, "interrupts", None) or []
-                for intr in interrupts:
-                    val = getattr(intr, "value", None)
-                    if isinstance(val, dict):
-                        node = val.get("node")
-                        if node in ("c1", "c2", "c3", "c4"):
-                            ctx.current_node = node
-                            ctx.confidence = "snapshot_interrupts"
-                            break
-                if ctx.current_node:
-                    break
-        except Exception:
-            pass
-
-    # --------- 3. confirmations 兜底（比 state.phase 更可信）---------
-    # state.phase 可能残留上一个 interrupt 的值（执行中节点还没写入新 phase）。
-    # confirmations 是 LangGraph state reducer 合并出来的，只会被 True 覆盖，不会被残留。
-    #
-    # 关键约束：推 c{N+1} 前必须验证 state 里真有 node{N+1} 的产物信号。
-    # 否则就是下游 node 崩了 / 还没跑 / checkpoint 脏写——硬推 c{N+1} 会让前端以为
-    # graph 停在 c4 要确认生图，实际 node4.outputs 是空的（今早 coroutine bug 就是这个场景）。
-    #
-    # Defense-in-depth：如果 snapshot.next 里还有未识别的执行节点（既不在 INTERRUPT_NODE_TO_C
-    # 也不在 EXEC_NODE_NEXT_INTERRUPT），说明 graph 仍在跑且 step 1b 没命中——
-    # 此时跳过 confirmations 兜底，因为 graph 运行中 confirmations 是不可靠信号
-    # （比如旧任务 c2/c3 没写 confirmations，就会被兜底误推回 c2）。
-    _has_unrecognized_exec = False
-    if ctx.current_node is None and ctx.source_next:
-        for n in ctx.source_next:
-            if n not in INTERRUPT_NODE_TO_C and n not in EXEC_NODE_NEXT_INTERRUPT:
-                _has_unrecognized_exec = True
-                break
-
-    if ctx.current_node is None and not _has_unrecognized_exec:
-        last_confirmed = None
-        for key in CONFIRMATION_KEYS:
-            if ctx.source_confirmations.get(key):
-                last_confirmed = key
-        if last_confirmed is not None:
-            # 先看下游 node{N+1} 是否真的有产物
-            x = int(last_confirmed[1])  # "c2" → 2
-            next_x = x + 1
-            downstream_has_product = False
-            if next_x <= 4:
-                node_key = f"node{next_x}"
-                product_keys = _NODE_PRODUCT_KEYS.get(node_key, ())
-                if state and isinstance(state.get(node_key), dict):
-                    downstream_has_product = any(
-                        state[node_key].get(k) not in (None, [], {})
-                        for k in product_keys
-                    )
-            if downstream_has_product:
-                ctx.current_node = f"c{next_x}"
-                ctx.confidence = "state_confirmations"
-            else:
-                # 下游 node 没跑 / 跑崩了 → 回到最后确认的 cX（让用户可以重新 confirm / redo 当前节点）
-                ctx.current_node = last_confirmed
-                ctx.confidence = "state_confirmations_no_downstream"
-
-    # --------- 4. state["phase"] (LangGraph 写入的) ---------
-    if ctx.current_node is None and ctx.source_state_phase:
-        c = PHASE_TO_C.get(ctx.source_state_phase)
-        if c:
-            ctx.current_node = c
-            ctx.confidence = "state_phase"
-
-    # --------- 5. DB interrupt_json ---------
-    if ctx.current_node is None and ctx.source_db_interrupt_node:
-        if ctx.source_db_interrupt_node in ("c1", "c2", "c3", "c4"):
-            ctx.current_node = ctx.source_db_interrupt_node
-            ctx.confidence = "db_interrupt"
-
-    # --------- 6. DB phase 列 ---------
-    if ctx.current_node is None and ctx.source_db_phase:
-        c = DB_PHASE_TO_C.get(ctx.source_db_phase)
-        if c:
-            ctx.current_node = c
-            ctx.confidence = "db_phase"
-
-    # --------- 7. 新任务兜底 ---------
-    # 如果 confirmations 全 False，且没有 snapshot interrupt，说明 graph 刚启动还没跑到 C1。
-    # 前提：至少有一个源（checkpoint snapshot.next 或 DB 信息）存在——否则可能根本没任务，不该猜 c1。
-    _has_any_source = bool(ctx.source_next or ctx.source_db_phase or ctx.source_db_interrupt_node)
-    if ctx.current_node is None and _has_any_source and not any(ctx.source_confirmations.values()):
-        # 再确认 snapshot.next 里也没有任何已到过的 interrupt（如果有说明状态异常）
-        if not any(n in INTERRUPT_NODE_TO_C for n in ctx.source_next):
-            ctx.current_node = "c1"
-            ctx.confidence = "new_task_default"
-
-    # --------- 8. done / failed 状态排除 ---------
-    # graph 已结束时（snapshot.next 为空），"严格意义上"没有 interrupt 节点了。
-    #
-    # 关键：只有 snapshot 本身才能证明 graph 已结束。db.phase='failed' / 'done'
-    # 可能是 DB 里的陈旧值（比如 graph 后来又 resume 到了 cX，但 DB 忘了更），
-    # 绝不能用它来覆盖 snapshot.next 推出来的 valid interrupt。
-    # state.phase 同理——只有 snapshot 确认没有 interrupt 了才清。
-    if ctx.current_node and not any(n in INTERRUPT_NODE_TO_C for n in ctx.source_next):
-        # snapshot.next 里确实没有 interrupt 节点 → 再看 phase 是不是真的 terminal
-        if ctx.source_state_phase in ("done", "failed") or ctx.source_db_phase in ("done", "failed"):
-            ctx.current_node = None
-            ctx.confidence = "terminal_state"
-
-    # --------- 9. 产物兜底推断（最后抓手）---------
-    # 只有 snapshot.next 里也没有任何 interrupt 节点时才跑这个兜底。
-    # 如果 snapshot.next 里有 'cX_select_*' 这样的 interrupt，
-    # 说明 graph 真的停在那，直接用 step 1 推出来的 current_node 就好，
-    # 别让产物兜底把它盖掉——产物兜底是"graph 已经跑过去又回来了"
-    # 这种场景的修复手段，不是正常路径的 primary 来源。
-    _snapshot_has_interrupt = any(n in INTERRUPT_NODE_TO_C for n in ctx.source_next)
-    inferred: str | None = None
-    if ctx.current_node is None and not _snapshot_has_interrupt:
-        inferred = infer_current_node_from_state(state)
-        if inferred:
-            ctx.current_node = inferred
-            ctx.confidence = "state_products"
-            if verbose:
-                print(f"  ↳ 产物推断兜底 → current_node={inferred}", flush=True)
-
-    # --------- 冲突检测 ---------
-    if ctx.current_node and ctx.current_node is not None:
-        expected = ctx.current_node
-        for src_name, candidate in [
-            ("db_interrupt", ctx.source_db_interrupt_node),
-            ("db_phase", DB_PHASE_TO_C.get(ctx.source_db_phase or "", "") or None),
-            ("state_phase", PHASE_TO_C.get(ctx.source_state_phase or "", "") or None),
-        ]:
-            if candidate and candidate != expected:
-                ctx.conflicts.append(f"[{src_name}]={candidate!r} vs resolved={expected!r}")
-
     if verbose:
         _log_ctx(ctx)
-
     return ctx
 
 
@@ -382,21 +181,7 @@ _NODE_INDEX_TO_C: dict[int, str] = {1: "c1", 2: "c2", 3: "c3", 4: "c4"}
 
 
 def infer_current_node_from_state(state: dict[str, Any] | None) -> str | None:
-    """从 graph_state 的 Node 产物反推"下一个要停的 interrupt 节点"。
-
-    规则：遍历 node1→node4，找到**最后一个有产物**的 node；
-      - 若它是 nodeN，则已完成 N；下一个要停的 interrupt 是 c{N+1}。
-      - 若没有任何产物 → None（任务尚未开始）。
-      - 若 state 是 None → None。
-
-    这个推断的意义：
-      snapshot.next / DB interrupt_json 可能因为清理时序丢失，
-      但 nodeX 产物还在 checkpoint 里。用户输入"重做"时
-      靠这个函数能反推出应该弹哪个阶段的 redo 选项。
-
-    注意：这只在 graph_state 确实存在时才靠谱；纯新任务（state=None）
-    不应该被误判成 c1。
-    """
+    """Diagnostic stage hint only; never used to authorize resume/restart."""
     if not isinstance(state, dict):
         return None
 
@@ -408,7 +193,7 @@ def infer_current_node_from_state(state: dict[str, Any] | None) -> str | None:
         keys = _NODE_PRODUCT_KEYS.get(f"node{i}", ())
         # 命中任一非空信号就算"已跑完"
         hit = any(
-            (node.get(k) not in (None, [], {}))
+            bool(node.get(k))
             for k in keys
         )
         if hit:
@@ -417,10 +202,8 @@ def infer_current_node_from_state(state: dict[str, Any] | None) -> str | None:
     if last_completed_idx == 0:
         return None
 
-    # 已跑完 last_completed_idx → 下一个 interrupt 是 c{N+1}
-    # 特例：跑完 node4 但 phase 还是 c4_review（还没 finalize）→ c4
-    # finalize 之后（phase=done）用户也会说"重做" → 需要走到 c4 让用户选
-    next_idx = last_completed_idx + 1
+    # Node N produces the content reviewed at C N.
+    next_idx = last_completed_idx
     if next_idx > 4:
         next_idx = 4
     return _NODE_INDEX_TO_C.get(next_idx)
@@ -453,8 +236,10 @@ def validate_current_node_products(
         (ok, missing_fields) —— ok=True 表示产物完整；ok=False 时 missing_fields 列出缺什么。
         当 current_node 为 None 或不在已知列表里时返回 (True, []) —— 调用方应该先校验 current_node。
     """
-    if not current_node or not isinstance(state, dict):
-        return True, []
+    if not isinstance(state, dict) or not state:
+        return False, ["checkpoint"]
+    if not current_node:
+        return False, ["interrupt"]
 
     if current_node not in _C_NODE_PRODUCT_REQUIREMENTS:
         return True, []
@@ -466,25 +251,19 @@ def validate_current_node_products(
     # 特殊处理：c3 的 generate_prompts / prompts_detail 二选一即可
     if current_node == "c3":
         n3 = state.get("node3", {}) or {}
-        has_any = bool(
-            (n3.get("generate_prompts") not in (None, [], {}))
-            or (n3.get("prompts_detail") not in (None, [], {}))
-        )
+        has_any = bool(n3.get("generate_prompts"))
         if not has_any:
             missing.append("node3.generate_prompts / node3.prompts_detail")
     else:
         for node_key, field_key in reqs:
             node = state.get(node_key, {}) or {}
             val = node.get(field_key)
-            if val in (None, [], {}):
+            if not val:
                 missing.append(f"{node_key}.{field_key}")
 
     ok = len(missing) == 0
     if not ok:
-        print(
-            f"[validate] 🛡️ current_node={current_node} 产物缺失 → missing={missing}",
-            flush=True,
-        )
+        log_message(f"[validate] 🛡️ current_node={current_node} 产物缺失 → missing={missing}", page='对话', business='工作流状态', status='记录')
     return ok, missing
 
 
@@ -509,18 +288,18 @@ def _normalize_confirmations(state: dict[str, Any] | None) -> dict[str, bool]:
 def _log_ctx(ctx: GraphContext) -> None:
     """打印解析过程 —— 用于排查 current_node 丢失。"""
     from time import time
-    print(f"[graph-ctx] resolved current_node={ctx.current_node!r} "
-          f"confidence={ctx.confidence}", flush=True)
+    log_message(f"[graph-ctx] resolved current_node={ctx.current_node!r} "
+          f"confidence={ctx.confidence}", page='对话', business='工作流状态', status='记录')
     if ctx.source_next:
-        print(f"  snapshot.next = {ctx.source_next!r}", flush=True)
+        log_message(f"  snapshot.next = {ctx.source_next!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_state_phase:
-        print(f"  state.phase = {ctx.source_state_phase!r}", flush=True)
+        log_message(f"  state.phase = {ctx.source_state_phase!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_confirmations:
-        print(f"  confirmations = {ctx.source_confirmations!r}", flush=True)
+        log_message(f"  confirmations = {ctx.source_confirmations!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_db_interrupt_node:
-        print(f"  db.interrupt_json.node = {ctx.source_db_interrupt_node!r}", flush=True)
+        log_message(f"  db.interrupt_json.node = {ctx.source_db_interrupt_node!r}", page='对话', business='工作流状态', status='记录')
     if ctx.source_db_phase:
-        print(f"  db.phase = {ctx.source_db_phase!r}", flush=True)
+        log_message(f"  db.phase = {ctx.source_db_phase!r}", page='对话', business='工作流状态', status='记录')
     if ctx.conflicts:
         for c in ctx.conflicts:
-            print(f"  ⚠️ conflict: {c}", flush=True)
+            log_message(f"  ⚠️ conflict: {c}", page='对话', business='工作流状态', status='警告')

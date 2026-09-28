@@ -104,7 +104,19 @@ class SkuImageMeta(BaseModel):
     sort_order: int = 0
 
 
+class GeneratedImageSelection(BaseModel):
+    task_id: str = Field(min_length=1, max_length=64)
+    image_key: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ArchiveGeneratedImages(BaseModel):
+    conversation_id: str = Field(min_length=1, max_length=64)
+    task_id: str = Field(min_length=1, max_length=64)
+    images: list[GeneratedImageSelection] = Field(min_length=1, max_length=200)
+
+
 class SkuUpdateRequest(BaseModel):
+    archive_generated_images: ArchiveGeneratedImages | None = None
     name: str | None = None
     style_no: str | None = None
     category: str | None = None
@@ -141,6 +153,8 @@ class SkuListResponse(BaseModel):
 
 
 class SkuImageResponse(BaseModel):
+    image_type: Literal["product", "ad"] = "product"
+    source_task_id: str | None = None
     id: int
     category: str
     storage_uri: str

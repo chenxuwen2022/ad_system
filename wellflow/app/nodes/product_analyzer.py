@@ -9,8 +9,8 @@
 from __future__ import annotations
 
 from wellflow.app.config import settings
-from wellflow.app.llm.model_pool import get_model_pool
-from wellflow.app.prompt.constant import PRODUCT_ANALYZER_SYSTEM_PROMPT
+from wellflow.app.newapi.pool import get_model_pool
+from wellflow.app.prompt.registry import get_active_prompt
 
 
 async def analyze_product(
@@ -18,13 +18,14 @@ async def analyze_product(
     images: list[str],
     user_text: str = "",
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ) -> str:
     """非流式 VLM 商品识别，返回原始文本报告。"""
     if not images:
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
-    pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    pool = get_model_pool(task_id=task_id)
+    effort = reasoning_effort if reasoning_effort is not None else settings.node1_reasoning_effort
 
     user_text_parts: list[str] = []
     if user_text:
@@ -32,7 +33,7 @@ async def analyze_product(
     user_text = "\n\n".join(user_text_parts)
 
     resp, used_model = await pool.chat_with_images(
-        system=PRODUCT_ANALYZER_SYSTEM_PROMPT,
+        system=get_active_prompt("product_report"),
         user=user_text,
         image_uris=images,
         reasoning_effort=effort,
@@ -46,13 +47,14 @@ async def stream_analyze_product(
     images: list[str],
     user_text: str = "",
     reasoning_effort: str | None = None,
+    task_id: str | None = None,
 ):
     """流式 VLM 商品识别，yield {"type": "thinking"|"content", "text": "..."}。"""
     if not images:
         raise ValueError("ProductAnalyzer 必须传入至少一张商品图片")
 
-    pool = get_model_pool()
-    effort = reasoning_effort if reasoning_effort is not None else settings.llm_reasoning_effort
+    pool = get_model_pool(task_id=task_id)
+    effort = reasoning_effort if reasoning_effort is not None else settings.node1_reasoning_effort
 
     user_message_parts: list[str] = []
     if user_text:
@@ -61,7 +63,7 @@ async def stream_analyze_product(
     user_message = "\n\n".join(user_message_parts)
 
     async for delta in pool.stream_chat_with_images(
-        system=PRODUCT_ANALYZER_SYSTEM_PROMPT,
+        system=get_active_prompt("product_report"),
         user=user_message,
         image_uris=images,
         reasoning_effort=effort,

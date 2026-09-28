@@ -5,18 +5,20 @@
   - effort == "close" / "medium" / "high" → 流式 stream_analyze_product
 流式路径下每个 delta token 立即 publish 到 SSE event_bus，前端实时逐字输出。
 
-💭 Thinking 策略（2026-09-21 对齐 node2/node3）：
-  直接把模型原始 reasoning_content 按 token 流推给 thinking_chunk SSE 事件，
-  不做任何格式约束或派生。这样 thinking 面板会**先于**报告正文出现，
-  真正反映"模型在思考时用户在看什么"。
+Node1 的思考面板只展示模型输出的简短识别进度，不展示原始 reasoning_content。
 """
 
 from __future__ import annotations
+
+from wellflow.app.logging import log_message
+
+from wellflow.app.newapi.observability import business_operation
 
 import time
 from typing import Any
 
 from wellflow.app.nodes import input_analyzer
+from wellflow.app.workflows.report_progress import ReportProgressStream
 
 
 def build_graph():
@@ -46,14 +48,14 @@ def build_graph():
 # ---------------------------------------------------------------------------
 
 
+@business_operation("Node1/商品分析")
 async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     """一步完成 Node 1 全部工作：输入校验 → VLM 流式识别 → 报告汇总。
 
     关键：VLM 用 stream_chat_with_images，每个 token delta 立即 publish SSE，
     前端 TTFB = LLM 首 token 延迟（通常 < 1s），而不是等完整报告生成完。
 
-    💭 thinking：reasoning_content 直接按 token 推 thinking_chunk SSE，
-    和 content 通道（report_chunk）并行独立，前端先看"思考中"再看报告。
+    content 中标题前的识别进度进入 thinking_chunk，标题起的正文进入 report_chunk。
 
     🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被 C1 确认并锁定，
     当前任务内不得再重新生成 —— 直接跳过，返回原 node1 状态不变。
@@ -65,7 +67,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
 
     # —— 锁定守卫：已锁定则绝不能重跑 Node1 ——
     if bool((state.get("node1") or {}).get("report_locked")):
-        print(f"[node1] 🛡️ task={task_id} node1 报告已锁定，拒绝重新生成", flush=True)
+        log_message(f"[node1] 🛡️ task={task_id} node1 报告已锁定，拒绝重新生成", page='对话', business='node1产品报告', status='记录')
         if task_id:
             publish(task_id, "message", {
                 "text": (
@@ -80,6 +82,8 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     req = state.get("request", {})
     image_paths: list[str] = req.get("product_images") or []
     user_text: str = req.get("description", "")
+    if state.get("_redo_instruction"):
+        user_text += "\n本次重新生成要求：" + state["_redo_instruction"]
 
     # --- Step 1: 输入校验（同步，轻量） ---
     analysis = input_analyzer.analyze_input(
@@ -95,33 +99,34 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     import asyncio
     from wellflow.app.utils.image_store import paths_to_data_uris
     images = await asyncio.to_thread(paths_to_data_uris, image_paths)
-    print(f"[node1] 📥 VLM 输入: product_images paths={len(image_paths)} → data_uris={len(images)}, "
-          f"text_len={len(user_text)}", flush=True)
+    log_message(f"[node1] 📥 VLM 输入: product_images paths={len(image_paths)} → data_uris={len(images)}, "
+          f"text_len={len(user_text)}", page='对话', business='node1产品报告', status='记录')
 
     # --- Step 3: 推 phase = 调用 VLM ---
     publish(task_id, "phase", {"phase": "node1_vlm_analyzing"})
 
-    # --- Step 4: 统一流式 + reasoning_effort=low（Node1/Node2/Node3 一致） ---
-    # low：开启 thinking 但推理成本可控，逐 token 推 SSE
-    effort = "low"
+    # --- Step 4: 统一流式 + reasoning_effort（从 settings 读取，Node1/Node2/Node3 各自可配） ---
+    from wellflow.app.config import settings as _settings
+    effort = _settings.node1_reasoning_effort
 
     t0 = time.time()
     full_report_parts: list[str] = []
     content_chunk_index = 0
-    think_parts: list[str] = []  # 💭 原始 reasoning_content 累积
+    progress_parts: list[str] = []
     think_chunk_index = 0
+    report_stream = ReportProgressStream()
     first_content_ts = None
     first_think_ts = None
 
-    print(f"[node1] 📌 reasoning_effort={effort} → 流式 stream_analyze_product", flush=True)
+    log_message(f"[node1] 📌 reasoning_effort={effort} → 流式 stream_analyze_product", page='对话', business='node1产品报告', status='记录')
 
     # ── 流式消费 ──────────────────────────────────────────────────────
-    # reasoning_content → 直接推 thinking_chunk SSE（和 node2/node3 完全一致）
-    # content          → 推 report_chunk SSE
+    # 忽略原始 reasoning_content；content 的标题前缀作为识别进度展示。
     async for item in product_analyzer.stream_analyze_product(
         images=images,
         user_text=user_text,
         reasoning_effort=effort,
+        task_id=task_id,
     ):
         if not item:
             continue
@@ -136,24 +141,24 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             continue
 
         if item_type == "thinking":
-            # 💭 原始 reasoning_content → 直接推，不做任何格式转化
-            if first_think_ts is None:
-                first_think_ts = time.time()
-                print(f"[node1] 💭 首 thinking token 到达 TTFB={first_think_ts - t0:.2f}s", flush=True)
-            think_parts.append(text)
-            think_chunk_index += 1
-            publish(task_id, "thinking_chunk", {
-                "chunk": text,
-                "index": think_chunk_index,
-                "node": "node1",
-            })
+            continue
         else:
+            progress, text = report_stream.feed(text)
+            if progress:
+                if first_think_ts is None:
+                    first_think_ts = time.time()
+                progress_parts.append(progress)
+                think_chunk_index += 1
+                publish(task_id, "thinking_chunk", {
+                    "chunk": progress, "index": think_chunk_index, "node": "node1",
+                })
+            if not text:
+                continue
             # ── content 通道 ─────────────────────────────────────────
             if first_content_ts is None:
                 first_content_ts = time.time()
-                print(f"[node1] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
-                      + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else "")
-                      , flush=True)
+                log_message(f"[node1] 🟢 首 content token TTFB={first_content_ts - t0:.2f}s"
+                      + (f" (thinking 耗时={first_content_ts - first_think_ts:.2f}s)" if first_think_ts else ""), page='对话', business='node1产品报告', status='记录')
 
             # ── 正常 content chunk：追加 + 推 report_chunk ────────
             full_report_parts.append(text)
@@ -161,21 +166,27 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             publish(task_id, "report_chunk", {"chunk": text, "index": content_chunk_index, "node": "node1"})
 
     # ── 后处理 ──────────────────────────────────────────────────────────
+    remaining = report_stream.finish()
+    if remaining:
+        full_report_parts.append(remaining)
+        content_chunk_index += 1
+        publish(task_id, "report_chunk", {"chunk": remaining, "index": content_chunk_index, "node": "node1"})
     full_report = "".join(full_report_parts)
-    full_thinking = "".join(think_parts)
+    full_thinking = "".join(progress_parts)
     report_body, next_actions = _split_next_actions(full_report)
+    if not report_body.strip():
+        raise RuntimeError("商品分析未返回报告，请重试当前节点")
 
     # 归一化为稳定 key 的四块结构（前端"重点洞察"面板只认这个，不认 prompt 字段名）
     from wellflow.app.prompt.report_sections import build_report_sections
     report_sections = build_report_sections(report_body)
     total_ts = time.time()
-    print(f"[node1] ✅ VLM 完成: 报告 {len(report_body)} 字, "
+    log_message(f"[node1] ✅ VLM 完成: 报告 {len(report_body)} 字, "
           f"thinking {len(full_thinking)} 字, "
           f"content_chunks={content_chunk_index}, think_chunks={think_chunk_index}, "
           f"总耗时={total_ts - t0:.2f}s"
           + (f", 首think={first_think_ts - t0:.2f}s" if first_think_ts else "")
-          + (f", 首content={first_content_ts - t0:.2f}s" if first_content_ts else "")
-          , flush=True)
+          + (f", 首content={first_content_ts - t0:.2f}s" if first_content_ts else ""), page='对话', business='node1产品报告', status='成功')
 
     # 推 done（带上 thinking 汇总，方便前端展示）
     publish(task_id, "report_chunk_done", {
@@ -190,6 +201,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
     #    这样避免了独立 message 事件被 append 到报告正文再被 interrupt 的 replace 覆盖的问题。
 
     return {
+        "_redo_target": None, "_redo_instruction": None,
         "phase": "node1_vlm_done",
         "node1": {
             **state.get("node1", {}),
@@ -201,7 +213,7 @@ async def _do_streaming_analyze(state: dict[str, Any]) -> dict[str, Any]:
             "next_actions": next_actions,
             # 🔁 缓存已压缩的商品图 data URIs，供 Node2 复用（避免重复 PIL 压缩 ~1.2s）
             "compressed_images": images,
-            # 💭 持久化 thinking 原文（未格式化），刷新后前端可恢复展示
+            # 仅持久化识别进度，刷新后前端可恢复展示。
             "thinking_text": full_thinking or "",
         },
     }

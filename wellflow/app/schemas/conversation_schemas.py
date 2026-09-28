@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class ConversationListItem(BaseModel):
+    sku_id: int | None = None
     conversation_id: str
     title: str = ""
     current_task_id: str | None = None
@@ -54,6 +55,8 @@ class ConversationTaskRef(BaseModel):
 
 
 class ConversationDetailResponse(BaseModel):
+    pending_archive: dict[str, Any] | None = None
+    sku_id: int | None = None
     conversation_id: str
     title: str = ""
     current_task_id: str | None = None

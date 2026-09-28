@@ -42,6 +42,12 @@ _sample_export.html
 
 # ===== 商拍子系统（WellFlow）=====
 wellflow/uploads/
+wellflow/tests/
+/tests/
+/tests/*
+!/tests/
+!/tests/test_prompt_indices.py
+!/tests/test_task_image_delivery.py
 
 # AI 场景处理产物
 static/scene_ai/
@@ -62,6 +68,7 @@ static/scene_ai/
 *.webm
 static/assets/
 static/outfit_ai/
+static/mannequin_ai/
 assets_data/*.bak_*
 static/*.html
 
@@ -77,3 +84,4 @@ data/cache/
 
 # ===== 本地工具记忆文件 =====
 .workbuddy/
+task_state/

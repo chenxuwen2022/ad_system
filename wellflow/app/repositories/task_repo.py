@@ -75,7 +75,7 @@ class TaskRepo:
         images 每项字段：
           - image_type: "model" | "output"（必填）
           - storage_uri: 相对路径或远程 url（必填）
-          - shot_id / prompt / prompt_index / variant_index（output 可选）
+          - shot_id / prompt / prompt_index（output 可选）
         """
         ids: list[str] = []
         for img in images:
@@ -88,12 +88,28 @@ class TaskRepo:
                 shot_id=img.get("shot_id"),
                 prompt=img.get("prompt"),
                 prompt_index=img.get("prompt_index"),
-                variant_index=img.get("variant_index"),
             )
             self.db.add(obj)
             ids.append(image_id)
         self.db.commit()
         return ids
+
+    def save_reference_images(self, task_id: str, references: dict[str, list[str]]) -> None:
+        """保存 c1/c2/c3 参考图路径；重复提交同一路径时不新增记录。"""
+        kinds = ("mannequin", "scene", "outfit")
+        existing = {
+            (image.image_type, image.storage_uri)
+            for image in self.list_images(task_id)
+        }
+        pending = []
+        for kind in kinds:
+            for uri in references.get(kind) or []:
+                if not isinstance(uri, str) or not uri or (kind, uri) in existing:
+                    continue
+                existing.add((kind, uri))
+                pending.append({"image_type": kind, "storage_uri": uri})
+        if pending:
+            self.save_images(task_id, pending)
 
     def list_images(self, task_id: str) -> list[TaskImage]:
         """按 task_id 查全部关联图片，按创建顺序返回。"""

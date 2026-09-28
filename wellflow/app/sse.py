@@ -19,16 +19,16 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
 
 from wellflow.app.config import settings
-from wellflow.app.database import get_db
 from wellflow.app.repositories.task_repo import TaskRepo
 
 
@@ -38,7 +38,7 @@ router = APIRouter(tags=["SSE"])
 
 
 @router.get("/api/tasks/{task_id}/stream")
-async def stream_task(task_id: str, request: Request, db: Session = Depends(get_db)):
+async def stream_task(task_id: str, request: Request):
     """订阅任务进度事件。事件驱动为主，DB 轮询兜底。"""
 
     async def event_generator():
@@ -79,7 +79,7 @@ async def stream_task(task_id: str, request: Request, db: Session = Depends(get_
                 event = await asyncio.wait_for(q.get(), timeout=settings.sse_db_fallback_interval_seconds)
                 event_type = event.get("type")
                 event_data = event.get("data", {})
-                print(f"[sse] task={task_id} ← queue got type={event_type}", flush=True)
+                log_message(f"[sse] task={task_id} ← queue got type={event_type}", page='对话', business='实时消息推送', status='记录')
 
                 if event_type == "phase":
                     phase_val = event_data.get("phase")

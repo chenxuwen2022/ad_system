@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message, page_context
+
 import asyncio
 import json as json_mod
 import re
@@ -22,6 +24,7 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
+from wellflow.app.workflow_execution import launch_graph as _start_graph
 from wellflow.app.event_bus import (
     publish, drain_and_subscribe, cleanup as _eb_cleanup,
     mark_running, mark_done, is_running,
@@ -129,7 +132,7 @@ def _langgraph_config(task_id: str):
 
 
 # ---------------------------------------------------------------------------
-# 图片分类规则：images → (product_images, model_images)
+# 图片分类规则：images → (product_images, ref_images)
 # ---------------------------------------------------------------------------
 
 # 第二层关键词：命中则覆盖上下文路由
@@ -154,44 +157,48 @@ def classify_images(
     has_task: bool,
     current_node: str | None,
     message: str = "",
-) -> tuple[list[UploadFile], list[UploadFile]]:
-    """把统一的 images 列表分流为 (product_images, model_images)。
+) -> tuple[list[UploadFile], dict[str, list[UploadFile]]]:
+    """把统一的 images 列表分流为 (product_images, ref_images)。
+
+    ref_images = {"mannequin": [...], "scene": [...], "outfit": [...]}
+    这里只区分 product vs 其他；其他默认归 mannequin（旧前端自动上传逻辑保留）。
+    新前端应直接按 type 分组后通过 resume_json.reference_images 显式传入，不走这里。
 
     三层优先级：
-      1. message 关键词覆盖（命中 PRODUCT → 全部 product；命中 MODEL → 全部 model）
-      2. 上下文路由（无 task → product；有 task + c1/c2/c3 → model）
-      3. 兜底 → model_images
-
-    不做 VLM 视觉分类（v1），保持零延迟。
+      1. message 关键词覆盖（命中 PRODUCT → 全部 product；命中 MODEL → 全部 mannequin）
+      2. 上下文路由（无 task → product；有 task + c1/c2/c3 → ref_images.mannequin）
+      3. 兜底 → ref_images.mannequin
     """
     if not images:
-        return [], []
+        return [], {"mannequin": [], "scene": [], "outfit": []}
 
     msg = message.strip()
+    _empty_ref: dict[str, list[UploadFile]] = {"mannequin": [], "scene": [], "outfit": []}
 
     # 第二层：关键词覆盖
     if _match_any(msg, _PRODUCT_KEYWORDS):
-        print(f"[classify_images] 关键词覆盖 → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        log_message(f"[classify_images] 关键词覆盖 → product ({len(images)} 张)", page='对话', business='对话交互', status='记录')
+        return list(images), _empty_ref
     if _match_any(msg, _MODEL_KEYWORDS):
-        print(f"[classify_images] 关键词覆盖 → model ({len(images)} 张)", flush=True)
-        return [], list(images)
+        log_message(f"[classify_images] 关键词覆盖 → mannequin ({len(images)} 张)", page='对话', business='对话交互', status='记录')
+        ref_mannequin = {"mannequin": list(images), "scene": [], "outfit": []}
+        return [], ref_mannequin
 
     # 第一层：上下文路由
     if not has_task:
-        print(f"[classify_images] 无任务 → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        log_message(f"[classify_images] 无任务 → product ({len(images)} 张)", page='对话', business='对话交互', status='记录')
+        return list(images), _empty_ref
     if current_node in ("c1", "c2"):
-        # C1/C2 阶段用户上传的图默认为商品参考图（可追加替换商品图）
-        print(f"[classify_images] 上下文 c={current_node} → product ({len(images)} 张)", flush=True)
-        return list(images), []
+        log_message(f"[classify_images] 上下文 c={current_node} → product ({len(images)} 张)", page='对话', business='对话交互', status='记录')
+        return list(images), _empty_ref
     if current_node in ("c3", "c4"):
-        print(f"[classify_images] 上下文 c={current_node} → model ({len(images)} 张)", flush=True)
-        return [], list(images)
+        log_message(f"[classify_images] 上下文 c={current_node} → mannequin ({len(images)} 张)", page='对话', business='对话交互', status='记录')
+        ref_mannequin = {"mannequin": list(images), "scene": [], "outfit": []}
+        return [], ref_mannequin
 
     # 兜底
-    print(f"[classify_images] 兜底 → product ({len(images)} 张)", flush=True)
-    return list(images), []
+    log_message(f"[classify_images] 兜底 → product ({len(images)} 张)", page='对话', business='对话交互', status='记录')
+    return list(images), _empty_ref
 
 
 async def _aget_snapshot(task_id: str) -> tuple[Any, dict[str, Any] | None]:
@@ -206,7 +213,7 @@ async def _aget_snapshot(task_id: str) -> tuple[Any, dict[str, Any] | None]:
     try:
         snapshot = await g.aget_state(_langgraph_config(task_id))
     except Exception as exc:
-        print(f"[chat] aget_state 失败 task={task_id}: {exc}", flush=True)
+        log_message(f"[chat] aget_state 失败 task={task_id}: {exc}", page='对话', business='对话交互', status='记录')
         return None, None
     values = snapshot.values if snapshot and hasattr(snapshot, "values") else None
     return snapshot, values
@@ -225,89 +232,12 @@ def _extract_interrupt_value(chunk: Any) -> dict[str, Any] | None:
     return getattr(interrupt_obj, "value", None)
 
 
-async def _handle_graph_chunk(task_id: str, chunk: Any) -> None:
-    from wellflow.app.event_bus import publish as _eb
-    from wellflow.app.graph_persist import persist_interrupt, persist_phase
-    interrupt_value = _extract_interrupt_value(chunk)
-    if interrupt_value:
-        print(f"[chat] ✅ interrupt! node={interrupt_value.get('node')}", flush=True)
-        phase = f"{interrupt_value.get('node')}_confirm"
-        _eb(task_id, "phase", {"phase": phase})
-        _eb(task_id, "interrupt", {**interrupt_value, "_phase": phase})
-        # 按流顺序落库：fire-and-forget 会让更早的 persist_phase 晚提交，覆盖 interrupt 的 phase
-        await asyncio.to_thread(persist_interrupt, task_id, interrupt_value, phase)
-        return
-
-    if isinstance(chunk, tuple) and chunk[0] == "updates":
-        data = chunk[1]
-        if not isinstance(data, dict):
-            return
-        for node_name, node_out in data.items():
-            if node_name == "__interrupt__" or not isinstance(node_out, dict):
-                continue
-            phase = node_out.get("phase")
-            if not phase:
-                continue
-            _eb(task_id, "phase", {"phase": phase})
-            await asyncio.to_thread(persist_phase, task_id, phase, node_name)
-            if phase == "done":
-                n3_raw = node_out.get("node3") or {}
-                if n3_raw.get("reference_images"):
-                    from wellflow.app.utils.image_store import paths_to_data_uris
-                    n3_raw = {**n3_raw, "reference_images": paths_to_data_uris(n3_raw["reference_images"])}
-                _eb(task_id, "done", {
-                    "phase": "done",
-                    "node1": node_out.get("node1"),
-                    "node2": node_out.get("node2"),
-                    "node3": n3_raw,
-                })
-
-
-async def _start_graph(task_id: str, graph, config, *, initial_state=None, command=None):
-    import traceback as _tb
-    try:
-        mark_running(task_id)
-        if command is not None:
-            stream_iter = graph.astream(command, config=config, stream_mode=["updates"])
-        elif initial_state is not None:
-            stream_iter = graph.astream(initial_state, config=config, stream_mode=["updates"])
-        else:
-            return
-        async for chunk in stream_iter:
-            await _handle_graph_chunk(task_id, chunk)
-    except Exception as exc:
-        print(f"[chat] ❌ graph error task={task_id}: {exc}", flush=True)
-        _tb.print_exc()
-        try:
-            from wellflow.app.event_bus import publish as _eb
-            _eb(task_id, "error", {"phase": "failed", "message": str(exc)})
-        except Exception:
-            pass
-    finally:
-        mark_done(task_id)
-        _eb_cleanup(task_id)
-
-
-def _sync_db_after_jump(task_id: str, target_node_clean: str, clean_nodes: list[str]):
-    try:
-        with session_scope() as db:
-            repo = TaskRepo(db)
-            repo.save_interrupt(task_id, None)
-            repo.update_phase(task_id, f"{target_node_clean}_confirm")
-            repo.add_event(task_id, "graph_jumped",
-                payload_json={"to": target_node_clean, "cleaned": clean_nodes})
-        print(f"[chat] ✅ DB 同步完成 task={task_id} → {target_node_clean}", flush=True)
-    except Exception as exc:
-        print(f"[chat] ⚠️ DB 同步失败 task={task_id}: {exc}", flush=True)
-
-
-async def _stream_queue(task_id: str, q) -> AsyncGenerator[str, None]:
+async def _stream_queue(q) -> AsyncGenerator[str, None]:
     while True:
         try:
             event = await asyncio.wait_for(q.get(), timeout=25)
             etype = event.get("type")
             edata = event.get("data", {})
-            # print(f"[chat:stream] task={task_id} ← {etype}", flush=True)
 
             yield _handle_sse_event(etype, edata)
 
@@ -322,34 +252,17 @@ async def _stream_queue(task_id: str, q) -> AsyncGenerator[str, None]:
 
 
 def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
+    """保留阶段事件的精简格式，其余已知事件直接透传。"""
     if event_type == "phase":
         return _sse("phase", {"phase": event_data.get("phase")})
-    if event_type == "interrupt":
-        return _sse("interrupt", event_data)
-    if event_type == "thinking_chunk":
-        return _sse("thinking_chunk", event_data)
-    if event_type == "report_chunk":
-        return _sse("report_chunk", event_data)
-    if event_type == "report_chunk_done":
-        return _sse("report_chunk_done", event_data)
-    if event_type == "scheme_chunk":
-        return _sse("scheme_chunk", event_data)
-    if event_type == "scheme_chunk_done":
-        return _sse("scheme_chunk_done", event_data)
-    if event_type == "prompt_chunk":
-        return _sse("prompt_chunk", event_data)
-    if event_type == "prompt_chunk_done":
-        return _sse("prompt_chunk_done", event_data)
-    if event_type == "node4_image_done":
-        return _sse("node4_image_done", event_data)
-    if event_type == "node4_image_failed":
-        return _sse("node4_image_failed", event_data)
-    if event_type == "node3_image_done":
-        return _sse("node3_image_done", event_data)
-    if event_type == "done":
-        return _sse("done", event_data)
-    if event_type == "error":
-        return _sse("error", event_data)
+    if event_type in {
+        'done', 'error', 'interrupt',
+        'message', 'node3_image_done', 'node4_image_done',
+        'node4_image_failed', 'prompt_chunk', 'prompt_chunk_done',
+        'report_chunk', 'report_chunk_done', 'scheme_chunk',
+        'scheme_chunk_done', 'thinking_chunk',
+    }:
+        return _sse(event_type, event_data)
     return ""
 
 
@@ -359,22 +272,32 @@ def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
 
 
 @router.post("", summary="对话入口（意图路由 + SSE）")
+@page_context('对话')
 async def chat(
     message: str = Form(default=""),
     task_id: str | None = Form(default=None),
     # 新增：conversation 关联（可选，首次可不传；后端会从 task.conversation_id 反查或自动新建）
     conversation_id: str | None = Form(default=None),
+    sku_id: int | None = Form(default=None),
     platform: str = Form(default="taobao"),
     image_type: str = Form(default="ad"),
     marketing_goal: str = Form(default="acquisition"),
     # c2 界面 checkbox 选中的方案索引（逗号分隔，如 "0,2"），前端输入框发消息时带上
     selected_scheme_indices: str | None = Form(default=None),
+    scheme_prompt_counts: str | None = Form(default=None),
+    reference_images: str | None = Form(default=None),
     # 前端 dispatch 层回传：用户显式指定要微调哪一步（node1/node2/node3）
     # 仅作 LLM 意图分类的"强引导"上下文，绝不绕过 LLM
     selected_finetuning_target: str | None = Form(default=None),
+    image_model: str | None = Form(default=None),
     images: list[UploadFile] = File(default_factory=list),
     db: Session = Depends(get_db),
 ):
+    from wellflow.app.workflows.image_models import selected_image_model
+    try:
+        image_model = selected_image_model(image_model)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     # ────────────────────────────────────── UTF-8 容错 ──────────────────────────────────────
     # macOS curl / 部分客户端用 latin-1 解 Form（Content-Type 无 charset），
     # 中文字节会被当成 latin-1 字符 → "重来第一步" 变成乱码。
@@ -384,7 +307,7 @@ async def chat(
         try:
             if s and any(ord(c) > 127 for c in s):
                 fixed = s.encode("latin-1").decode("utf-8")
-                print(f"[chat] ✅ 纠正 latin-1→utf-8: {s!r} → {fixed!r}", flush=True)
+                log_message(f"[chat] ✅ 纠正 latin-1→utf-8: {s!r} → {fixed!r}", page='对话', business='对话交互', status='成功')
                 return fixed
         except (UnicodeEncodeError, UnicodeDecodeError):
             pass
@@ -392,6 +315,28 @@ async def chat(
 
     message = _fix_utf8(message).strip()
 
+    # SKU is chosen explicitly; task/conversation identities may not disagree.
+    from wellflow.app.models.asset_models import ProductSku
+    from wellflow.app.models.task_models import Task
+    binding_repo = ConversationRepo(db)
+    bound_task = db.get(Task, task_id) if task_id else None
+    bound_conv = binding_repo.resolve(conversation_id) if conversation_id else None
+    if bound_task and bound_task.conversation_id:
+        task_conv = binding_repo.get(bound_task.conversation_id)
+        if conversation_id and (not bound_conv or bound_conv.conversation_id != bound_task.conversation_id):
+            raise HTTPException(409, "任务不属于当前对话")
+        bound_conv = task_conv
+    if bound_conv:
+        if sku_id is not None and sku_id != bound_conv.sku_id:
+            raise HTTPException(409, "对话关联商品已锁定，请新建对话或先绑定历史对话")
+        sku_id = bound_conv.sku_id
+    if sku_id is not None and db.get(ProductSku, sku_id) is None:
+        raise HTTPException(404, "关联商品不存在")
+    if not bound_conv and sku_id is None:
+        raise HTTPException(422, "请先选择 SKU 商品")
+
+    if bound_task and bound_task.phase == "archive_pending":
+        raise HTTPException(409, "图片入库待完成，请用原选择重试入库")
     has_task = bool(task_id)
     t_id: str | None = None
     current_node: str | None = None
@@ -400,7 +345,7 @@ async def chat(
     completed_mask = [False] * 6
     existing_report = ""
     existing_schemes: list = []
-    existing_model_images: list[str] = []
+    existing_ref_images: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
 
     # conversation 关联解析：
     # 1) 前端显式传了 conversation_id → 用它
@@ -419,7 +364,7 @@ async def chat(
         # 反查 conversation_id（前端没传但 task 已有）
         if not resolved_conv_id and task.conversation_id:
             resolved_conv_id = task.conversation_id
-            print(f"[chat] 📎 从 task.conversation_id 反查 conversation={resolved_conv_id}", flush=True)
+            log_message(f"[chat] 📎 从 task.conversation_id 反查 conversation={resolved_conv_id}", page='对话', business='对话交互', status='记录')
 
         # ---------- 🔑 current_node 多源校验（核心修复）----------
         # 以 LangGraph checkpoint snapshot 为主（唯一真相源），DB 的 interrupt_json/phase 为辅。
@@ -436,103 +381,32 @@ async def chat(
 
         # ---------- 从 state 取产物 ----------
         if graph_state:
-            # completed_mask 仅用作 LLM 分类的上下文 hint（告知已跑过哪些 step），
-            # 不是业务逻辑，这里内联 3 行简单推导避免从旧关键词模块 import。
+            # 六位依次表示 node1 产物/c1 确认、node2 产物/c2 确认、
+            # node3 产物/c3 确认；确认位必须读取 checkpoint 中的确认记录。
             completed_mask = [False] * 6
+            confirmations = graph_state.get("confirmations") or {}
             if graph_state.get("node1", {}).get("product_insight"):
                 completed_mask[0] = True
+            completed_mask[1] = bool(confirmations.get("c1"))
             if graph_state.get("node2", {}).get("schemes") or current_node in ("c2", "c3", "c4"):
                 completed_mask[2] = True
+            completed_mask[3] = bool(confirmations.get("c2"))
             if graph_state.get("node3", {}).get("outputs") or current_node == "c3":
                 completed_mask[4] = True
-            if graph_state.get("node3", {}).get("outputs"):
-                completed_mask[5] = True
+            completed_mask[5] = bool(confirmations.get("c3"))
 
             existing_report = str(graph_state.get("node1", {}).get("product_insight", "") or "")
             # c2 的可选项是 schemes（方案），不是 prompts —— 历史上误读 node2.generate_prompts
             # （该字段属于 node3），导致 existing_schemes 永远为空，"默认全选"退化成"全不选"
             existing_schemes = list(graph_state.get("node2", {}).get("schemes", []) or [])
-            existing_model_images = list(graph_state.get("node3", {}).get("model_images", []) or [])
-        print(f"[chat] 上下文: task={t_id} node={current_node} completed={completed_mask}"
-              f" model_images_in_state={len(existing_model_images)}"
-              f" conversation={resolved_conv_id}", flush=True)
+            existing_ref_images = graph_state.get("node3", {}).get("reference_images") or existing_ref_images
+        log_message(f"[chat] 上下文: task={t_id} node={current_node} completed={completed_mask}"
+              f" ref_images={existing_ref_images}"
+              f" conversation={resolved_conv_id}", page='对话', business='对话交互', status='记录')
 
-    # ------------------------------------------------------------------
-    # 🛑 提前拦截：纯文本重复 refine 指令（在 LLM classify() 之前）
-    #
-    # 只有当用户明确在说同一条微调指令时才会命中——完全相同的指令在 refine_history[-1] 里。
-    # 命中就直接返回 SSE + persist，跳过 classify()，省一次 LLM 调用。
-    #
-    # 只做精确 normalize 匹配，不做"语义近似"检测（避免误杀真正想重提的指令）。
-    # 这层之后 event_generator 里 edit 分支的重复检测还会再兜一次，
-    # 捕捉 LLM 改写过的 refine_instruction 与历史重复的情况。
-    # ------------------------------------------------------------------
-    _PHASE_CN_MAP = {"node1": "c1_confirm", "node2": "c2_select",
-                     "node3": "c3_confirm", "node4": "c4_review"}
-    _TARGET_CN_MAP = {"node1": "报告", "node2": "方案", "node3": "提示词", "node4": "生图"}
-    if has_task and graph_state and message:
-        from wellflow.app.workflows.state import get_node_refine_history
-        _FALLBACK_NODE = {"c1": "node1", "c2": "node2",
-                          "c3": "node3", "c4": "node4"}
-        _tgt = _FALLBACK_NODE.get(current_node or "", "node2")
-        # 🔴 重复检测也必须按 node 隔离 —— node2 的历史不能误拦截 node3 的同名字指令
-        _h = get_node_refine_history(graph_state, _tgt)
-        if _h and isinstance(_h[-1], str) and normalize_instruction(message) == normalize_instruction(_h[-1]):
-            # 指令重复 → 还要看上一轮 refine 是否真的成功产出了数据
-            # 如果上一轮 refine 因为 bug/异常没成功（产物为空或被清掉），就不能 block，
-            # 必须允许用户重新执行，否则用户永远卡在"等待确认"
-            if not _is_last_refine_succeeded(graph_state, _tgt):
-                print(f"[chat] 🔄 指令重复但上一轮 refine 未成功（产物为空），放行让它重新执行 target={_tgt}", flush=True)
-            else:
-                print(f"[chat] 🛑 提前拦截: raw message 与上一条 refine_history[-1] 完全重复 → 跳过 classify()", flush=True)
-                _lock_text = (
-                    f"这条微调指令和上一轮完全一样哦，上一轮已经对{_TARGET_CN_MAP.get(_tgt, '产物')}做过相同的修改了。"
-                    "如果想继续调整，可以换一条不一样的指令～"
-                )
-
-                async def _dup_sse():
-                    _chunk = _sse("message", {"text": _lock_text})
-                    # 直接在 async 函数里 inline persist assistant（不能引用 event_generator 内部的闭包辅助函数）
-                    if resolved_conv_id:
-                        try:
-                            from wellflow.app.repositories.conversation_repo import ChatMessageRepo as _CMR
-                            with session_scope() as _sdb2:
-                                _CMR(_sdb2).create(
-                                    conversation_id=resolved_conv_id, role="assistant",
-                                    text=_lock_text, task_id=t_id,
-                                )
-                                _CR = ConversationRepo(_sdb2)
-                                _CR.touch(resolved_conv_id)
-                        except Exception:
-                            pass
-                    yield _chunk
-                    yield _sse("done", {"phase": _PHASE_CN_MAP.get(_tgt, "done")})
-
-                # 必须先把 conversation 关联和用户消息持久化好——这是后续所有 handler 的隐含前提
-                conv_repo = ConversationRepo(db)
-                msg_repo = ChatMessageRepo(db)
-                resolved_conv_id: str | None = conversation_id
-                if t_id and not resolved_conv_id:
-                    try:
-                        _tk = TaskRepo(db).get(t_id)
-                        if _tk and _tk.conversation_id:
-                            resolved_conv_id = _tk.conversation_id
-                    except Exception:
-                        pass
-                if resolved_conv_id:
-                    try:
-                        msg_repo.create(
-                            conversation_id=resolved_conv_id,
-                            role="user", text=message,
-                            images_json=[], intent="edit", task_id=t_id,
-                        )
-                        conv_repo.touch(resolved_conv_id)
-                    except Exception:
-                        pass
-                return StreamingResponse(_dup_sse(), media_type="text/event-stream")
-
+    # Duplicate refinement detection runs after classification so regeneration is never blocked.
     # 🔑 统一 images → 后端判断分流
-    product_images, model_images = classify_images(
+    product_images, ref_images = classify_images(
         images, has_task=has_task, current_node=current_node, message=message,
     )
 
@@ -549,7 +423,7 @@ async def chat(
     #   - len(images) > 0（有图片，图片已在 classify_images 里分流完）
     # ------------------------------------------------------------------
     if (not has_task) and (not message) and images:
-        print(f"[chat] 🛑 意图分类短路：无任务 + 无文字 + 图片={len(images)}张 → 直接 start_task（跳过 LLM）", flush=True)
+        log_message(f"[chat] 🛑 意图分类短路：无任务 + 无文字 + 图片={len(images)}张 → 直接 start_task（跳过 LLM）", page='对话', business='对话交互', status='记录')
         intent_result: dict[str, Any] = {
             "intent": "start_task",
             "reasoning": "无任务 + 无文字消息 + 有图片 → 必然新建任务，短路跳过 LLM",
@@ -582,21 +456,22 @@ async def chat(
             _outputs = _sn4.get("outputs") or []
             _works = _sn4.get("work_items") or []
             _n4_tag = f"{len(_outputs)}张" if _outputs else f"进行中{sum(1 for w in _works if isinstance(w,dict) and w.get('status')=='done')}/{len(_works)}" if _works else "none"
-            print(f"[chat] 📋 state 结构摘要: node1={_n1_tag}, node2={_n2_tag}, node3={_n3_tag}, node4={_n4_tag} | current_node={current_node}", flush=True)
+            log_message(f"[chat] 📋 state 结构摘要: node1={_n1_tag}, node2={_n2_tag}, node3={_n3_tag}, node4={_n4_tag} | current_node={current_node}", page='对话', business='对话交互', status='记录')
         else:
-            print(f"[chat] 📋 state 结构摘要: graph_state=None | current_node={current_node}", flush=True)
+            log_message(f"[chat] 📋 state 结构摘要: graph_state=None | current_node={current_node}", page='对话', business='对话交互', status='记录')
         intent_result = await classify(
             message,
             has_task=has_task,
-            current_node=current_node,
+            current_node="c4" if graph_state and graph_state.get("phase") == "done" else current_node,
             completed_mask=completed_mask,
-            has_images=len(images) > 0,
+            has_images=len(images) > 0 or (not has_task and sku_id is not None),
             selected_finetuning_target=selected_finetuning_target,
             graph_state_brief=_state_brief,
+            task_id=t_id,
         )
         intent = intent_result.get("intent", "chat_outside")
-        print(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
-              f"reason={intent_result.get('reasoning', '')[:80]} | user_msg={message[:60]}", flush=True)
+        log_message(f"[chat] 🎯 LLM 分类结果: intent={intent} refine_target={intent_result.get('refine_target')} "
+              f"reason={intent_result.get('reasoning', '')[:80]} | user_msg={message[:60]}", page='对话', business='对话交互', status='记录')
 
     # ------------------------------------------------------------------
     # persist 辅助函数 —— 必须在 node1 锁定守卫之前定义，
@@ -630,7 +505,7 @@ async def chat(
                     ConversationRepo(sdb).touch(conv_id_for_this_turn)
             await asyncio.to_thread(_sync_write)
         except Exception as exc:
-            print(f"[chat] ⚠️ assistant message 持久化失败: {exc}", flush=True)
+            log_message(f"[chat] ⚠️ assistant message 持久化失败: {exc}", page='对话', business='对话交互', status='警告')
 
     async def _persist_sse_text(raw_sse: str, *, known_task_id: str | None = None) -> None:
         """从 SSE chunk 里抽取 assistant 文本并持久化（幂等：有文本才写）。
@@ -714,7 +589,7 @@ async def chat(
         _why_parts = [f"refine_target={_refine_tgt}", f"intent={intent}"]
         if _msg_has_node1_hint and _refine_tgt != "node1":
             _why_parts.append("用户消息含 node1 锚点词，LLM 可能误判意图")
-        print(f"[chat] 🛡️ node1 报告已锁定，拦截 intent={intent} | " + " | ".join(_why_parts), flush=True)
+        log_message(f"[chat] 🛡️ node1 报告已锁定，拦截 intent={intent} | " + " | ".join(_why_parts), page='对话', business='对话交互', status='记录')
         async def _node1_locked_sse():
             chunk = _sse("message", {"text": _node1_locked_message()})
             await _persist_sse_text(chunk, known_task_id=t_id)
@@ -749,8 +624,9 @@ async def chat(
                 conversation_id=conv_id_for_this_turn,
                 title="新对话",  # 占位，repo 会用 hint 覆盖
                 title_hint=_title_hint,
+                sku_id=sku_id,
             )
-            print(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title_hint=start_task", flush=True)
+            log_message(f"[chat] ✨ 新建 conversation={conv_id_for_this_turn} title_hint=start_task", page='对话', business='对话交互', status='记录')
         else:
             # 前端传了但还没建（首次 start_task，前端 generate 的 id 后端还没记录）
             # 用 resolve() 兼容 short_id / 完整 UUID
@@ -760,15 +636,16 @@ async def chat(
                     conversation_id=conv_id_for_this_turn,
                     title="新对话",
                     title_hint=_title_hint,
+                    sku_id=sku_id,
                 )
-                print(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", flush=True)
+                log_message(f"[chat] ✨ 复用前端 conversation_id={conv_id_for_this_turn}", page='对话', business='对话交互', status='记录')
 
     # 归一化：确保 conv_id_for_this_turn 是完整主键（short_id / UUID 都能解析）
     # 下游 persist / touch / update_current_task 需要真实 PK
     if conv_id_for_this_turn:
         _resolved_obj = conv_repo.resolve(conv_id_for_this_turn)
         if _resolved_obj and _resolved_obj.conversation_id != conv_id_for_this_turn:
-            print(f"[chat] 🔄 归一化 conversation_id {conv_id_for_this_turn} → {_resolved_obj.conversation_id}", flush=True)
+            log_message(f"[chat] 🔄 归一化 conversation_id {conv_id_for_this_turn} → {_resolved_obj.conversation_id}", page='对话', business='对话交互', status='记录')
             conv_id_for_this_turn = _resolved_obj.conversation_id
 
     # 写 user chat_message（无论什么 intent 都写，保留完整对话历史）
@@ -783,9 +660,9 @@ async def chat(
                 task_id=t_id,  # start_task 时 t_id 还没，是 None，后面会关联
             )
             conv_repo.touch(conv_id_for_this_turn)
-            print(f"[chat] 💬 user message 已持久化 conv={conv_id_for_this_turn} intent={intent}", flush=True)
+            log_message(f"[chat] 💬 user message 已持久化 conv={conv_id_for_this_turn} intent={intent}", page='对话', business='对话交互', status='记录')
         except Exception as exc:
-            print(f"[chat] ⚠️ user message 持久化失败（不阻断主流程）: {exc}", flush=True)
+            log_message(f"[chat] ⚠️ user message 持久化失败（不阻断主流程）: {exc}", page='对话', business='对话交互', status='警告')
 
     async def _stream_with_persist(
         generator: AsyncGenerator[str, None],
@@ -821,14 +698,14 @@ async def chat(
                         "conversation_id": _cur.conversation_id,
                         "title": _cur.title,
                     })
-                    print(f"[chat] 📢 conversation_title={_cur.title}", flush=True)
+                    log_message(f"[chat] 📢 conversation_title={_cur.title}", page='对话', business='对话交互', status='记录')
             except Exception as exc:
-                print(f"[chat] ⚠️ conversation_title 推送失败（不阻断）: {exc}", flush=True)
+                log_message(f"[chat] ⚠️ conversation_title 推送失败（不阻断）: {exc}", page='对话', business='对话交互', status='警告')
 
         # ── 模型池全挂：给用户准确的信息，不要误导为闲聊 ──
         if intent == "model_pool_unavailable":
             _reasoning = intent_result.get("reasoning", "")
-            print(f"[chat] 🛑 模型池不可用，直接返回准确信息给用户: {_reasoning[:80]}", flush=True)
+            log_message(f"[chat] 🛑 模型池不可用，直接返回准确信息给用户: {_reasoning[:80]}", page='对话', business='对话交互', status='记录')
             chunk = _sse("message", {
                 "text": "当前模型池中的大模型均不可用，请稍后再试。",
             })
@@ -853,8 +730,8 @@ async def chat(
                 _FALLBACK_NODE = {"c1": "node1", "c2": "node2",
                                   "c3": "node3", "c4": "node4"}
                 _fallback_tgt = _FALLBACK_NODE.get(current_node, "node2")
-                print(f"[chat] 🛡️ chat_outside 防御兜底：has_task={has_task} current_node={current_node} "
-                      f"消息含产物关键词 → 降级为 edit + refine_target={_fallback_tgt}, msg={message[:60]}", flush=True)
+                log_message(f"[chat] 🛡️ chat_outside 防御兜底：has_task={has_task} current_node={current_node} "
+                      f"消息含产物关键词 → 降级为 edit + refine_target={_fallback_tgt}, msg={message[:60]}", page='对话', business='对话交互', status='记录')
                 intent = "edit"
                 intent_result["refine_target"] = _fallback_tgt
                 intent_result["refine_instruction"] = message.strip()
@@ -879,13 +756,13 @@ async def chat(
                 _dispatch_intent = "edit"
                 intent_result["refine_target"] = _refine_tgt
                 intent_result["refine_instruction"] = intent_result.get("refine_instruction") or message
-                print(f"[chat] 🔄 redo_blocked+refine_target={_refine_tgt} → 降级为 edit，走 refine 路径", flush=True)
+                log_message(f"[chat] 🔄 redo_blocked+refine_target={_refine_tgt} → 降级为 edit，走 refine 路径", page='对话', business='对话交互', status='记录')
                 # fall through 到运行状态守卫检查后继续 dispatch
             else:
                 # node1 锁定守卫应该已拦截；这里兜底
-                _msg = _node1_locked_message() if _node1_locked_here else \
-                    "当前步骤已完成，如需重新开始请新建任务。"
-                print(f"[chat] 🛡️ redo_blocked → {_msg}", flush=True)
+                _msg = (_node1_locked_message() if _node1_locked_here and _refine_tgt == "node1"
+                        else "你想重新生成图片，还是调整方案或提示词？请说明要修改的内容。")
+                log_message(f"[chat] 🛡️ redo_blocked → {_msg}", page='对话', business='对话交互', status='记录')
                 chunk = _sse("message", {"text": _msg})
                 await _persist_sse_text(chunk, known_task_id=t_id)
                 yield chunk
@@ -905,9 +782,8 @@ async def chat(
         # （这是唯一保留的安全守卫——不是业务 block，是防止 graph 崩溃）
         # ------------------------------------------------------------------
         if has_task and t_id and _dispatch_intent != "start_task" and is_running(t_id):
-            print(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={_dispatch_intent}", flush=True)
+            log_message(f"[chat] 🛡️ task={t_id} 正在执行中，拒绝 intent={_dispatch_intent}", page='对话', business='对话交互', status='记录')
             chunk = _sse("message", {"text": "任务正在执行中，请等待当前操作完成后再试。"})
-            await _persist_sse_text(chunk, known_task_id=t_id)
             yield chunk
             yield _sse("done", {"phase": "done"})
             return
@@ -958,133 +834,19 @@ async def chat(
             if has_task and _dispatch_intent in _NEEDS_RUNTIME_CHECK:
                 from wellflow.app.graph_context import check_graph_runtime_state
                 _rt_state, _rt_age = check_graph_runtime_state(snapshot)
-                if _rt_state == "done":
-                    print(f"[chat] ✅ graph已END(done)，放行 intent={_dispatch_intent}", flush=True)
-                elif _rt_state == "running":
-                    print(f"[chat] 🛡️ graph 正在执行（checkpoint 年龄 {_rt_age:.0f}s），拦截 intent={_dispatch_intent}",
-                          flush=True)
-                    yield _sse("message", {
-                        "text": "任务正在执行中，暂不支持当前操作，请稍候再试。",
-                    })
-                    yield _sse("done", {"phase": "processing"})
+                if _rt_state == "done" and not (_dispatch_intent == "edit" and intent_result.get("refine_target") in ("node2", "node3", "node4")):
+                    yield _sse("message", {"text": "任务已入库，请创建新任务继续创作。"})
+                    yield _sse("done", {"phase": "done"})
                     return
-                elif _rt_state == "stale":
-                    print(f"[chat] ⚠️ graph checkpoint 过旧（{_rt_age:.0f}s），"
-                          f"可能已挂，尝试 astream(None) 恢复 intent={_dispatch_intent}",
-                          flush=True)
-                    _recovery_succeeded = False
-                    try:
-                        graph = _get_graph()
-                        if graph is None:
-                            raise RuntimeError("LangGraph 未初始化")
-                        config = _langgraph_config(t_id)
-                        async for _chunk in graph.astream(None, config, stream_mode="updates"):
-                            pass
-                        print(f"[chat] ✅ astream(None) 续跑完成", flush=True)
-                        _recovery_succeeded = True
-                    except Exception as _exc:
-                        print(f"[chat] ❌ astream(None) 恢复失败: {_exc}", flush=True)
+                if _rt_state == "none":
+                    yield _sse("error", {"phase": "needs_retry", "message": "任务 checkpoint 缺失，请重新创建任务"})
+                    return
+                if _rt_state in ("running", "stale"):
+                    q = await _start_graph(t_id, _get_graph(), _langgraph_config(t_id))
+                    async for ev in _stream_queue(q):
+                        yield ev
+                    return
 
-                    if _recovery_succeeded:
-                        # ------------------------------------------------------------------
-                        # ✅ stale 恢复成功：graph 已从 checkpoint 续跑到下一个 interrupt。
-                        #    此时绝对不能再走 dispatch invoke —— 那会把用户的"确认/选方案"
-                        #    决策给跳过，直接把 graph 推到下一个 node，等于替用户做了决定。
-                        #
-                        #    正确做法：从 checkpoint state 读出 nodeX 的完整产物（schemes / prompts /
-                        #    outputs），手动 yield 到 SSE 让前端在当前连接里直接看到卡片，
-                        #    然后 yield done + return。用户看完后正常走 /api/tasks/{id}/resume 流程。
-                        # ------------------------------------------------------------------
-                        print(
-                            f"[chat] ♻️ stale checkpoint 恢复成功 — "
-                            f"graph 已续跑到下一个 interrupt",
-                            flush=True,
-                        )
-                        # 从恢复后的 checkpoint 读 state
-                        _, _new_state = await _aget_snapshot(t_id)
-                        if not _new_state:
-                            yield _sse("message", {"text": "检测到任务执行中断，已自动恢复到最新进度。"})
-                            yield _sse("done", {"phase": "done"})
-                            return
-                        _node1 = _new_state.get("node1") or {}
-                        _node2 = _new_state.get("node2") or {}
-                        _node3 = _new_state.get("node3") or {}
-                        _node4 = _new_state.get("node4") or {}
-                        _ctx_after = resolve_current_node(
-                            snapshot=None,
-                            state=_new_state,
-                        )
-                        _current_after = _ctx_after.current_node  # "c1"/"c2"/"c3"/"c4"
-                        _phase_map = {"c1": "c1_confirm", "c2": "c2_select",
-                                      "c3": "c3_confirm", "c4": "c4_review"}
-                        _phase = _phase_map.get(_current_after, "done")
-
-                        # 合成 interrupt payload（复用 tasks.py 的模式）
-                        _hint_map = {"c1": "请查看商品分析报告", "c2": "请选择商拍方案",
-                                     "c3": "请确认生图提示词", "c4": "请查看生图结果"}
-                        _interrupt: dict[str, Any] = {"node": _current_after, "hint": _hint_map.get(_current_after, "")}
-                        if _current_after == "c1":
-                            _interrupt.update({
-                                "report_sections": _node1.get("report_sections"),
-                                "product_insight": _node1.get("product_insight"),
-                                "thinking_text": _node1.get("thinking_text"),
-                            })
-                        elif _current_after == "c2":
-                            _interrupt.update({
-                                "schemes": _node2.get("schemes"),
-                                "selected_scheme_indices": _node2.get("selected_scheme_indices"),
-                                "scheme_raw": _node2.get("scheme_raw"),
-                                "thinking_text": _node2.get("thinking_text"),
-                            })
-                        elif _current_after == "c3":
-                            _interrupt.update({
-                                "generate_prompts": _node3.get("generate_prompts"),
-                                "prompts_detail": _node3.get("prompts_detail"),
-                                "thinking_text": _node3.get("thinking_text"),
-                            })
-                        elif _current_after == "c4":
-                            _interrupt.update({
-                                "outputs": _node4.get("outputs"),
-                                "failed_items": _node4.get("failed_items"),
-                                "thinking_text": _node4.get("thinking_text"),
-                            })
-                        print(f"[chat] 📤 stale 恢复后 SSE payload node={_current_after}", flush=True)
-
-                        # 1) phase 事件告诉前端当前阶段
-                        yield _sse("phase", {"phase": _phase})
-                        # 2) 消息事件带完整 interrupt payload —— 前端 interpretEvent 能直接识别为 workflowStep 卡片
-                        _msg_payload: dict[str, Any] = {
-                            "text": (
-                                f"检测到任务执行中断，已自动恢复。请查看下方的{_hint_map.get(_current_after, '新内容')}，"
-                                f"确认后再继续。"
-                            ),
-                            "interrupt": _interrupt,
-                        }
-                        if _current_after == "c2" and _interrupt.get("schemes"):
-                            _msg_payload["schemes"] = _interrupt["schemes"]
-                        elif _current_after == "c3" and _interrupt.get("generate_prompts"):
-                            _msg_payload["generate_prompts"] = _interrupt["generate_prompts"]
-                            if _interrupt.get("prompts_detail"):
-                                _msg_payload["prompts_detail"] = _interrupt["prompts_detail"]
-                        elif _current_after == "c4" and _interrupt.get("outputs"):
-                            _msg_payload["outputs"] = _interrupt["outputs"]
-                        elif _current_after == "c1":
-                            _msg_payload["product_insight"] = _interrupt.get("product_insight")
-                        _chunk = _sse("message", _msg_payload)
-                        await _persist_sse_text(_chunk, known_task_id=t_id)
-                        yield _chunk
-                        # 3) done 告诉前端流结束
-                        yield _sse("done", {"phase": _phase})
-                        return
-                    else:
-                        yield _sse("message", {
-                            "text": "检测到任务执行中断，但自动恢复失败。请重开窗口启动新任务。",
-                        })
-                        yield _sse("done", {"phase": "failed"})
-                        return
-                # paused → 放行
-
-            # ------------------------------------------------------------------
             # dispatch：互斥分支
             # ------------------------------------------------------------------
             if _dispatch_intent == "start_task":
@@ -1098,7 +860,7 @@ async def chat(
                 # ------------------------------------------------------------------
                 # LLM 意图分类器返回 intent="edit" + refine_target=nodeX →
                 # 转成 backward_to_<target> 调用 _handle_backward 走 refine 分支。
-                # node1/2/3 是增量 refine；node4 是 redo（生图 API 无法增量编辑）。
+                # edit_mode=regenerate 走原始生成；refine 改已有文本；node4 始终 redo。
                 # ------------------------------------------------------------------
                 _target = intent_result.get("refine_target")
                 if not _target and current_node:
@@ -1106,7 +868,7 @@ async def chat(
                     _FALLBACK_NODE = {"c1": "node1", "c2": "node2",
                                       "c3": "node3", "c4": "node4"}
                     _target = _FALLBACK_NODE.get(current_node, "node2")
-                    print(f"[chat] ⚠️ LLM 未给 refine_target，兜底 → {_target}", flush=True)
+                    log_message(f"[chat] ⚠️ LLM 未给 refine_target，兜底 → {_target}", page='对话', business='对话交互', status='警告')
                 if not _target:
                     _target = "node2"
                 _bd_intent = f"backward_to_{_target}"
@@ -1115,17 +877,17 @@ async def chat(
                 # 🛑 拦截：本轮 refine 指令 == graph_state._refine_history[-1]（上一轮完全重复）
                 # 但必须同时满足"上一轮 refine 成功产出了有效数据"——如果上一轮 refine
                 # 因为 bug/异常没成功（产物为空或被清掉），就不能 block，必须允许重新执行
-                if _instruction and _instruction.strip() and isinstance(graph_state, dict):
+                if intent_result.get("edit_mode") != "regenerate" and _instruction and _instruction.strip() and isinstance(graph_state, dict):
                     from wellflow.app.workflows.state import get_node_refine_history
                     # 🔴 重复检测按 node 隔离 —— 只看 _target（即将 refine 的那个 node）自己的历史
                     _history = get_node_refine_history(graph_state, _target)
-                    print(f"[chat] 🔍 重复检测(target={_target}): instruction={_instruction[:60]} | per-node_history={_history}", flush=True)
-                    if _history and normalize_instruction(_instruction) == normalize_instruction(_history[-1]):
+                    log_message(f"[chat] 🔍 重复检测(target={_target}): instruction={_instruction[:60]} | per-node_history={_history}", page='对话', business='对话交互', status='记录')
+                    if _target != "node4" and _history and normalize_instruction(_instruction) == normalize_instruction(_history[-1]):
                         if not _is_last_refine_succeeded(graph_state, _target):
                             # 指令重复，但上一轮 refine 没成功（产物为空）→ 放行让它重新跑
-                            print(f"[chat] 🔄 指令重复但上一轮 refine 未成功（target={_target} 产物为空），放行", flush=True)
+                            log_message(f"[chat] 🔄 指令重复但上一轮 refine 未成功（target={_target} 产物为空），放行", page='对话', business='对话交互', status='记录')
                         else:
-                            print(f"[chat] 🛑 refine 指令与上一轮完全重复 → 拦截, instruction={_instruction}", flush=True)
+                            log_message(f"[chat] 🛑 refine 指令与上一轮完全重复 → 拦截, instruction={_instruction}", page='对话', business='对话交互', status='记录')
                             _target_cn = {"node1": "报告", "node2": "方案", "node3": "提示词", "node4": "生图"}.get(_target, "产物")
                             _phase_cn = {"node1": "c1_confirm", "node2": "c2_select",
                                          "node3": "c3_confirm", "node4": "c4_review"}.get(_target, "done")
@@ -1139,41 +901,49 @@ async def chat(
                             yield _sse("done", {"phase": _phase_cn})
                             return
                     elif not _history:
-                        print(f"[chat] → 未命中拦截：_refine_history 为空（上一轮 refine 未写入 history 或已被消费清空）", flush=True)
+                        log_message(f"[chat] → 未命中拦截：_refine_history 为空（上一轮 refine 未写入 history 或已被消费清空）", page='对话', business='对话交互', status='记录')
                     else:
-                        print(f"[chat] → 未命中拦截：normalize 不相等 "
-                              f"('{normalize_instruction(_instruction)}' vs '{normalize_instruction(_history[-1])}')", flush=True)
+                        log_message(f"[chat] → 未命中拦截：normalize 不相等 "
+                              f"('{normalize_instruction(_instruction)}' vs '{normalize_instruction(_history[-1])}')", page='对话', business='对话交互', status='记录')
 
-                print(f"[chat] edit → backward_to_{_target}, instruction={_instruction}",
-                      flush=True)
+                log_message(f"[chat] edit mode={intent_result.get('edit_mode', 'refine')} → backward_to_{_target}, instruction={_instruction}", page='对话', business='对话交互', status='记录')
 
-                # LLM 意图分类器返回的 selected_indices（仅 node2 refine 有意义）
-                # edit+refine_target=node2 时，LLM 会填它决定"哪几套方案要喂给 refine LLM"
-                # 其他场景一律为 None → _handle_backward 会忽略
-                _sel_indices = intent_result.get("selected_indices") if _target == "node2" else None
+                # LLM 意图分类器返回的 selected_indices：
+                #   node2 refine → 决定"哪几套方案要喂给 refine LLM"
+                #   node3 refine → 决定"哪几条 prompt 是目标"（例："给第一个提示词加人物居中" → ["0"]）
+                # node4 redo 使用所选提示词；node1 无结构索引，忽略。
+                if _target in ("node2", "node3", "node4"):
+                    _sel_indices = intent_result.get("selected_indices")
+                else:
+                    _sel_indices = None
 
                 async for ev in _pipe(_handle_backward(
                     _bd_intent, t_id or '', graph,
                     product_images=product_images,
                     refine_instruction=_instruction,
                     refine_selected_indices=_sel_indices,
+                    refine_scheme_count=intent_result.get("scheme_output_count"),
+                    refine_scheme_source=intent_result.get("scheme_source"),
+                    edit_mode=intent_result.get("edit_mode", "refine"),
+                    image_model=image_model,
                 )):
                     yield ev
 
             else:
                 async for ev in _pipe(_handle_resume(
                     _dispatch_intent, t_id or '', current_node, intent_result,
-                    message, model_images, product_images,
+                    message, ref_images, product_images,
                     existing_report, existing_schemes,
-                    existing_model_images, graph,
+                    existing_ref_images, graph,
                     selected_scheme_indices=selected_scheme_indices,
+                    scheme_prompt_counts=scheme_prompt_counts,
+                    reference_images_json=reference_images,
                     graph_state=graph_state,
+                    image_model=image_model,
                 )):
                     yield ev
         except Exception as exc:
-            import traceback as _tb2
-            print(f"[chat] ❌ dispatch error intent={_dispatch_intent}: {exc}", flush=True)
-            _tb2.print_exc()
+            log_message(f"[chat] ❌ dispatch error intent={_dispatch_intent}: {exc}", page='对话', business='对话交互', status='失败', exc_info=True)
             yield _sse("error", {"phase": "failed", "message": str(exc)})
             yield _sse("done", {"phase": "failed"})
 
@@ -1197,8 +967,18 @@ async def _handle_start_task(
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
-    if not product_images:
-        yield _sse("message", {"text": "请上传至少 1 张商品图片再开始。"})
+    sku_paths: list[str] = []
+    if not product_images and conversation_id:
+        from wellflow.app.models.asset_models import ProductImage
+        from sqlalchemy import select
+        with session_scope() as db:
+            conv = ConversationRepo(db).get(conversation_id)
+            if conv and conv.sku_id:
+                sku_paths = list(db.scalars(select(ProductImage.storage_uri).where(
+                    ProductImage.sku_id == conv.sku_id, ProductImage.image_type == "product",
+                ).order_by(ProductImage.sort_order, ProductImage.id)))
+    if not product_images and not sku_paths:
+        yield _sse("message", {"text": "该商品还没有商品图，请上传至少 1 张商品图片再开始。"})
         yield _sse("done", {"phase": "done"})
         return
 
@@ -1206,8 +986,8 @@ async def _handle_start_task(
     q = await drain_and_subscribe(task_id)
 
     raw_files = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
-    product_image_paths = save_upload(task_id, raw_files, prefix="p")
-    image_names = [f.filename for f in product_images]
+    product_image_paths = save_upload(task_id, raw_files, prefix="p") if raw_files else sku_paths
+    image_names = [f.filename for f in product_images] if raw_files else [p.rsplit("/", 1)[-1] for p in sku_paths]
 
     # 生成简短 description 供前端历史列表展示
     _desc = message.strip()[:30]
@@ -1221,8 +1001,8 @@ async def _handle_start_task(
         "marketing_goal": marketing_goal,
         "product_link": None,
         "image_model": None,
-        "image_count": len(product_images),
-        "has_images": len(product_images) > 0,
+        "image_count": len(product_image_paths),
+        "has_images": bool(product_image_paths),
         "has_text": bool(message),
         "product_image_names": image_names,
         "product_images": product_image_paths,
@@ -1254,7 +1034,7 @@ async def _handle_start_task(
         "interrupt": None, "error": None, "event_ids": [],
     }
 
-    asyncio.create_task(_start_graph(task_id, graph, config, initial_state=initial_state))
+    await _start_graph(task_id, graph, config, initial_state=initial_state)
 
     yield _sse("task_created", {
         "task_id": task_id, "phase": "input", "estimated_cost_range": [2.0, 10.0],
@@ -1262,7 +1042,7 @@ async def _handle_start_task(
     })
     yield _sse("phase", {"phase": "input"})
 
-    async for ev in _stream_queue(task_id, q):
+    async for ev in _stream_queue(q):
         yield ev
 
 
@@ -1274,6 +1054,10 @@ async def _handle_backward(
     product_images: list[UploadFile] | None = None,
     refine_instruction: str | None = None,
     refine_selected_indices: list[int] | str | None = None,
+    refine_scheme_count: int | None = None,
+    refine_scheme_source: str | None = None,
+    edit_mode: str = "refine",
+    image_model: str | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
@@ -1297,33 +1081,43 @@ async def _handle_backward(
         yield _sse("done", {"phase": "done"})
         return
     resume_node, redo_target, step_num = _INTENT_MAP[intent]
-    # node1/2/3 → refine；node4 → redo
-    _IS_REFINE = redo_target in ("node1", "node2", "node3")
+    # 操作模式与目标节点独立，不能仅凭 node 编号决定微调。
+    _IS_REFINE = edit_mode != "regenerate" and redo_target in ("node1", "node2", "node3")
 
-    # ------------------------------------------------------------------
-    # Command 组装前置注释：
-    #   phase == done → edit 意图（node4 redo 或 node1-3 refine）统一允许从 END 续跑
-    #   LangGraph 的 Command(goto=X) 在 END checkpoint 上会从目标节点继续跑，
-    #   state 保留 checkpoint 里已有的 node1/2/3/4 产物。
-    # ------------------------------------------------------------------
-    def _get_state() -> tuple[str | None, str | None]:
-        try:
-            with session_scope() as db:
-                t = TaskRepo(db).get(task_id)
-                if not t:
-                    return None, None
-                node = (t.interrupt_json or {}).get("node") if t.interrupt_json else None
-                return t.phase, node
-        except Exception:
-            return None, None
-
-    current_phase, interrupt_node = await asyncio.to_thread(_get_state)
+    from wellflow.app.workflow_status import checkpoint_view
+    current_snapshot, _ = await _aget_snapshot(task_id)
+    current_phase, current_interrupt = checkpoint_view(current_snapshot)
+    if current_phase == "done" and redo_target == "node4":
+        if product_images:
+            raise HTTPException(409, "重新生图不能更换已分析的商品图，请新建任务更换商品")
+        q = await _start_graph(task_id, graph, _langgraph_config(task_id), restart_images=True, restart_image_model=image_model, restart_prompt_indices=refine_selected_indices)
+        yield _sse("resume_ack", {"task_id": task_id, "node": "c4",
+                                  "message": "好的，保留原方案和提示词，重新生成一批图片。"})
+        async for ev in _stream_queue(q):
+            yield ev
+        return
+    if current_phase == "done" and redo_target in ("node2", "node3"):
+        if product_images:
+            raise HTTPException(409, "不能更换已分析的商品图，请新建任务更换商品")
+        q = await _start_graph(task_id, graph, _langgraph_config(task_id), restart_edit={
+            "target": redo_target, "mode": "refine" if _IS_REFINE else "regenerate",
+            "instruction": (refine_instruction or "").strip(),
+            "selected_indices": refine_selected_indices,
+            "scheme_count": refine_scheme_count, "scheme_source": refine_scheme_source,
+        })
+        yield _sse("resume_ack", {"task_id": task_id, "node": resume_node,
+                                  "message": f"好的，已回到第 {step_num} 步，已入库图片保持不变。"})
+        async for ev in _stream_queue(q):
+            yield ev
+        return
+    if not current_interrupt:
+        raise HTTPException(409, "当前没有可修改的暂停点，请刷新任务")
+    interrupt_node = current_interrupt["node"]
 
     # refine_instruction：优先用传入的显式参数，否则用用户原始 chat 消息做兜底
     _instruction = (refine_instruction or "").strip()
     if _IS_REFINE and not _instruction:
-        print(f"[backward] ⚠️ refine 目标 {redo_target} 无指令，降级为通用 '重新生成' 指令", flush=True)
-        _instruction = "请基于现有内容重新生成一份，保持整体风格不变。"
+        raise HTTPException(400, "请提供具体修改要求，或明确选择重新生成")
 
     # 注意：node1 锁定守卫已在 chat.py 顶部统一处理（API 层），
     # _handle_backward 里不再重复拦截——如果 intent 已走到这里，说明 API 层已放行。
@@ -1341,118 +1135,48 @@ async def _handle_backward(
                           "image_count": len(product_images),
                           "has_images": True}
         cmd_update["request"] = merged_request
-        print(f"[backward] 🔄 商品图已更新: {len(new_paths)} 张, intent={intent}", flush=True)
+        log_message(f"[backward] 🔄 商品图已更新: {len(new_paths)} 张, intent={intent}", page='对话', business='对话交互', status='记录')
 
-    q = await drain_and_subscribe(task_id)
     config = _langgraph_config(task_id)
 
-    # ------------------------------------------------------------------
-    # Command 组装：两种路径
-    #   A) graph 停在 cX interrupt → Command(resume=...) 让 _cX_decision 做清理 + 路由
-    #      （原有逻辑）
-    #   B) graph 已 END（phase=done 或无 interrupt）→ Command(goto=目标执行节点) +
-    #      API 层手动做 state 清理（复用 _c4_review_result 里的分层清理规则）
-    #      LangGraph 在 END checkpoint 上 goto 会从目标节点继续跑，state 保留 checkpoint 里的内容。
-    # ------------------------------------------------------------------
-    _EXEC_NODE_OF_TARGET = {
-        "node1": "node1_product_analyzer",
-        "node2": "node2_planning_scheme",
-        "node3": "node3_prompt_generation",
-        "node4": "node4_generate_image",
-    }
-
-    if current_phase == "done":
-        # ── 路径 B：graph 已 END ──
-        # node1/2/3 refine → Command(goto=目标 refine 节点) + 写 _refine_target/_refine_instruction
-        # node4 redo → 保持原有清理逻辑 + goto node4_generate_image
-        _, latest_state = await _aget_snapshot(task_id)
-        latest_state = latest_state or {}
-
-        from wellflow.app.workflows.state import cleared
-        node1 = latest_state.get("node1", {}) or {}
-        node2 = latest_state.get("node2", {}) or {}
-        node3 = latest_state.get("node3", {}) or {}
-        node4 = latest_state.get("node4", {}) or {}
-
-        if _IS_REFINE:
-            # refine 目标 → 不做 state 清理（refine 是原地增量编辑，保留所有上下游产物）
-            refine_node_map = {
-                "node1": "node1_refine_report",
-                "node2": "node2_refine_schemes",
-                "node3": "node3_refine_prompts",
-            }
-            exec_node = refine_node_map.get(redo_target)
-            if not exec_node:
-                yield _sse("message", {"text": f"不支持的 refine 目标: {redo_target}"})
-                yield _sse("done", {"phase": "done"})
-                return
-            from wellflow.app.workflows.state import build_refine_history_update
-            _prev_history = latest_state.get("_refine_history")
-            refine_update = {
-                "_refine_target": redo_target,
-                "_refine_instruction": _instruction,
-                "_refine_selected_indices": refine_selected_indices,  # None for non-node2 refine → refine_node2_schemes 会兜底传全部
-                # 🔴 历史按 node 隔离写入（只写入 redo_target 对应的 list，其他 node 的历史通过全局 dict merge 保留）
-                "_refine_history": build_refine_history_update(_prev_history, redo_target, _instruction or ""),
-                "_redo_target": None,
-            }
-            update_dict = {**refine_update, **cmd_update} if cmd_update else refine_update
-            cmd = Command(goto=exec_node, update=update_dict)
-            print(f"[backward] 🎯 graph已END → refine→{redo_target} goto={exec_node}, instruction={_instruction}", flush=True)
-        else:
-            # redo node4：完全重置 work_items + 清 outputs（保持原有逻辑）
-            redo_target_cleanup: dict[str, dict[str, Any]] = {}
-            new_node4 = dict(node4)
-            items = new_node4.get("work_items", []) or []
-            for it in items:
-                if isinstance(it, dict):
-                    it["status"] = "pending"
-            new_node4["outputs"] = []
-            new_node4["failed_items"] = []
-            redo_target_cleanup = {"node4": new_node4, "phase": "c4_review"}
-            update_dict = {**redo_target_cleanup, **cmd_update} if cmd_update else redo_target_cleanup
-            exec_node = _EXEC_NODE_OF_TARGET.get(redo_target, redo_target)
-            cmd = Command(goto=exec_node, update=update_dict)
-            print(f"[backward] 🎯 graph已END → redo node4 goto={exec_node}", flush=True)
+    # Resume the actual pause; target identifies what to edit, not where the graph is.
+    if _IS_REFINE:
+        # refine：让 _cX_confirm / _c4_review 的 refine 分支消费
+        resume_values = {
+            "node": interrupt_node,
+            "revision": current_interrupt.get("revision"),
+            "decision": "refine",
+            "refine_target": redo_target,
+            "refine_instruction": _instruction,
+            "refine_selected_indices": refine_selected_indices,
+            "refine_scheme_count": refine_scheme_count,
+            "refine_scheme_source": refine_scheme_source,
+        }
     else:
-        # ── 路径 A：graph 停在 cX interrupt → Command(resume=...) ──
-        if _IS_REFINE:
-            # refine：让 _cX_confirm / _c4_review 的 refine 分支消费
-            resume_values = {
-                "node": resume_node,
-                "decision": "refine",
-                "refine_target": redo_target,
-                "refine_instruction": _instruction,
-                "refine_selected_indices": refine_selected_indices,  # None for non-node2 refine → 下游忽略
-            }
-        else:
-            # redo node4
-            resume_values = {
-                "node": resume_node,
-                "decision": "redo",
-                "redo_target": redo_target,
-            }
-        cmd = Command(resume=resume_values, **({"update": cmd_update} if cmd_update else {}))
-        print(f"[backward] 🎯 Command(resume={resume_values}) task={task_id} update_keys={list(cmd_update.keys())}", flush=True)
+        # 完整重做目标节点
+        resume_values = {
+            "node": interrupt_node,
+            "revision": current_interrupt.get("revision"),
+            "decision": "redo",
+            "redo_target": redo_target,
+            "redo_instruction": _instruction,
+        }
+    if redo_target == "node4":
+        resume_values["selected_prompt_indices"] = refine_selected_indices
+    if redo_target == "node4" and image_model is not None:
+        resume_values["image_model"] = image_model
+    cmd = Command(resume=resume_values, **({"update": cmd_update} if cmd_update else {}))
+    log_message(f"[backward] 🎯 Command(resume={resume_values}) task={task_id} update_keys={list(cmd_update.keys())}", page='对话', business='对话交互', status='记录')
 
-    def _clear_interrupt():
-        try:
-            with session_scope() as db:
-                repo = TaskRepo(db)
-                repo.save_interrupt(task_id, None)
-        except Exception:
-            pass
-    await asyncio.to_thread(_clear_interrupt)
 
-    asyncio.create_task(_start_graph(task_id, graph, config, command=cmd))
-    _sync_db_after_jump(task_id, resume_node, [redo_target])
+    q = await _start_graph(task_id, graph, config, command=cmd)
 
     yield _sse("resume_ack", {
         "task_id": task_id, "node": resume_node,
         "message": f"好的，已回到第 {step_num} 步。",
     })
 
-    async for ev in _stream_queue(task_id, q):
+    async for ev in _stream_queue(q):
         yield ev
 
 
@@ -1462,15 +1186,18 @@ async def _handle_resume(
     current_node: str | None,
     intent_result: dict[str, Any],
     message: str,
-    model_images: list[UploadFile],
+    ref_images: dict[str, list[UploadFile]],
     product_images: list[UploadFile] | None,
     existing_report: str,
     existing_schemes: list,
-    existing_model_images: list[str],
+    existing_ref_images: dict[str, list[str]],
     graph,
     *,
     selected_scheme_indices: str | None = None,
+    scheme_prompt_counts: str | None = None,
+    reference_images_json: str | None = None,
     graph_state: dict[str, Any] | None = None,
+    image_model: str | None = None,
 ) -> AsyncGenerator[str, None]:
     from wellflow.app.utils.image_store import save_upload
 
@@ -1479,22 +1206,23 @@ async def _handle_resume(
         yield _sse("done", {"phase": "done"})
         return
 
-    # 注意：validate_current_node_products 硬性守卫已按要求移除
-    # （用户要求除 node1 锁定 redo block 外，其他 block 全部移除）
+    from wellflow.app.workflow_status import revision
+    expected_revision = revision(graph_state or {}, current_node)
 
-    q = await drain_and_subscribe(task_id)
-
-    model_image_paths: list[str] = []
-    if model_images:
-        raw = [(f.filename or "model", await f.read(), f.content_type) for f in model_images]
-        model_image_paths = save_upload(task_id, raw, prefix="m")
+    # —— 三类参考图落盘 ——
+    ref_paths: dict[str, list[str]] = {"mannequin": [], "scene": [], "outfit": []}
+    for k in ("mannequin", "scene", "outfit"):
+        files = ref_images.get(k) or []
+        if files:
+            raw = [(f.filename or k, await f.read(), f.content_type) for f in files]
+            ref_paths[k] = save_upload(task_id, raw, prefix=k[0])
 
     # 处理 product_images（仅在关键词覆盖时出现，比如 redo→node1 换商品图）
     product_image_paths: list[str] = []
     if product_images:
         raw = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
         product_image_paths = save_upload(task_id, raw, prefix="p")
-        print(f"[resume] 🔄 商品图已更新: {len(product_image_paths)} 张", flush=True)
+        log_message(f"[resume] 🔄 商品图已更新: {len(product_image_paths)} 张", page='对话', business='对话交互', status='记录')
 
     node = current_node
     resume_values: dict[str, Any] = {"node": node}
@@ -1515,13 +1243,14 @@ async def _handle_resume(
             resume_values["decision"] = "refine"
             resume_values["refine_target"] = "node1"
             resume_values["refine_instruction"] = message
-            print(f"[chat] c1 edit_and_confirm_c1 → refine 路径, instruction={message}", flush=True)
+            log_message(f"[chat] c1 edit_and_confirm_c1 → refine 路径, instruction={message}", page='对话', business='对话交互', status='记录')
         else:
             resume_values["confirmed_report"] = existing_report
             # 🔴 版本绑定：把当前报告的 hash 原样带回，_c1_confirm_report 会校验
             resume_values["report_hash"] = _current_report_hash
-        if model_image_paths:
-            resume_values["model_images"] = model_image_paths
+        # C1 允许传 mannequin 图（前端自动补）
+        if ref_paths.get("mannequin"):
+            resume_values["reference_images"] = {"mannequin": ref_paths["mannequin"], "scene": [], "outfit": []}
         resume_values.setdefault("ratio", "9:16竖版")
         resume_values.setdefault("count", 3)
 
@@ -1531,21 +1260,25 @@ async def _handle_resume(
             resume_values["decision"] = "refine"
             resume_values["refine_target"] = "node2"
             resume_values["refine_instruction"] = message
-            print(f"[chat] c2 edit_and_confirm_c2 → refine 路径, instruction={message}", flush=True)
+            resume_values["refine_selected_indices"] = intent_result.get("selected_indices")
+            resume_values["refine_scheme_count"] = intent_result.get("scheme_output_count")
+            resume_values["refine_scheme_source"] = intent_result.get("scheme_source")
+            log_message(f"[chat] c2 edit_and_confirm_c2 → refine 路径, instruction={message}", page='对话', business='对话交互', status='记录')
         else:
             # confirm_current / confirm_generation / chat_outside 等非编辑类意图
             #
             # 选中项优先级：
-            #   1) 前端 checkbox 显式传的 selected_scheme_indices（resume 表单）
-            #   2) 意图分类器从消息文本解析的 intent_result.selected_indices（"选第1套"/"全选"）
+            #   1) 用户消息中明确指定的方案编号
+            #   2) 前端 selected_scheme_indices
+            #   3) 意图分类器的 selected_indices
             #
-            # 🔴 C2 阶段**严禁兜底全选**：3 套方案是风格迥异、场景互补、互斥的，
-            #    用户必须显式选 1 套才能进入 Node3。没收到任何选值 → 拦截，
-            #    提示用户先在方案卡片里选 1 套。
-            #    正常 C2 确认流程走 /api/tasks/{id}/resume（带 selected_scheme_indices），
-            #    confirm_current 走到这里只会是 stale 恢复 + 用户手动发消息的异常场景。
-            indices: list[int] = []
-            if selected_scheme_indices:
+            # 多套方案必须明确选中一套；微调/融合后仅剩一套时，
+            # "继续" 可以直接确认唯一的最终方案。
+            #    卡片确认走 /api/tasks/{id}/resume，输入框确认走这里。
+            from wellflow.app.workflows.scheme_selection import explicit_scheme_indices
+            explicit = explicit_scheme_indices(message)
+            indices: list[int] = explicit if explicit is not None else []
+            if explicit is None and selected_scheme_indices:
                 for part in selected_scheme_indices.split(","):
                     part = part.strip()
                     if part.isdigit():
@@ -1562,20 +1295,46 @@ async def _handle_resume(
                                 indices.append(idx)
                         except (ValueError, TypeError):
                             pass
-            if not indices:
-                print(
-                    f"[chat] 🛑 c2 阶段 confirm_current 未收到任何方案选中 → 拦截, "
-                    f"existing_schemes={len(existing_schemes)}",
-                    flush=True,
-                )
+            if not indices and len(existing_schemes) == 1:
+                indices = [0]
+            if len(indices) != 1 or not 0 <= indices[0] < len(existing_schemes):
+                log_message(f"[chat] 🛑 c2 阶段必须明确选中一套方案 → 拦截, "
+                    f"existing_schemes={len(existing_schemes)}", page='对话', business='对话交互', status='记录')
                 yield _sse("message", {
                     "text": "请先查看商拍方案卡片，选 1 套您满意的方案后再点击确认。每套方案风格不同，最终只保留 1 套进入提示词生成。",
                 })
                 yield _sse("done", {"phase": "c2_select"})
                 return
             resume_values["selected_scheme_indices"] = indices
-        if model_image_paths:
-            resume_values["model_images"] = model_image_paths
+            try:
+                all_counts = json_mod.loads(scheme_prompt_counts or "[]")
+                counts = [all_counts[idx] for idx in indices]
+                if any(type(count) is not int or count < 1 for count in counts):
+                    raise ValueError("无效数量")
+            except (ValueError, TypeError, IndexError):
+                yield _sse("message", {"text": "未收到所选方案的提示词数量，请在方案卡片中确认。"})
+                yield _sse("done", {"phase": "c2_select"})
+                return
+            resume_values["per_scheme_count"] = counts
+            log_message(f"[chat] c2 输入框确认 selected={indices} per_scheme_count={counts}", page='对话', business='对话交互', status='记录')
+        # C2 阶段三类参考图全注入
+        supplied_refs: dict[str, Any] = {}
+        if reference_images_json:
+            try:
+                parsed_refs = json_mod.loads(reference_images_json)
+                if isinstance(parsed_refs, dict):
+                    supplied_refs = parsed_refs
+            except (ValueError, TypeError):
+                pass
+        references_for_resume: dict[str, list[str]] = {}
+        for kind in ("mannequin", "scene", "outfit"):
+            submitted = supplied_refs.get(kind)
+            saved = existing_ref_images.get(kind)
+            values = submitted if isinstance(submitted, list) else saved
+            references_for_resume[kind] = [
+                uri for uri in (values or []) if isinstance(uri, str) and uri
+            ] + list(ref_paths.get(kind) or [])
+        resume_values["reference_images"] = references_for_resume
 
     elif node == "c3":
         # ── edit_and_confirm_c3：用户想微调/修改提示词 → 走 refine 路径 ──
@@ -1583,7 +1342,7 @@ async def _handle_resume(
             resume_values["decision"] = "refine"
             resume_values["refine_target"] = "node3"  # c3 下默认改 node3 提示词，也可改 node2 方案
             resume_values["refine_instruction"] = message
-            print(f"[chat] c3 edit_and_confirm_c3 → refine 路径, instruction={message}", flush=True)
+            log_message(f"[chat] c3 edit_and_confirm_c3 → refine 路径, instruction={message}", page='对话', business='对话交互', status='记录')
         else:
             # C3 下的 confirm_current / select_topics 等非编辑意图：
             # 解析 intent_result.selected_indices → 映射成 selected_prompt_indices 传给 LangGraph。
@@ -1597,7 +1356,7 @@ async def _handle_resume(
             if _c3_prompt_total and selected is not None:
                 if selected == "all":
                     resume_values["selected_prompt_indices"] = list(range(_c3_prompt_total))
-                    print(f"[chat] c3 selected_indices='all' → 全部 {_c3_prompt_total} 条", flush=True)
+                    log_message(f"[chat] c3 selected_indices='all' → 全部 {_c3_prompt_total} 条", page='对话', business='对话交互', status='记录')
                 elif isinstance(selected, list):
                     indices: list[int] = []
                     for x in selected:
@@ -1609,12 +1368,16 @@ async def _handle_resume(
                             pass
                     if indices:
                         resume_values["selected_prompt_indices"] = sorted(set(indices))
-                        print(f"[chat] c3 selected_indices={selected} → selected_prompt_indices={indices}", flush=True)
+                        log_message(f"[chat] c3 selected_indices={selected} → selected_prompt_indices={indices}", page='对话', business='对话交互', status='记录')
 
             # 若意图分类器把 c3 纯选择判成了 select_topics（新增意图），
             # selected_prompt_indices 已在上面填好；confirm_current 则默认全选。
-            if model_image_paths:
-                resume_values["model_images"] = model_image_paths
+            if any(ref_paths.values()):
+                resume_values["reference_images"] = {
+                    "mannequin": ref_paths.get("mannequin") or [],
+                    "scene": ref_paths.get("scene") or [],
+                    "outfit": ref_paths.get("outfit") or [],
+                }
 
             # 给用户一条可读的选择确认 —— 前端会直接展示这条 message 事件
             _spi = resume_values.get("selected_prompt_indices")
@@ -1633,6 +1396,12 @@ async def _handle_resume(
                 yield _chunk
 
     elif node == "c4":
+        if intent != "redo_generation":
+            yield _sse("message", {"text": "请在图片结果中勾选需要的图片，点击入库保存到关联 SKU。"})
+            from wellflow.app.services.sku_archive import with_image_keys
+            payload = with_image_keys((graph_state or {}).get("node4") or {})
+            yield _sse("interrupt", {**payload, "node": "c4", "phase": "c4_review", "hint": "请选择图片后入库"})
+            return
         # C4 独占 confirm_generation / redo_generation 两个意图。
         # 统一走 decision + redo_target（graph 的 _c4_review_result 读这两个字段）。
         if intent == "redo_generation":
@@ -1642,16 +1411,17 @@ async def _handle_resume(
             # confirm_generation（c4 下所有非 redo 的意图都当作确认）
             resume_values["decision"] = "confirm"
 
-    print(f"[chat] resume_values node={node}: {list(resume_values.keys())}", flush=True)
+    if image_model is not None and (node == "c3" or (node == "c4" and intent == "redo_generation")):
+        resume_values["image_model"] = image_model
 
-    def _clear_interrupt():
-        try:
+    log_message(f"[chat] resume_values node={node}: {list(resume_values.keys())}", page='对话', business='对话交互', status='记录')
+
+    if node in ("c1", "c2", "c3") and resume_values.get("reference_images"):
+        def _save_references():
             with session_scope() as db:
-                repo = TaskRepo(db)
-                repo.save_interrupt(task_id, None)
-        except Exception:
-            pass
-    await asyncio.to_thread(_clear_interrupt)
+                TaskRepo(db).save_reference_images(task_id, resume_values["reference_images"])
+        await asyncio.to_thread(_save_references)
+
 
     config = _langgraph_config(task_id)
 
@@ -1684,13 +1454,22 @@ async def _handle_resume(
         }
         cmd_kwargs["update"] = {"request": merged_request}
 
+    from wellflow.app.workflow_status import checkpoint_view
+    current_snapshot, _ = await _aget_snapshot(task_id)
+    _, current_interrupt = checkpoint_view(current_snapshot)
+    if not current_interrupt or current_interrupt["node"] != node:
+        raise HTTPException(409, "暂停节点已变化，请刷新任务")
+    if current_interrupt.get("revision") != expected_revision:
+        raise HTTPException(409, "内容已更新，请刷新后重新确认")
+    resume_values["revision"] = expected_revision
+
     cmd = Command(**cmd_kwargs)
 
-    asyncio.create_task(_start_graph(task_id, graph, config, command=cmd))
+    q = await _start_graph(task_id, graph, config, command=cmd)
 
     yield _sse("resume_ack", {
         "task_id": task_id, "node": node, "message": "好的，正在继续执行…",
     })
 
-    async for ev in _stream_queue(task_id, q):
+    async for ev in _stream_queue(q):
         yield ev
