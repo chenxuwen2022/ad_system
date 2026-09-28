@@ -129,7 +129,7 @@ function loadProducts(){
     }).catch(()=>{PRODUCTS_CACHE=[];return [];});
 }
 
-fetch('/api/plans?advertiser_id='+encodeURIComponent(aid))
+fetch('/api/plans?advertiser_id='+encodeURIComponent(aid)+'&refresh=true')
   .then(r=>r.json())
   .then(d=>{
     const box=document.getElementById('planList');
@@ -181,9 +181,12 @@ function togglePlan(el){
 }
 function updProd(cb){
   const panel=cb.closest('.panel');
-  const box=panel.closest('.product-sel').querySelector('.ph');
+  const productSel=panel.closest('.product-sel');
+  const box=productSel.querySelector('.ph');
   const n=panel.querySelectorAll('input:checked').length;
   box.textContent=n>0?cb.parentElement.textContent.trim():'请选择商品 SKU';
+  // 选择后收起下拉框
+  productSel.classList.remove('open');
 }
 function nextStep(){
   const n=document.querySelectorAll('.plan.sel').length;

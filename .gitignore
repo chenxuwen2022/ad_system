@@ -74,3 +74,6 @@ data/cache/
 **/data/cache/
 
 .git_broken_bak/
+
+# ===== 本地工具记忆文件 =====
+.workbuddy/

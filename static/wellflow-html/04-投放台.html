@@ -43,7 +43,8 @@ h1{font-size:28px;font-weight:700;letter-spacing:-.5px}
 .tbtn.primary{background:var(--green);color:#000;font-weight:600;border-color:var(--green)}
 .stats{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;margin-bottom:14px}
 @media(max-width:1200px){.stats{grid-template-columns:repeat(4,1fr)}}
-.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;cursor:pointer;transition:all 0.2s ease}
+.stat:hover{background:var(--card-hover);border-color:var(--line-2)}
 .stat .lb{font-size:13px;color:var(--text-2)}
 .stat .nv{font-size:30px;font-weight:700;margin:6px 0 4px}
 .stat .hint{font-size:11.5px;color:var(--text-4)}
@@ -76,6 +77,11 @@ h1{font-size:28px;font-weight:700;letter-spacing:-.5px}
 .batch .link{color:var(--green);cursor:pointer}
 .view-toggle{margin-left:auto;display:flex;gap:6px}
 .grid{display:grid;grid-template-columns:repeat(6,1fr);gap:14px}
+.list-view{display:flex;flex-direction:column;gap:10px}
+.list-view .m{display:flex;align-items:center;padding:10px;gap:14px}
+.list-view .m .cover{width:80px;height:100px;flex-shrink:0}
+.list-view .m .info{flex:1}
+.list-view .m .data{display:flex;gap:16px;padding:0;background:none}
 @media(max-width:1400px){.grid{grid-template-columns:repeat(4,1fr)}}
 @media(max-width:1000px){.grid{grid-template-columns:repeat(3,1fr)}}
 .m{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;cursor:pointer}
@@ -134,6 +140,7 @@ h1{font-size:28px;font-weight:700;letter-spacing:-.5px}
       <button class="tab" onclick="location.href='04b-BI数据看板.html'">BI 数据看板</button>
     </div>
     <div class="tools">
+      <button class="tbtn" onclick="syncMaterialStatus()">🔄 同步状态</button>
       <button class="tbtn" onclick="openSetting('09-店铺设置.html')">店铺设置</button>
       <button class="tbtn" onclick="openSetting('10-素材筛选配置.html')">素材筛选配置</button>
       <button class="tbtn" onclick="openSetting('11-投放任务.html')">投放任务</button>
@@ -142,89 +149,89 @@ h1{font-size:28px;font-weight:700;letter-spacing:-.5px}
   </div>
 
   <div class="stats">
-    <div class="stat accent"><div class="lb">全部素材</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
-    <div class="stat"><div class="lb">审核中</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
-    <div class="stat"><div class="lb">待投放</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
-    <div class="stat"><div class="lb">已投放</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
-    <div class="stat"><div class="lb">已暂停</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
-    <div class="stat"><div class="lb">已结束</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
-    <div class="stat"><div class="lb">未提交</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat accent" onclick="filterByStatCard('全部', this)"><div class="lb">全部素材</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat" onclick="filterByStatCard('审核中', this)"><div class="lb">审核中</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat" onclick="filterByStatCard('待投放', this)"><div class="lb">待投放</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat" onclick="filterByStatCard('已投放', this)"><div class="lb">已投放</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat" onclick="filterByStatCard('已暂停', this)"><div class="lb">已暂停</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat" onclick="filterByStatCard('已结束', this)"><div class="lb">已结束</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
+    <div class="stat" onclick="filterByStatCard('未提交', this)"><div class="lb">未提交</div><div class="nv">0</div><div class="hint">阶段内素材去重</div></div>
   </div>
   <p class="note">同一素材可出现在多个计划阶段，统计数量不一定相加。品牌筛选配置、未关联维度的素材保留在全部素材中。</p>
 
   <div class="filter">
     <div class="fhead">
       <div class="ft">≡ 筛选素材</div>
-      <div class="fbtns">
-        <button class="fbtn">🔖 常用筛选预设</button>
-        <button class="fbtn">保存当前筛选 ▾</button>
-      </div>
     </div>
     <div class="frow"><div class="fl">素材类型</div><div class="fopts">
       <button class="fopt active" onclick="filterByType(this,'全部')">全部</button><button class="fopt" onclick="filterByType(this,'图片')">图片</button><button class="fopt" onclick="filterByType(this,'视频')">视频</button>
     </div></div>
     <div class="frow"><div class="fl">投放场景</div><div class="fopts">
-      <button class="fopt active">全部</button><button class="fopt">直播间</button><button class="fopt">达人</button><button class="fopt">商品卡</button>
+      <button class="fopt active" onclick="filterByTag(this,'投放场景','全部')">全部</button><button class="fopt" onclick="filterByTag(this,'投放场景','直播间')">直播间</button><button class="fopt" onclick="filterByTag(this,'投放场景','达人')">达人</button><button class="fopt" onclick="filterByTag(this,'投放场景','商品卡')">商品卡</button>
     </div></div>
-    <div class="frow"><div class="fl">主类目</div><div class="fopts">
-      <button class="fopt active">全部</button><button class="fopt">服饰BU</button><button class="fopt">配饰BU</button><button class="fopt">家居BU</button>
+    <div class="frow"><div class="fl">主类目</div><div class="fopts" id="mainCatList">
+      <button class="fopt active" onclick="filterByTag(this,'主类目','全部')">全部</button>
     </div></div>
-    <div class="frow"><div class="fl">一级分类</div><div class="fopts">
-      <button class="fopt active">全部</button><button class="fopt">衬衫</button><button class="fopt">针织</button><button class="fopt">外套</button><button class="fopt">包袋</button><button class="fopt">鞋履</button><button class="fopt">家纺</button><button class="fopt">生活用品</button>
+    <div class="frow"><div class="fl">一级分类</div><div class="fopts" id="l1CatList">
+      <button class="fopt active" onclick="filterByTag(this,'一级分类','全部')">全部</button>
     </div></div>
     <div class="frow"><div class="fl">二级分类</div><div class="fopts"><input class="fsearch" placeholder="Q 搜索分类"></div></div>
-    <div class="frow"><div class="fl"></div><div class="fopts">
-      <button class="fopt active">全部</button><button class="fopt">亚麻衬衫</button><button class="fopt">条纹衬衫</button><button class="fopt">通勤衬衫</button><button class="fopt">针织开衫</button><button class="fopt">基础针织</button><button class="fopt">休闲外套</button><button class="fopt">轻薄外套</button><button class="fopt">通勤包</button><button class="fopt">旅行包</button><button class="fopt">休闲鞋</button><button class="fopt">通勤鞋</button><button class="fopt">床品</button><button class="fopt">毛巾</button><button class="fopt">水杯</button><button class="fopt">收纳</button>
+    <div class="frow"><div class="fl"></div><div class="fopts" id="l2CatList">
+      <button class="fopt active" onclick="filterByTag(this,'二级分类','全部')">全部</button>
     </div></div>
-    <div class="frow"><div class="fl">计划阶段</div><div class="fopts">
-      <button class="fopt active" onclick="filterByStatus(this,'全部')">全部</button><button class="fopt" onclick="filterByStatus(this,'审核中')">审核中</button><button class="fopt" onclick="filterByStatus(this,'待投放')">待投放</button><button class="fopt" onclick="filterByStatus(this,'已投放')">已投放</button><button class="fopt" onclick="filterByStatus(this,'已暂停')">已暂停</button><button class="fopt" onclick="filterByStatus(this,'已结束')">已结束</button><button class="fopt" onclick="filterByStatus(this,'未提交')">未提交</button>
+    <div class="frow"><div class="fl">计划阶段</div><div class="fopts" id="statusList">
+      <button class="fopt active" onclick="filterByStatus(this,'全部')">全部</button>
     </div></div>
     <div class="frow"><div class="fl">公共标签</div><div class="fopts">
       <input class="fsearch" placeholder="Q 搜索标签">
-      <button class="fopt">浏览标签分组</button><button class="fopt active">全部</button>
-      <button class="fopt">卖点</button><button class="fopt">内容类型</button><button class="fopt">场景</button><button class="fopt">营销节点</button><button class="fopt">清除标签条件</button>
+      <button class="fopt" onclick="alert('打开标签分组')">浏览标签分组</button><button class="fopt active" onclick="filterByTag(this,'公共标签','全部')">全部</button>
+      <button class="fopt" onclick="clearAllTags()">清除标签条件</button>
     </div></div>
     <div class="frow"><div class="fl"></div><div class="fopts" style="flex-direction:column;gap:8px">
-      <div style="font-size:12px;color:var(--text-4)">已选标签匹配方式 <button class="fopt" style="display:inline-block">全部满足 ▾</button>　需同时包含所有已选公共标签 · 已选 0 个</div>
-      <div style="display:flex;gap:6px;flex-wrap:wrap">
-        <button class="chip on">舒适透气</button><button class="chip on">显瘦版型</button><button class="chip on">质感面料</button><button class="chip on">百城通勤</button>
-        <button class="chip">商品展示</button><button class="chip">穿搭推荐</button><button class="chip">细节特写</button>
-        <button class="chip warn">日常通勤</button><button class="chip warn">周末出游</button><button class="chip warn">国家生活</button>
-        <button class="chip warn">秋季上新</button><button class="chip warn">双11预热</button>
+      <div style="font-size:12px;color:var(--text-4)">已选标签匹配方式 <button class="fopt" style="display:inline-block">全部满足 ▾</button>　需同时包含所有已选公共标签 · 已选 <span id="selectedTagCount">0</span> 个</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="publicTagList">
       </div>
     </div></div>
-    <div class="frow"><div class="fl">个人标签</div><div class="fopts">
+    <div class="frow"><div class="fl">个人标签</div><div class="fopts" id="personalTagList">
       <input class="fsearch" placeholder="Q 搜索标签">
-      <button class="fopt active">全部</button><button class="fopt">无个人标签</button><button class="fopt">有个人标签</button>
-      <button class="fopt">重点关注</button><button class="fopt">待复盘</button><button class="fopt">重置</button><button class="fopt" style="color:var(--green)">✎ 管理标签</button>
+      <button class="fopt active" onclick="filterByTag(this,'个人标签','全部')">全部</button>
+      <button class="fopt" onclick="resetAllFilters()">重置</button><button class="fopt" style="color:var(--green)" onclick="alert('打开标签管理')">✎ 管理标签</button>
     </div></div>
     <div class="frow"><div class="fl">高级搜索</div><div class="fopts" style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;flex:1">
-      <select class="drop"><option>全部渠道</option></select><select class="drop"><option>全部店铺</option></select>
-      <select class="drop"><option>全部SPU</option></select><select class="drop"><option>全部SKC</option></select>
-      <select class="drop"><option>全部SKU</option></select>
+      <select class="drop" onchange="filterBySelect(this,'渠道')"><option>全部渠道</option></select><select class="drop" onchange="filterBySelect(this,'店铺')"><option>全部店铺</option></select>
+      <select class="drop" onchange="filterBySelect(this,'SPU')"><option>全部SPU</option></select><select class="drop" onchange="filterBySelect(this,'SKC')"><option>全部SKC</option></select>
+      <select class="drop" onchange="filterBySelect(this,'SKU')"><option>全部SKU</option></select>
     </div></div>
+    <!-- 已选条件标签 -->
+    <div class="frow" id="selectedTagsRow" style="display:none">
+      <div class="fl">已选条件</div>
+      <div class="fopts" id="selectedTagsList"></div>
+    </div>
     <div class="frow"><div class="fl"></div><div class="fopts">
-      <select class="drop" style="max-width:140px"><option>排序 最新上传</option></select>
-      <select class="drop" style="max-width:140px"><option>消耗 不限</option></select>
-      <select class="drop" style="max-width:140px"><option>系统标签 全部</option></select>
-      <button class="fbtn">↻ 重置</button>
+      <select class="drop" style="max-width:140px" onchange="filterBySelect(this,'排序')"><option>排序 最新上传</option></select>
+      <select class="drop" style="max-width:140px" onchange="filterBySelect(this,'消耗')"><option>消耗 不限</option></select>
+      <select class="drop" style="max-width:140px" onchange="filterBySelect(this,'系统标签')"><option>系统标签 全部</option></select>
+      <button class="fbtn" onclick="resetAllFilters()">↻ 重置</button>
     </div></div>
   </div>
 
   <div class="lhead">
     <div class="lt">全部素材 <span class="cnt">0</span><span class="total">共 0 份素材</span></div>
-    <div class="search">🔍 <input placeholder="搜索素材名称、ID..."></div>
+    <div class="search">🔍 <input id="searchInput" placeholder="搜索素材名称、ID..." oninput="onSearch()"></div>
   </div>
   <div class="batch">
     <label><input type="checkbox" id="chkAll" onclick="toggleAll(this.checked)"> 选中本页</label>
     <span>已选 <b id="selText" style="color:#CCFF00">0</b></span>
     <span class="link" style="cursor:pointer" onclick="openLaunchModal()">↗ 上传到投放计划</span>
     <div class="view-toggle">
-      <button class="fbtn">作者/搜索</button>
-      <button class="fbtn">上传时间 yyyy/mm/日</button>
-      <button class="fbtn">至 yyyy/mm/日</button>
-      <button class="fbtn">▦ 网格</button>
-      <button class="fbtn">☰ 列表</button>
+      <select class="fbtn" style="width:auto" onchange="filterBySelect(this,'作者')">
+        <option>作者/搜索</option>
+      </select>
+      <input type="date" class="fbtn" style="width:auto" onchange="filterBySelect(this,'开始时间')" placeholder="开始日期">
+      <span style="color:var(--text-3);font-size:13px">至</span>
+      <input type="date" class="fbtn" style="width:auto" onchange="filterBySelect(this,'结束时间')" placeholder="结束日期">
+      <button class="fbtn primary" id="gridBtn" onclick="toggleView('grid')">▦ 网格</button>
+      <button class="fbtn" id="listBtn" onclick="toggleView('list')">☰ 列表</button>
     </div>
   </div>
 
@@ -268,6 +275,11 @@ let curPage = 1;
 const pageSize = 12;
 let filterType = '全部';
 let filterStatus = '全部';
+let searchKeyword = '';
+let viewMode = 'grid';
+let authorFilter = '全部';
+let startDateFilter = '';
+let endDateFilter = '';
 // 加载状态统计
 fetch('/api/material_stats').then(r=>r.json()).then(j=>{
   if(j.error) return;
@@ -280,7 +292,7 @@ function mapBiz(biz){
   if(!biz) return '未提交';
   if(biz==='待审核') return '审核中';
   if(biz==='通过-待投放') return '待投放';
-  if(['直播间已投放','商城已投放','已投放商品+直播间'].includes(biz)) return '已投放';
+  if(['直播间已投放','商城已投放','已投放商品+直播间','已投放'].includes(biz)) return '已投放';
   if(biz==='审核驳回') return '已暂停';
   if(biz==='放弃测试') return '已结束';
   return '未提交';
@@ -289,6 +301,57 @@ function stCls(s){
   return {'已投放':'st-live','审核中':'st-review','待投放':'st-wait','已暂停':'st-pause','已结束':'st-end','未提交':'st-pause'}[s]||'st-pause';
 }
 function infoOf(m){ return STATUS[m.path]||STATUS[m.name]||{}; }
+
+// 加载分类和标签数据
+async function loadFilterData(){
+  try{
+    // 加载分类体系
+    const catRes = await fetch('/api/categories').then(r=>r.json());
+    if(catRes.data){
+      // 主类目（level=1）
+      const mainCats = catRes.data.filter(c=>c.level===1);
+      const mainHtml = mainCats.map(c=>`<button class="fopt" onclick="filterByTag(this,'主类目','${c.name}')">${c.name}</button>`).join('');
+      document.getElementById('mainCatList').insertAdjacentHTML('beforeend', mainHtml);
+      
+      // 一级分类（level=2）
+      const l1Cats = catRes.data.filter(c=>c.level===2);
+      const l1Html = l1Cats.map(c=>`<button class="fopt" onclick="filterByTag(this,'一级分类','${c.name}')">${c.name}</button>`).join('');
+      document.getElementById('l1CatList').insertAdjacentHTML('beforeend', l1Html);
+      
+      // 二级分类（level=3）
+      const l2Cats = catRes.data.filter(c=>c.level===3);
+      const l2Html = l2Cats.map(c=>`<button class="fopt" onclick="filterByTag(this,'二级分类','${c.name}')">${c.name}</button>`).join('');
+      document.getElementById('l2CatList').insertAdjacentHTML('beforeend', l2Html);
+    }
+    
+    // 加载状态标签
+    const statusRes = await fetch('/api/material_biz_statuses').then(r=>r.json());
+    if(statusRes.data){
+      const statusHtml = statusRes.data.map(s=>`<button class="fopt" onclick="filterByStatus(this,'${s.name}')">${s.name}</button>`).join('');
+      document.getElementById('statusList').insertAdjacentHTML('beforeend', statusHtml);
+    }
+    
+    // 加载公共标签
+    const tagRes = await fetch('/api/tags?tag_type=public').then(r=>r.json());
+    if(tagRes.data){
+      const tagHtml = tagRes.data.map(t=>`<button class="chip" onclick="toggleChip(this)">${t.name}</button>`).join('');
+      document.getElementById('publicTagList').innerHTML = tagHtml;
+    }
+    
+    // 加载个人标签
+    const pTagRes = await fetch('/api/tags?tag_type=personal').then(r=>r.json());
+    if(pTagRes.data){
+      const pTagHtml = pTagRes.data.map(t=>`<button class="fopt" onclick="filterByTag(this,'个人标签','${t.name}')">${t.name}</button>`).join('');
+      document.getElementById('personalTagList').insertAdjacentHTML('beforeend', pTagHtml);
+    }
+  }catch(e){
+    console.error('加载筛选数据失败:', e);
+  }
+}
+
+// 页面加载时调用
+loadFilterData();
+
 async function load(){
   try{
     const [mRes,sRes]=await Promise.all([
@@ -318,10 +381,38 @@ function render(){
   if(filterType !== '全部'){
     filtered = filtered.filter(m => (m.type||'image') === (filterType==='图片'?'image':'video'));
   }
+  // 搜索筛选
+  if(searchKeyword){
+    var kw = searchKeyword.toLowerCase();
+    filtered = filtered.filter(m => 
+      (m.name||'').toLowerCase().includes(kw) || 
+      String(m.id||'').includes(kw)
+    );
+  }
+  // 日期筛选（mtime是秒级时间戳）
+  if(startDateFilter){
+    filtered = filtered.filter(m => {
+      var ts = (m.mtime || m.create_time || 0) * 1000;
+      var d = new Date(ts);
+      return d >= new Date(startDateFilter);
+    });
+  }
+  if(endDateFilter){
+    filtered = filtered.filter(m => {
+      var ts = (m.mtime || m.create_time || 0) * 1000;
+      var d = new Date(ts);
+      return d <= new Date(endDateFilter + ' 23:59:59');
+    });
+  }
   if(filterStatus !== '全部'){
     filtered = filtered.filter(m => {
-      var info = infoOf(m);
-      var st = mapBiz(info.biz_status);
+      // 优先用素材本身的 biz_status
+      var st = mapBiz(m.biz_status);
+      // 如果素材本身没有状态，再从 STATUS 中查找
+      if(st === '未提交' && !m.biz_status){
+        var info = infoOf(m);
+        st = mapBiz(info.biz_status);
+      }
       return st === filterStatus;
     });
   }
@@ -329,8 +420,8 @@ function render(){
   var totalPages = Math.ceil(filtered.length / pageSize);
   if(curPage > totalPages) curPage = totalPages;
   if(curPage < 1) curPage = 1;
-  var start = (curPage - 1) * pageSize;
-  var pageData = filtered.slice(start, start + pageSize);
+  var startIdx = (curPage - 1) * pageSize;
+  var pageData = filtered.slice(startIdx, startIdx + pageSize);
   document.querySelector('.pager span').textContent='共 '+filtered.length+' 条 · 每页 ' + pageSize + ' 条';
   // 页码
   var pagesHtml = '<button class="pg" onclick="goPage(' + (curPage-1) + ')" ' + (curPage<=1?'disabled':'') + '>‹</button>';
@@ -339,7 +430,14 @@ function render(){
   }
   pagesHtml += '<button class="pg" onclick="goPage(' + (curPage+1) + ')" ' + (curPage>=totalPages?'disabled':'') + '>›</button>';
   document.querySelector('.pages').innerHTML = pagesHtml;
-  g.innerHTML=pageData.map(m=>{
+  // 设置视图模式
+  if(viewMode === 'list'){
+    g.className = 'list-view';
+  } else {
+    g.className = 'grid';
+  }
+  updateSelectedTags();
+  g.innerHTML=pageData.map((m, idx)=>{
     const info=infoOf(m);
     const st=mapBiz(info.biz_status);
     const url='/api/uploaded_media/'+encodeURIComponent(m.name);
@@ -349,8 +447,8 @@ function render(){
     const fn=m.name.replace(/\.[^.]+$/,'');
     const sz=m.size? (m.size>1048576?(m.size/1048576).toFixed(1)+' MB':Math.round(m.size/1024)+' KB'):'';
     const time=m.mtime?new Date(m.mtime*1000).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'';
-    const goto='15-素材详情-新版.html?name='+encodeURIComponent(m.name)+'&type='+encodeURIComponent(m.type||'');
-    return '<div class="m" style="cursor:pointer" onclick="openDetail(\''+goto+'\')">'+
+    const safeName = m.name.replace(/'/g, "\'");
+    return '<div class="m" style="cursor:pointer" onclick="openDetailByName(\''+safeName+'\')">'+
       '<div class="cover">'+cover+
         '<div class="chk" onclick="event.stopPropagation();this.classList.toggle(\'on\');this.closest(\'.m\').classList.toggle(\'sel\');updateFloatBar()"></div>'+
         '<span class="tag-l">'+(m.type==='video'?'视频':'图片')+'</span>'+
@@ -371,10 +469,173 @@ function render(){
   }).join('');
 }
 
+
+function toggleChip(el){
+  el.classList.toggle('on');
+  curPage = 1;
+  render();
+}
+function clearAllTags(){
+  document.querySelectorAll('.chip').forEach(c=>c.classList.remove('on'));
+  curPage = 1;
+  render();
+}
+function filterBySelect(el, category){
+  var value = '';
+  if(el.tagName === 'SELECT'){
+    value = el.options[el.selectedIndex].text;
+  } else if(el.tagName === 'INPUT'){
+    value = el.value;
+  }
+  if(category === '作者'){
+    authorFilter = value;
+    if(!window.filters) window.filters = {};
+    window.filters[category] = value;
+    curPage = 1;
+    render();
+  } else if(category === '开始时间'){
+    startDateFilter = value;
+    // 选择开始日期不立即查询，等结束日期选完再查
+  } else if(category === '结束时间'){
+    endDateFilter = value;
+    if(!window.filters) window.filters = {};
+    window.filters[category] = value;
+    curPage = 1;
+    render();
+  }
+}
+function updateSelectedTags(){
+  var row = document.getElementById('selectedTagsRow');
+  var list = document.getElementById('selectedTagsList');
+  if(!row || !list) return;
+  var tags = [];
+  
+  // 收集所有筛选条件
+  if(window.filters){
+    for(var cat in window.filters){
+      var val = window.filters[cat];
+      if(val && val !== '全部'){
+        tags.push({category: cat, value: val});
+      }
+    }
+  }
+  if(filterType && filterType !== '全部'){
+    tags.push({category: '素材类型', value: filterType});
+  }
+  if(filterStatus && filterStatus !== '全部'){
+    tags.push({category: '计划阶段', value: filterStatus});
+  }
+  if(searchKeyword){
+    tags.push({category: '搜索', value: searchKeyword});
+  }
+  
+  if(tags.length === 0){
+    row.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+  
+  row.style.display = 'flex';
+  var html = tags.map((t,i)=>
+    '<span class="selected-tag">' +
+    '<span class="cat">'+t.category+'：</span>' +
+    '<span class="val">'+t.value+'</span>' +
+    '<span class="close" onclick="removeFilter('+i+')">×</span>' +
+    '</span>'
+  ).join('');
+  html += '<span class="clear-all" onclick="resetAllFilters()">清空全部</span>';
+  list.innerHTML = html;
+}
+
+function removeFilter(index){
+  var tags = [];
+  if(window.filters){
+    for(var cat in window.filters){
+      var val = window.filters[cat];
+      if(val && val !== '全部'){
+        tags.push({category: cat, value: val});
+      }
+    }
+  }
+  if(filterType && filterType !== '全部'){
+    tags.push({category: '素材类型', value: filterType});
+  }
+  if(filterStatus && filterStatus !== '全部'){
+    tags.push({category: '计划阶段', value: filterStatus});
+  }
+  if(searchKeyword){
+    tags.push({category: '搜索', value: searchKeyword});
+  }
+  
+  if(index < tags.length){
+    var t = tags[index];
+    if(t.category === '素材类型'){
+      filterType = '全部';
+    } else if(t.category === '计划阶段'){
+      filterStatus = '全部';
+    } else if(t.category === '搜索'){
+      searchKeyword = '';
+      document.getElementById('searchInput').value = '';
+    } else {
+      delete window.filters[t.category];
+    }
+  }
+  curPage = 1;
+  render();
+}
+
+function resetAllFilters(){
+  window.filters = {};
+  filterStatus = '全部';
+  filterType = '全部';
+  // 重置所有按钮状态
+  document.querySelectorAll('.fopt').forEach((el,i)=>{
+    el.classList.remove('active');
+  });
+  document.querySelectorAll('.frow:first-child .fopt:first-child').forEach(el=>el.classList.add('active'));
+  curPage = 1;
+  render();
+}
+
+function filterByTag(el, category, value){
+  el.parentElement.querySelectorAll('.fopt').forEach(x=>x.classList.remove('active'));
+  el.classList.add('active');
+  // 存储筛选条件
+  if(!window.filters) window.filters = {};
+  window.filters[category] = value;
+  curPage = 1;
+  render();
+}
 function filterByType(el, type){
   el.parentElement.querySelectorAll('.fopt').forEach(x=>x.classList.remove('active'));
   el.classList.add('active');
   filterType = type;
+  curPage = 1;
+  render();
+}
+function toggleView(mode){
+  viewMode = mode;
+  document.getElementById('gridBtn').classList.toggle('primary', mode==='grid');
+  document.getElementById('listBtn').classList.toggle('primary', mode==='list');
+  render();
+}
+function onSearch(){
+  searchKeyword = document.getElementById('searchInput').value.trim();
+  curPage = 1;
+  render();
+}
+function filterByStatCard(status, el){
+  filterStatus = status;
+  // 同步选中下面的计划阶段筛选
+  document.querySelectorAll('.stat').forEach(s=>s.classList.remove('accent'));
+  el.classList.add('accent');
+  // 同步选中筛选区的计划阶段选项
+  document.querySelectorAll('.frow .fopts .fopt').forEach(x=>{
+    if(x.textContent.trim() === status){
+      x.parentElement.querySelectorAll('.fopt').forEach(y=>y.classList.remove('active'));
+      x.classList.add('active');
+    }
+  });
   curPage = 1;
   render();
 }
@@ -406,15 +667,76 @@ function clearSel(){
 }
 function openLaunchModal(){
   if(getSelCount()===0) return;
+  
+  // 获取选中的素材列表
+  const selectedMaterials = [];
+  document.querySelectorAll('.m.sel').forEach(function(card){
+    const name = card.querySelector('.ttl')?.textContent || '';
+    const type = card.querySelector('.tag-l')?.textContent || '图片';
+    // 从渲染数据中获取完整信息（页面上显示的是去掉扩展名的名称）
+    const mat = ALL.find(m => {
+      const fn = m.name.replace(/\.[^.]+$/, '');
+      return fn === name;
+    });
+    if(mat){
+      selectedMaterials.push({
+        name: mat.name,
+        type: mat.type || 'image',
+        id: mat.id || '',
+        path: mat.path || '',
+        thumb_url: '/api/uploaded_media/' + encodeURIComponent(mat.name)
+      });
+    }
+  });
+  
+  // 保存到 sessionStorage
+  sessionStorage.setItem('selectedMaterials', JSON.stringify(selectedMaterials));
+  
   var f=document.getElementById('launchFrame');
   f.src='14-上传到投放计划.html?count='+getSelCount();
   document.getElementById('launchModal').style.display='flex';
 }
+// 同步素材状态
+function syncMaterialStatus(){
+  if(!confirm('确定要同步素材状态吗？\n\n将从千川查询最新审核状态，更新本地数据库。')) return;
+  
+  const btn = event.target;
+  const oldText = btn.textContent;
+  btn.textContent = '同步中...';
+  btn.disabled = true;
+  
+  fetch('/api/sync_material_status', { method: 'POST' })
+    .then(r => r.json())
+    .then(result => {
+      if(result.success){
+        const total = result.total || 0;
+        const updated = result.updated || 0;
+        alert('✅ ' + (result.msg || '同步完成') + '\n\n同步了 ' + total + ' 条素材，更新了 ' + updated + ' 条状态。');
+        // 重新加载页面
+        location.reload();
+      } else {
+        alert('❌ 同步失败：' + (result.error || '未知错误'));
+        btn.textContent = oldText;
+        btn.disabled = false;
+      }
+    })
+    .catch(err => {
+      alert('❌ 同步失败：' + err.message);
+      btn.textContent = oldText;
+      btn.disabled = false;
+    });
+}
+
 // 详情弹窗
 function openDetail(url){
   var m=document.getElementById('detailModal');
   document.getElementById('detailFrame').src=url;
   m.style.display='flex';
+}
+function openDetailByName(name){
+  const idx = ALL.findIndex(x => x.name === name);
+  if(idx < 0) return;
+  openDetail('15-素材详情-新版.html?idx=' + idx);
 }
 function closeDetail(){document.getElementById('detailModal').style.display='none';}
 function closeLaunchModal(){document.getElementById('launchModal').style.display='none';}
@@ -441,5 +763,6 @@ function closeSetting(){
 </script>
 </body>
 </html>
+
 
 

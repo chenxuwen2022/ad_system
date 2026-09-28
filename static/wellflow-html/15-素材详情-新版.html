@@ -141,8 +141,7 @@ tr:last-child td{border-bottom:none}
   </div>
   <div class="hero">
     <div class="player" id="playerBox">
-      <img src="https://aka.doubaocdn.com/s/i5DqANPjnO" alt="素材预览">
-      <span class="badge">01 / 03</span>
+      <div style="color:#999;padding:40px;">加载中...</div>
     </div>
     <div class="pinfo">
       <span class="status" id="statusTag"></span>
@@ -475,28 +474,107 @@ tr:last-child td{border-bottom:none}
 </div>
 
 <script>
+// 从 URL 获取索引，然后从接口获取素材列表
 const qs = new URLSearchParams(location.search);
-const MNAME = qs.get("name") || "";
-const MTYPE = qs.get("type") || "";
-if (MNAME) {
-  var fn = MNAME;
-  var ext = fn.split('.').pop().toLowerCase();
-  var isVideo = ['mp4','mov','avi','mkv','webm'].indexOf(ext) >= 0;
-  var idName = fn.replace(/\.[^.]+$/, "");
-  document.getElementById("matName").textContent = idName;
-  document.getElementById("matId").textContent = "ID " + idName + " · 成片 · " + (isVideo ? "视频" : "图片");
-  document.title = idName + " · WellFlow";
-  const url = "/api/uploaded_media/" + encodeURIComponent(fn);
-  const player = document.getElementById("playerBox");
-  if (isVideo) {
-    player.innerHTML = '<video src="' + url + '" muted controls autoplay loop></video><span class="badge">本地素材</span>';
-  } else {
-    player.innerHTML = '<img src="' + url + '" alt=""><span class="badge">本地素材</span>';
-  }
-  const st = document.getElementById("statusTag");
-  st.className = "status st-pause";
-  st.textContent = "未投放";
+const MAT_IDX = parseInt(qs.get("idx") || "0");
+let MAT = {};
+let MNAME = "";
+let MTYPE = "";
+let MPATH = "";
+let IMGURL = "";
+
+async function initMaterial() {
+  try {
+    const r = await fetch('/api/db_materials');
+    const j = await r.json();
+    if (j.success && j.data && j.data[MAT_IDX]) {
+      MAT = j.data[MAT_IDX];
+      MNAME = MAT.name;
+      MTYPE = MAT.type;
+      MPATH = MAT.path;
+      IMGURL = '/api/uploaded_media/' + encodeURIComponent(MNAME);
+      
+      // 填充基本信息
+      var ext = MNAME.split(".").pop().toLowerCase();
+      var isVideo = ["mp4","mov","avi","mkv","webm"].indexOf(ext) >= 0;
+      var idName = MNAME.replace(/\.[^.]+$/, "");
+      document.getElementById("matName").textContent = idName;
+      document.getElementById("matId").textContent = "ID " + idName + " · 成片 · " + (isVideo ? "视频" : "图片");
+      document.title = idName + " · WellFlow";
+      const player = document.getElementById("playerBox");
+      if (isVideo) {
+        player.innerHTML = `<video src="${IMGURL}" muted controls autoplay loop></video><span class="badge">本地素材</span>`;
+      } else {
+        player.innerHTML = `<img src="${IMGURL}" alt=""><span class="badge">本地素材</span>`;
+      }
+    }
+  } catch(e) { console.error(e); }
 }
+// 等 DOM 加载完成后再执行
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', initMaterial);
+} else {
+  initMaterial();
+}
+
+// 从接口获取素材详情
+async function loadMaterialDetail() {
+  try {
+    const r = await fetch("/api/db_materials");
+    const j = await r.json();
+    if (j.success && j.data) {
+      const mat = j.data.find(m => m.name === MNAME);
+      if (mat) {
+        // 填充状态
+        const st = document.getElementById("statusTag");
+        const biz = mat.biz_status || "";
+        if (["待审核","审核中"].includes(biz)) {
+          st.className = "status st-pause";
+          st.textContent = "审核中";
+        } else if (["通过-待投放","待投放"].includes(biz)) {
+          st.className = "status st-pause";
+          st.textContent = "待投放";
+        } else if (["直播间已投放","商城已投放","已投放商品+直播间","已投放"].includes(biz)) {
+          st.className = "status";
+          st.textContent = "已投放";
+        } else {
+          st.className = "status st-pause";
+          st.textContent = "未投放";
+        }
+        
+        // 填充其他字段
+        const kvs = document.querySelectorAll(".kv .v");
+        // 商品分类
+        kvs[0].textContent = mat.category || "未分类";
+        // 作者
+        kvs[1].textContent = mat.upload_user || "系统上传";
+        // 上传时间
+        if (mat.mtime) {
+          const d = new Date(mat.mtime * 1000);
+          kvs[2].textContent = d.toLocaleString();
+        }
+        // 广告平台
+        kvs[3].textContent = "巨量千川";
+        // 系统标签
+        kvs[4].textContent = "图片" + (mat.type === "video" ? "/视频" : "");
+        
+        // 公共标签
+        const publicTags = mat.public_tags || [];
+        const publicTagsWrap = document.querySelectorAll(".tags")[0];
+        if (publicTags.length > 0) {
+          publicTagsWrap.innerHTML = "";
+          publicTags.forEach(t => {
+            const tag = document.createElement("span");
+            tag.className = "tag";
+            tag.textContent = t;
+            publicTagsWrap.appendChild(tag);
+          });
+        }
+      }
+    }
+  } catch(e) { console.error(e); }
+}
+loadMaterialDetail();
 const trendChart = echarts.init(document.getElementById('trendChart'));
 const days = ['09-10','09-11','09-12','09-13','09-14','09-15','09-16'];
 trendChart.setOption({

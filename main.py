@@ -1,5 +1,6 @@
 ﻿import asyncio
 import sys
+import os
 from pathlib import Path
 
 # Windows 下 psycopg 异步连接要求 SelectorEventLoop。
@@ -96,6 +97,21 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# 挂载广告素材目录
+ad_media_dir = Path("ad/media_storage").resolve()
+if ad_media_dir.exists():
+    app.mount("/media", StaticFiles(directory=ad_media_dir), name="ad_media")
+
+# ── 前端 SPA 静态文件 ──
+from fastapi.responses import FileResponse
+
+@app.get("/wellflow-saas-frontend/{full_path:path}")
+async def spa_fallback(full_path: str):
+    file_path = os.path.join("static/wellflow-saas-frontend", full_path)
+    if os.path.exists(file_path) and os.path.isfile(file_path):
+        return FileResponse(file_path)
+    return FileResponse("static/wellflow-saas-frontend/index.html")
 
 # ── 子系统一：广告投放（原 ad_system 全部路由，路径不变）──
 app.include_router(upload_router)
@@ -201,6 +217,7 @@ def show_qianchuan():
 
 if __name__ == "__main__":
     import sys
+    import os
     import uvicorn
 
     if "--show-advertisers" in sys.argv:
@@ -212,5 +229,8 @@ if __name__ == "__main__":
         sys.exit(0)
 
     # 不要reload，windows下reload会多进程导致sqlite问题
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)
+    import os
+    port = int(os.environ.get("PORT", 8001))
+    print(f"后端启动在 http://0.0.0.0:{port}")
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
 
