@@ -105,18 +105,21 @@ class Settings(BaseSettings):
     graph_stale_threshold_seconds: int = 90        # checkpoint 年龄阈值，超过认为 graph 可能挂了
 
     # ====== 穿搭库（outfit）======
-    outfit_extract_models: list[str] = [  # 抠图降级链(qwen 优先:2026-09-20 gpt 系网关无渠道,实测 qwen 唯一可用)
+    outfit_extract_models: list[str] = [  # 抠图降级链(gpt-image-2 优先:edits 真编辑抠图更保真;qwen 兜底)
+        "gpt-image-2",
+        "gpt-image-2.5-flare",
+        "mai-image-2.5",
         "qwen-image-3.0",
     ]
     outfit_max_items: int = 6              # VLM 单次识别最多提取几件单品
     outfit_extract_concurrency: int = 3    # 抠图并发上限（ThreadPoolExecutor）
 
     # ====== 场景库（scene）======
-    scene_extract_models: list[str] = [  # 场景提取生图降级链(qwen 优先,同穿搭库口径)
-        "qwen-image-3.0",
+    scene_extract_models: list[str] = [  # 场景提取生图降级链(gpt-image-2 优先:edits 真编辑保底图;qwen 兜底)
         "gpt-image-2",
         "gpt-image-2.5-flare",
         "mai-image-2.5",
+        "qwen-image-3.0",
     ]
 
 

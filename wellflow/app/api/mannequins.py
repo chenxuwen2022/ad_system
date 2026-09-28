@@ -1123,7 +1123,7 @@ async def _mq_async_generate(prompt: str, model: str, num_output: int,
     num_output = max(1, min(num_output, 6))
     chain = _mq_model_chain(model.strip())
     ref_data_uris = paths_to_data_uris(ref_uris) if ref_uris else None
-    sem = asyncio.Semaphore(settings.node3_gen_concurrency)
+    sem = asyncio.Semaphore(settings.mannequins_gen_concurrency)
 
     async def _one(i: int):
         errors = []
@@ -1206,6 +1206,8 @@ async def _run_async_step(task: dict) -> None:
         task["status"] = "failed"
         task["error"] = err
         await asyncio.to_thread(store.save, task)
+        if task.get("mannequin_id"):
+            await asyncio.to_thread(_mq_mark_failed_sync, int(task["mannequin_id"]))
 
     async with _MQ_SEMAPHORE:
         try:
