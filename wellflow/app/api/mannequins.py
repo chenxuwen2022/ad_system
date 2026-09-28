@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message, page_context
+
+from wellflow.app.newapi.observability import business_operation, event
+
 import asyncio
 import json as json_mod
 from typing import Any
@@ -66,6 +70,7 @@ def _tags_to_grouped(tags_rows) -> list[MannequinTagIn]:
 # ============================================================================
 
 @router.get("/dimensions", response_model=StandardResponse[MannequinDimensionsResponse], summary="获取全部维度选项（前端筛选下拉菜单用）", tags=["模特库"])
+@page_context('模特库')
 def get_dimensions():
     """返回硬编码的维度分组和可选值。"""
     return ok(MannequinDimensionsResponse(groups=MANNEQUIN_DIMENSION_GROUPS))
@@ -76,6 +81,7 @@ def get_dimensions():
 # ============================================================================
 
 @router.get("", response_model=StandardResponse[MannequinListResponse], summary="列出模特（支持 scope / q 搜索 / 多维筛选）", tags=["模特库"])
+@page_context('模特库')
 def list_mannequins(
     scope: str | None = Query(default=None, description="归属范围：official（官方公共模特）/ mine（个人私有）/ 不传表示全部"),
     q: str | None = Query(default=None, description="关键词或自然语言描述，匹配模特名称/英文名/编号/描述"),
@@ -126,6 +132,7 @@ def list_mannequins(
 
 
 @router.get("/{mannequin_id}", response_model=StandardResponse[MannequinDetailResponse], summary="查询模特详情", tags=["模特库"])
+@page_context('模特库')
 def get_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     m = repo.get(mannequin_id)
@@ -157,6 +164,7 @@ def get_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
     summary="确认入库（唯一落盘点：cover_image + input_refs 二进制落盘 → 事务写 Mannequin + Tag + GenerateLog）",
     tags=["模特创建流程 · 入库端点"],
 )
+@page_context('模特库')
 async def create_mannequin(
     # ── 必填字段 ──
     name: str = Form(...),
@@ -231,8 +239,8 @@ async def create_mannequin(
         if not cover_storage_uri:
             raise HTTPException(400, "封面图落盘失败")
 
-        print(f"[mannequin/create] 💾 落盘目录 {storage_dir}, "
-              f"cover={cover_storage_uri}, refs={len(ref_storage_uris)}", flush=True)
+        log_message(f"[mannequin/create] 💾 落盘目录 {storage_dir}, "
+              f"cover={cover_storage_uri}, refs={len(ref_storage_uris)}", page='模特库', business='模特入库', status='记录')
 
     except HTTPException:
         raise
@@ -261,12 +269,12 @@ async def create_mannequin(
             fine_tune_prompt=fine_tune_prompt,
         )
         db.commit()
-        print(f"[mannequin/create] ✅ 入库成功 {m.mannequin_no} (id={m.id})", flush=True)
+        log_message(f"[mannequin/create] ✅ 入库成功 {m.mannequin_no} (id={m.id})", page='模特库', business='模特入库', status='成功')
     except Exception as e:
         db.rollback()
         # DB 失败，清理已落盘的文件
         _cleanup_storage_dir(storage_dir)
-        print(f"[mannequin/create] ❌ DB 写入失败，已清理 {storage_dir}: {e}", flush=True)
+        log_message(f"[mannequin/create] ❌ DB 写入失败，已清理 {storage_dir}: {e}", page='模特库', business='模特入库', status='失败')
         raise HTTPException(400, f"创建失败: {e}")
 
     tag_rows = repo.list_tags(m.id)
@@ -283,6 +291,7 @@ async def create_mannequin(
 
 
 @router.put("/{mannequin_id}", response_model=StandardResponse[MannequinDetailResponse], summary="更新模特", tags=["模特库"])
+@page_context('模特库')
 def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     try:
@@ -313,6 +322,7 @@ def update_mannequin(mannequin_id: int, body: MannequinUpdateRequest, db: Sessio
 
 
 @router.delete("/{mannequin_id}", response_model=StandardResponse[dict], summary="删除模特（级联清理标签，生成日志保留）", tags=["模特库"])
+@page_context('模特库')
 def delete_mannequin(mannequin_id: int, db: Session = Depends(get_db)):
     repo = MannequinRepo(db)
     ok_repo = repo.delete(mannequin_id)
@@ -336,7 +346,7 @@ def _cleanup_storage_dir(storage_uri: str) -> None:
     # 安全校验：目录必须在 upload_dir 之下
     if upload_dir in abs_path.parents and abs_path.exists() and abs_path.is_dir():
         _shutil.rmtree(abs_path, ignore_errors=True)
-        print(f"[mannequin] 🗑️ 清理落盘目录 {abs_path}", flush=True)
+        log_message(f"[mannequin] 🗑️ 清理落盘目录 {abs_path}", page='模特库', business='模特文件清理', status='记录')
 
 
 async def _files_to_data_uris(files: list[UploadFile]) -> list[str]:
@@ -373,6 +383,8 @@ PROMPT_REF_FIX_SUFFIX = "\n\nStrictly follow the facial features of the current 
     summary="1. 优化提示词（multipart，读 ref_images 二进制 + 文本 → 带固定话术的英文 prompt）",
     tags=["模特创建流程 · 交互端点"],
 )
+@page_context('模特库')
+@business_operation("模特库/提示词优化")
 async def optimize_prompt(
     raw_prompt: str = Form(...),
     tags: str | None = Form(None),                    # JSON 字符串: [{group_key, dim_key, tag_values}, ...]
@@ -389,7 +401,7 @@ async def optimize_prompt(
     `"Strictly follow the facial features of the current model reference images."`
     确保生成图五官严格参照参考图。
     """
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
 
     # 解析 tags JSON
     parsed_tags: list[dict] = []
@@ -430,9 +442,9 @@ async def optimize_prompt(
         f"请输出优化后的中文提示词："
     )
 
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.newapi.pool import get_model_pool
 
-    print(f"[mannequin/optimize-prompt] 📤 model_pool, refs={len(ref_data_uris)}", flush=True)
+    log_message(f"[mannequin/optimize-prompt] 📤 model_pool, refs={len(ref_data_uris)}", page='模特库', business='提示词优化', status='开始')
 
     try:
         pool = get_model_pool()
@@ -460,14 +472,14 @@ async def optimize_prompt(
         # 末尾拼固定话术
         final_prompt = final_prompt + PROMPT_REF_FIX_SUFFIX
 
-        print(f"[mannequin/optimize-prompt] ✅ {len(final_prompt)} chars", flush=True)
+        log_message(f"[mannequin/optimize-prompt] ✅ {len(final_prompt)} chars", page='模特库', business='提示词优化', status='成功')
         return ok(MannequinOptimizePromptResponse(final_prompt=final_prompt))
 
     except InsufficientCreditsError as e:
-        print(f"[mannequin/optimize-prompt] ❌ 上游额度不足: {e.upstream_message}", flush=True)
+        log_message(f"[mannequin/optimize-prompt] ❌ 上游额度不足: {e.upstream_message}", page='模特库', business='提示词优化', status='失败')
         raise HTTPException(402, f"上游账户额度不足，无法优化提示词。请联系管理员充值：{e.upstream_message}")
     except Exception as e:
-        print(f"[mannequin/optimize-prompt] ❌ 失败: {e}", flush=True)
+        log_message(f"[mannequin/optimize-prompt] ❌ 失败: {e}", page='模特库', business='提示词优化', status='失败')
         raise HTTPException(502, f"提示词优化失败: {e}")
 
 
@@ -481,9 +493,11 @@ async def optimize_prompt(
     summary="2. 首轮批量生图（multipart，不落盘，只返回 base64）",
     tags=["模特创建流程 · 交互端点"],
 )
+@page_context('模特库')
+@business_operation("模特库/批量生图")
 async def generate_mannequin_images(
     prompt: str = Form(...),
-    generate_model: str = Form("qwen-image-3.0"),
+    generate_model: str = Form(..., min_length=1),
     num_output: int = Form(3),
     size: str = Form("1024x1536"),
     ref_images: list[UploadFile] = File(default_factory=list),
@@ -501,15 +515,18 @@ async def generate_mannequin_images(
     import asyncio as _asyncio
     from wellflow.app.llm.image_gen_service import generate_single_image
 
+    generate_model = generate_model.strip()
+    if not generate_model:
+        raise HTTPException(422, "请选择生图模型")
     num_output = max(1, min(num_output, 6))
 
     ref_data_uris = await _files_to_data_uris(ref_images) if ref_images else None
 
     sem = _asyncio.Semaphore(settings.mannequins_gen_concurrency)
 
-    print(f"[mannequin/generate] 📤 n={num_output} "
+    log_message(f"[mannequin/generate] 📤 n={num_output} "
           f"refs={len(ref_data_uris) if ref_data_uris else 0} size={size} "
-          f"model={generate_model}", flush=True)
+          f"model={generate_model}", page='模特库', business='模特图片生成', status='开始')
 
     # 收集成功生图实际使用的模型名
     _used_models: list[str] = []
@@ -521,6 +538,7 @@ async def generate_mannequin_images(
                 prompt=prompt,
                 size=size,
                 ref_data_uris=ref_data_uris,
+                log_id=f"mannequin/image-{i + 1}",
             )
             if r.model:
                 _used_models.append(r.model)
@@ -546,6 +564,7 @@ async def generate_mannequin_images(
                     credits_failure = e
                     break  # 跳出内层，外层 while 会因为 pending_set 处理后续
                 except Exception as e:
+                    event("单张生图失败", error_type=type(e).__name__, error=str(e)[:200])
                     normal_failures.append(e)
                     continue
                 images.append(res)
@@ -557,7 +576,7 @@ async def generate_mannequin_images(
             fut.cancel()
 
         if credits_failure is not None:
-            print(f"[mannequin/generate] ❌ 上游额度不足，全部取消: {credits_failure.upstream_message}", flush=True)
+            log_message(f"[mannequin/generate] ❌ 上游额度不足，全部取消: {credits_failure.upstream_message}", page='模特库', business='模特图片生成', status='失败')
             raise HTTPException(
                 status_code=402,
                 detail=f"上游账户额度不足，无法生成模特图。请联系管理员充值：{credits_failure.upstream_message}",
@@ -571,7 +590,7 @@ async def generate_mannequin_images(
 
         # 返回实际用到的模型名（取第一个去重后的，通常全成功时都是同一个）
         actual_model = _used_models[0] if _used_models else "(unknown)"
-        print(f"[mannequin/generate] ✅ {len(images)}/{num_output} model={actual_model}", flush=True)
+        log_message(f"[mannequin/generate] ✅ {len(images)}/{num_output} model={actual_model}", page='模特库', business='模特图片生成', status='成功')
         return ok(MannequinGenerateResponse(
             images=images,
             model=actual_model,
@@ -581,7 +600,7 @@ async def generate_mannequin_images(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[mannequin/generate] ❌ 失败: {e}", flush=True)
+        log_message(f"[mannequin/generate] ❌ 失败: {e}", page='模特库', business='模特图片生成', status='失败')
         raise HTTPException(502, f"生图失败: {e}")
 
 
@@ -595,11 +614,13 @@ async def generate_mannequin_images(
     summary="3. 单张微调（multipart，不落盘，图生图）",
     tags=["模特创建流程 · 交互端点"],
 )
+@page_context('模特库')
+@business_operation("模特库/微调")
 async def fine_tune_mannequin(
     target_image: UploadFile = File(...),
     tune_prompt: str = Form(...),
     original_prompt: str | None = Form(None),
-    generate_model: str = Form("qwen-image-3.0"),
+    generate_model: str = Form(..., min_length=1),
     size: str = Form("1024x1536"),
     ref_images: list[UploadFile] = File(default_factory=list),
 ):
@@ -612,9 +633,11 @@ async def fine_tune_mannequin(
 
     **微调 prompt 组合**：保持身份一致性 + 用户描述的修改内容。
     """
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
 
     backend_model = generate_model.strip()
+    if not backend_model:
+        raise HTTPException(422, "请选择生图模型")
     client = get_llm_client("image", model_override=backend_model)
 
     # target_image + ref_images → data URI（不落盘）
@@ -630,7 +653,7 @@ async def fine_tune_mannequin(
 
     all_data_uris = target_data_uris + ref_data_uris
 
-    print(f"[mannequin/fine-tune] 📤 model={backend_model} images={len(all_data_uris)}", flush=True)
+    log_message(f"[mannequin/fine-tune] 📤 model={backend_model} images={len(all_data_uris)}", page='模特库', business='模特微调', status='开始')
 
     try:
         r = await client.generate_image(
@@ -641,19 +664,19 @@ async def fine_tune_mannequin(
             response_format="b64_json",
         )
         img = r.all_images[0]
-        print(f"[mannequin/fine-tune] ✅", flush=True)
+        log_message(f"[mannequin/fine-tune] ✅", page='模特库', business='模特微调', status='成功')
         return ok(MannequinFineTuneResponse(
             base64=img.b64_json,
             model=backend_model,
         ))
     except InsufficientCreditsError as e:
-        print(f"[mannequin/fine-tune] ❌ 上游额度不足: {e.upstream_message}", flush=True)
+        log_message(f"[mannequin/fine-tune] ❌ 上游额度不足: {e.upstream_message}", page='模特库', business='模特微调', status='失败')
         raise HTTPException(
             status_code=402,
             detail=f"上游账户额度不足，无法微调模特图。请联系管理员充值：{e.upstream_message}",
         )
     except Exception as e:
-        print(f"[mannequin/fine-tune] ❌ 失败: {e}", flush=True)
+        log_message(f"[mannequin/fine-tune] ❌ 失败: {e}", page='模特库', business='模特微调', status='失败')
         raise HTTPException(502, f"微调失败: {e}")
 
 
@@ -667,6 +690,8 @@ async def fine_tune_mannequin(
     summary="4. VLM 读图自动打标签（multipart，不落盘，入库前必须步骤）",
     tags=["模特创建流程 · 交互端点"],
 )
+@page_context('模特库')
+@business_operation("模特库/自动打标")
 async def auto_tag_mannequin(
     files: list[UploadFile] = File(...),
     extra_context: str | None = Form(None),
@@ -680,7 +705,7 @@ async def auto_tag_mannequin(
 
     **安全**：返回的标签已经过后端白名单校验 —— 只保留 MANNEQUIN_DIMENSION_GROUPS 枚举内真实存在的值。
     """
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
 
     if not files:
         raise HTTPException(400, "至少要传 1 张图片")
@@ -714,9 +739,9 @@ async def auto_tag_mannequin(
         "}"
     )
 
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.newapi.pool import get_model_pool
 
-    print(f"[mannequin/auto-tag] 📤 model_pool", flush=True)
+    log_message(f"[mannequin/auto-tag] 📤 model_pool", page='模特库', business='模特自动打标', status='开始')
 
     try:
         pool = get_model_pool()
@@ -755,7 +780,7 @@ async def auto_tag_mannequin(
         description = str(data.get("description", "")).strip()
         suggested_name = data.get("suggested_name")
 
-        print(f"[mannequin/auto-tag] ✅ tags={len(validated_tags)} desc={len(description)}", flush=True)
+        log_message(f"[mannequin/auto-tag] ✅ tags={len(validated_tags)} desc={len(description)}", page='模特库', business='模特自动打标', status='成功')
 
         return ok(MannequinAutoTagResponse(
             tags=validated_tags,
@@ -765,16 +790,16 @@ async def auto_tag_mannequin(
         ))
 
     except InsufficientCreditsError as e:
-        print(f"[mannequin/auto-tag] ❌ 上游额度不足: {e.upstream_message}", flush=True)
+        log_message(f"[mannequin/auto-tag] ❌ 上游额度不足: {e.upstream_message}", page='模特库', business='模特自动打标', status='失败')
         raise HTTPException(
             status_code=402,
             detail=f"上游账户额度不足，无法自动打标。请联系管理员充值：{e.upstream_message}",
         )
     except json_mod.JSONDecodeError as e:
-        print(f"[mannequin/auto-tag] ❌ JSON 解析失败: {e}", flush=True)
+        log_message(f"[mannequin/auto-tag] ❌ JSON 解析失败: {e}", page='模特库', business='模特自动打标', status='失败')
         raise HTTPException(502, f"VLM 返回格式错误: {e}")
     except Exception as e:
-        print(f"[mannequin/auto-tag] ❌ 失败: {e}", flush=True)
+        log_message(f"[mannequin/auto-tag] ❌ 失败: {e}", page='模特库', business='模特自动打标', status='失败')
         raise HTTPException(502, f"自动打标失败: {e}")
 
 
@@ -838,7 +863,7 @@ async def _mq_auto_tag(data_uris: list[str], extra_context: str | None = None):
 
     返回 (validated_tags[{group_key,dim_key,tag_values}], description, suggested_name)。
     """
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.newapi.pool import get_model_pool
 
     dims_json = json_mod.dumps(MANNEQUIN_DIMENSION_GROUPS, ensure_ascii=False, indent=2)
     system = (
@@ -1058,7 +1083,7 @@ def _mq_save_refs(raw_refs: list) -> list[str]:
 
 async def _mq_async_optimize(raw_prompt: str, tags: str | None, ref_uris: list[str]) -> str:
     """独立实现(参考老 optimize_prompt 端点逻辑,老端点零改动)。"""
-    from wellflow.app.llm.model_pool import get_model_pool
+    from wellflow.app.newapi.pool import get_model_pool
     from wellflow.app.utils.image_store import paths_to_data_uris
 
     parsed_tags: list[dict] = []
@@ -1116,7 +1141,7 @@ async def _mq_async_optimize(raw_prompt: str, tags: str | None, ref_uris: list[s
 async def _mq_async_generate(prompt: str, model: str, num_output: int,
                              ref_uris: list[str], session_id: str) -> list[str]:
     """独立实现(参考老 generate 端点):批量生图 N 张,结果落盘,返回 storage_uri 列表。"""
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
     from wellflow.app.utils.image_store import paths_to_data_uris, save_output_image
     from wellflow.app.utils.async_task_lib import download_image
 
@@ -1166,7 +1191,7 @@ async def _mq_async_generate(prompt: str, model: str, num_output: int,
 async def _mq_async_fine_tune(image_uri: str, prompt: str, model: str,
                               session_id: str) -> str:
     """独立实现(参考老 fine_tune 端点):目标图 → 单张图生图,落盘,返回 storage_uri。"""
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
     from wellflow.app.utils.image_store import paths_to_data_uris, save_output_image
     from wellflow.app.utils.async_task_lib import download_image
 

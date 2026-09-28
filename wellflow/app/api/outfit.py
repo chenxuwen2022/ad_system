@@ -18,12 +18,17 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import page_context
+
+from wellflow.app.newapi.observability import business_operation, event
+
 import asyncio
 import base64
 import json as json_mod
 import os
 import time
 import uuid
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,9 +41,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from wellflow.app.api.utils import ok, to_cn_iso
 from wellflow.app.config import settings
 from wellflow.app.database import get_db, get_db_async, session_scope, AsyncSessionLocal
+from wellflow.app.newapi.client_factory import get_llm_client
+from wellflow.app.newapi.pool import get_model_pool
 from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image, spawn_heartbeat
-from wellflow.app.llm.factory import get_llm_client
-from wellflow.app.llm.model_pool import get_model_pool
 from wellflow.app.repositories.outfit_repo import OutfitRepo
 from wellflow.app.schemas.outfit_schemas import (
     OutfitAutoTagRequest, OutfitAutoTagResponse,
@@ -95,8 +100,8 @@ OUTFIT_DIMENSION_GROUPS: dict[str, dict[str, Any]] = {
     },
 }
 
-# 抠图链/上限/并发已迁移到 settings(outfit_extract_models / outfit_max_items /
-# outfit_extract_concurrency,见 config.py)—— 2026-09-20 qwen-image-3.0 置于链首
+# 抠图模型由请求指定；数量上限和并发来自 settings。
+_TASK_LOCK = threading.RLock()
 
 # 生成流水线并发闸:保护公司网关,排队不拒绝(技术主管要求可同时开多个,但限制同时在跑)
 GLOBAL_PIPELINE_CONCURRENCY = 3
@@ -291,11 +296,13 @@ def _to_detail(o) -> OutfitDetailResponse:
 
 
 @router.get("/dimensions", summary="穿搭六组维度枚举(颜色含分组)")
+@page_context('穿搭库')
 async def get_dimensions():
     return ok({"groups": OUTFIT_DIMENSION_GROUPS})
 
 
 @router.get("/ai-status", summary="轮询拆解/生成任务状态")
+@page_context('穿搭库')
 async def ai_status(task_id: str):
     await run_in_threadpool(_task_store().sweep)
     t = await asyncio.to_thread(_task_store().load, task_id)
@@ -325,6 +332,7 @@ def _layout_grid(n: int) -> tuple[int, int]:
 
 
 @router.get("", response_model=dict, summary="列出穿搭(scope/q/dims 筛选分页)")
+@page_context('穿搭库')
 async def list_outfits(
     scope: str | None = Query(default=None),
     q: str | None = Query(default=None),
@@ -355,6 +363,7 @@ async def list_outfits(
 
 
 @router.get("/{outfit_id}", response_model=dict, summary="查询穿搭详情")
+@page_context('穿搭库')
 async def get_outfit(outfit_id: int, db: AsyncSession = Depends(get_db_async)):
     await run_in_threadpool(_task_store().sweep)
     repo = OutfitRepo(db)
@@ -365,6 +374,7 @@ async def get_outfit(outfit_id: int, db: AsyncSession = Depends(get_db_async)):
 
 
 @router.post("", response_model=dict, summary="确认入库(一次事务写 outfit 表)")
+@page_context('穿搭库')
 async def create_outfit(body: OutfitCreateRequest, db: AsyncSession = Depends(get_db_async)):
     """穿搭最终入库:交互端点产物全部通过 storage_uri 引用,此处一次事务落库。"""
     repo = OutfitRepo(db)
@@ -388,6 +398,7 @@ async def create_outfit(body: OutfitCreateRequest, db: AsyncSession = Depends(ge
 
 
 @router.put("/{outfit_id}", response_model=dict, summary="更新穿搭/确认入库/返回上一步(官方资产 403)")
+@page_context('穿搭库')
 async def update_outfit(outfit_id: int, body: OutfitUpdateRequest, db: AsyncSession = Depends(get_db_async)):
     """编辑穿搭;确认入库 = 待确认行提交 {name, desc, tags, dims, status:"active"};
 
@@ -430,6 +441,7 @@ async def update_outfit(outfit_id: int, body: OutfitUpdateRequest, db: AsyncSess
 
 
 @router.delete("/{outfit_id}", response_model=dict, summary="删除穿搭(官方资产 403)")
+@page_context('穿搭库')
 async def delete_outfit(outfit_id: int, db: AsyncSession = Depends(get_db_async)):
     repo = OutfitRepo(db)
     o = await repo.aget(outfit_id)
@@ -447,6 +459,7 @@ async def delete_outfit(outfit_id: int, db: AsyncSession = Depends(get_db_async)
 # 交互端点 1:AI 拆解(异步任务 + 轮询;真实识别 + 逐件抠图)
 # ---------------------------------------------------------------------------
 
+@business_operation("穿搭库/单品识别")
 async def _call_vlm_recognize(raw: bytes):
     """VLM(模型池)识别照片单品清单,≤ settings.outfit_max_items 件。
 
@@ -477,6 +490,7 @@ async def _call_vlm_recognize(raw: bytes):
         parsed = _extract_json(content)
         items = parsed.get("items")
         if not isinstance(items, list) or not items:
+            event("结果无效", model=_used_model, attempt=_attempt + 1, reason="单品清单为空或解析失败", retry=_attempt == 0)
             continue  # 空清单/解析失败 → 再试一次
         norm = []
         for it in items[:settings.outfit_max_items]:
@@ -492,37 +506,31 @@ async def _call_vlm_recognize(raw: bytes):
     raise RuntimeError(f"VLM 未返回有效单品清单: {content[:200]}")
 
 
-async def _extract_item_image(raw: bytes, name: str):
-    """单件抠图:降级链依次尝试,成功返回 b64,全败抛 RuntimeError。
-
-    网关可能只回 url 不回 b64(如 qwen-image-3.0):http url 下载校验后转 b64。
-    """
+@business_operation("穿搭库/单品抠图")
+async def _extract_item_image(raw: bytes, name: str, model: str):
+    """使用用户选择的模型抠图；失败直接报告，不切换模型。"""
     prompt = (
         f"提取这张穿搭照片中的「{name}」,生成干净的专业白底商品图。"
         "要求:只保留这一件单品,主体完整(被遮挡部分合理补全),"
         "背景纯白,居中构图,无阴影、无文字"
     )
-    errors = []
-    for model in settings.outfit_extract_models:
-        try:
-            client = get_llm_client("image", model_override=model)
-            r = await client.generate_image(
-                prompt=prompt,
-                image_uris=[f"data:image/png;base64,{base64.b64encode(raw).decode()}"],
-                size="1024x1024",
-                n=1,
-                response_format="b64_json",
-            )
-            img = r.all_images[0]
-            b64 = img.b64_json or (img.url or "")
-            if not b64:
-                raise RuntimeError(f"{model}: AI 未返回图片结果")
-            if b64.startswith("http"):
-                b64 = await asyncio.to_thread(download_image, b64, model)
-            return b64
-        except Exception as e:
-            errors.append(f"{model}: {str(e)[:100]}")
-    raise RuntimeError("；".join(errors))
+    client = get_llm_client("image", model_override=model)
+    r = await client.generate_image(
+        prompt=prompt,
+        image_uris=[f"data:image/png;base64,{base64.b64encode(raw).decode()}"],
+        size="1024x1024",
+        n=1,
+        response_format="b64_json",
+    )
+    img = r.all_images[0]
+    b64 = img.b64_json or (img.url or "")
+    if not b64:
+        raise RuntimeError(f"{model}: AI 未返回图片结果")
+    if b64.startswith("http"):
+        b64 = await asyncio.to_thread(download_image, b64, model)
+    return b64
+
+@business_operation("穿搭库/拆解", lifecycle=False)
 async def _run_cutout(task: dict, raw: bytes, items: list[dict], session_id: str) -> tuple[int, dict]:
     """并发抠图(settings.outfit_extract_concurrency 路,asyncio 协程并发)。
 
@@ -537,7 +545,7 @@ async def _run_cutout(task: dict, raw: bytes, items: list[dict], session_id: str
         b64 = None
         err = ""
         try:
-            b64 = await _extract_item_image(raw, items[idx]["name"])
+            b64 = await _extract_item_image(raw, items[idx]["name"], task["image_model"])
         except Exception as e:
             err = str(e)[:200]
         uri = ""
@@ -627,6 +635,7 @@ async def _run_extract(task: dict, raw: bytes, mode: str):
     except Exception as e:
         await fail(str(e)[:600])
 @router.post("/ai-extract", response_model=dict, summary="AI 拆解(点击即入库 extracting,后台识别+抠图;demo/real)")
+@page_context('穿搭库')
 async def ai_extract(body: OutfitExtractRequest, db: AsyncSession = Depends(get_db_async)):
     """拆解也走「先入库」:立即写 outfit 行(status=extracting),后台识别+抠图。
 
@@ -683,7 +692,7 @@ async def ai_extract(body: OutfitExtractRequest, db: AsyncSession = Depends(get_
     task_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
     task = {
         "task_id": task_id, "task_type": "extract", "pid": _PID,
-        "mode": mode, "status": "processing",
+        "mode": mode, "status": "processing", "image_model": body.image_model,
         "session_id": sid,
         "original_uri": body.original_uri,
         "outfit_id": obj.id,
@@ -747,6 +756,7 @@ def _compose_flatlay(item_uris: list[str]) -> bytes:
 
 
 @router.post("/flatlay", response_model=dict, summary="已选单品合成 4:3 平铺总图(输出落 outputs/)")
+@page_context('穿搭库')
 async def flatlay(body: OutfitFlatlayRequest):
 
     for uri in body.items:
@@ -772,6 +782,7 @@ async def flatlay(body: OutfitFlatlayRequest):
 # 交互端点 3:自动打标(仿 mannequins.auto_tag:VLM 读图 + 枚举校验防幻觉)
 # ---------------------------------------------------------------------------
 
+@business_operation("穿搭库/自动打标")
 async def _do_auto_tag(
     data_uris: list[str], extra_context: str | None = None,
 ) -> tuple[dict[str, list[str]], str, str | None, str]:
@@ -831,6 +842,7 @@ async def _do_auto_tag(
 
 
 @router.post("/auto-tag", response_model=dict, summary="入库前自动打标(六组维度+描述)")
+@page_context('穿搭库')
 async def auto_tag(body: OutfitAutoTagRequest):
 
     data_uris = _to_data_uris([body.image_uri])
@@ -857,6 +869,7 @@ async def auto_tag(body: OutfitAutoTagRequest):
 # 交互端点 4:一键异步生成(点击即入库 generating → 后台补全 → active/failed)
 # ---------------------------------------------------------------------------
 
+@business_operation("穿搭库/生成", lifecycle=False)
 async def _run_generate(task: dict, raw: bytes, body) -> None:
     """后台补全流水线(asyncio 协程,并发闸内执行):平铺 → 打标 → UPDATE 行 → done。
 
@@ -960,6 +973,7 @@ async def _run_generate(task: dict, raw: bytes, body) -> None:
             await asyncio.to_thread(_task_store().save, task)
             await _amark_outfit_status(outfit_id, "failed")
 @router.post("/generate", response_model=dict, summary="生成穿搭图(选件后:更新已有行;auto:新建行。后台平铺+打标)")
+@page_context('穿搭库')
 async def generate(body: OutfitGenerateRequest, db: AsyncSession = Depends(get_db_async)):
     """异步生成:行进入 generating,后台平铺+打标,完成后行 status=pending_confirm
     (预填 VLM 名称/标签/描述,等用户确认入库),失败 → 行 failed。
@@ -1015,7 +1029,7 @@ async def generate(body: OutfitGenerateRequest, db: AsyncSession = Depends(get_d
     task_id = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:6]}"
     task = {
         "task_id": task_id, "task_type": "generate", "pid": _PID,
-        "mode": body.mode, "status": "processing", "step": "queued",
+        "mode": body.mode, "status": "processing", "step": "queued", "image_model": body.image_model,
         "session_id": sid, "original_uri": body.original_uri,
         "outfit_id": obj.id,
         "items": items_db, "failed_items": [], "progress": {"done": 0, "total": 0},

@@ -32,7 +32,8 @@ h2{font-size:18px;margin-bottom:16px}
 .confirm-card .advid{font-size:12.5px;color:var(--t3);margin-bottom:6px}
 .confirm-card .shopname{font-size:15px;font-weight:600;margin-bottom:4px}
 .confirm-card .summary{font-size:13px;color:var(--t2);margin-bottom:16px}
-.confirm-card .thumb{width:64px;height:80px;border-radius:6px;object-fit:cover;background:#000;margin-bottom:14px}
+.material-thumb{width:64px;height:80px;border-radius:6px;object-fit:cover;background:#000;margin-bottom:14px}
+.material-thumb .type-badge{position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.7);color:#fff;font-size:10px;padding:2px 4px;text-align:center}
 .confirm-card .plan-name{font-size:15px;font-weight:600;margin-bottom:6px}
 .confirm-card .row{font-size:13px;color:var(--t3);margin-bottom:4px}
 .confirm-card .row b{color:var(--text);font-weight:500}
@@ -41,10 +42,13 @@ h2{font-size:18px;margin-bottom:16px}
 .tip .t{font-weight:600;color:var(--green);margin-bottom:6px}
 .tip .d{font-size:13px;color:var(--t2);line-height:1.6}
 
+.debug{background:#1a1a1a;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:16px;font-size:12px;color:#888;font-family:monospace;white-space:pre-wrap;max-height:200px;overflow-y:auto}
+
 .footer-bar{display:flex;justify-content:flex-end;gap:12px;border-top:1px solid var(--line);padding-top:18px}
 .btn{padding:11px 22px;border-radius:9px;font-size:14px;cursor:pointer;border:none}
 .ghost{background:#222;color:#fff;border:1px solid #333}
 .primary{background:var(--green);color:#000;font-weight:700}
+.primary:disabled{opacity:.5;cursor:not-allowed}
 </style>
 </head>
 <body>
@@ -68,7 +72,13 @@ h2{font-size:18px;margin-bottom:16px}
   </div>
 
   <h2>确认本次投放内容</h2>
+
+  <!-- 素材缩略图列表 -->
+  <div class="materials-list" id="materialsList" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px"></div>
+
   <div id="confirmList"></div>
+
+  <div class="debug" id="debugInfo">调试信息：加载中...</div>
 
   <div class="tip">
     <div class="t">上传成功后，将自动关联计划并启动投放</div>
@@ -86,11 +96,44 @@ const qs=new URLSearchParams(location.search);
 const count=qs.get('count')||'1';
 const shop=qs.get('shop')||'';
 const aid=qs.get('aid')||'';
+
+const debugEl=document.getElementById('debugInfo');
+function debug(msg){
+  console.log(msg);
+  debugEl.textContent+= '\n'+msg;
+  debugEl.scrollTop=debugEl.scrollHeight;
+}
+
+debug('=== 页面加载 ===');
+debug('URL参数: '+location.search);
+debug('广告主ID: '+aid);
+debug('店铺: '+shop);
+debug('素材数量: '+count);
+
 document.getElementById('selCount').textContent='已选 '+count+' 份素材';
 document.getElementById('shopInfo').textContent=decodeURIComponent(shop);
 
 // 从 sessionStorage 读第二步选中的计划+商品
 const chosen=JSON.parse(sessionStorage.getItem('launch_chosen')||'[]');
+debug('选中的计划: '+JSON.stringify(chosen));
+
+const selectedMaterials=JSON.parse(sessionStorage.getItem('selectedMaterials')||'[]');
+debug('选中的素材: '+JSON.stringify(selectedMaterials));
+
+// 渲染素材缩略图列表
+const materialsListEl=document.getElementById('materialsList');
+materialsListEl.innerHTML=selectedMaterials.map(m=>{
+  const isVideo = (m.type||'').includes('视频') || (m.path||'').match(/\.(mp4|mov|avi|mkv|webm)$/i);
+  const thumbUrl = m.thumb_url || m.url || m.path || '';
+  
+  return '<div style="width:80px;height:100px;border-radius:8px;overflow:hidden;background:#000;border:1px solid #2E3A1E;position:relative">'+
+    (isVideo 
+      ? '<video src="'+thumbUrl+'" muted loop style="width:100%;height:100%;object-fit:cover"></video>'
+      : '<img src="'+thumbUrl+'" alt="'+(m.name||'')+'" style="width:100%;height:100%;object-fit:cover">')+
+    '<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.7);color:#fff;font-size:10px;padding:2px 4px;text-align:center">'+(isVideo?'视频':'图片')+'</div>'+
+  '</div>';
+}).join('');
+
 const box=document.getElementById('confirmList');
 if(chosen.length===0){
   box.innerHTML='<div style="color:#888;padding:20px">未选择任何计划，请返回上一步。</div>';
@@ -106,9 +149,110 @@ if(chosen.length===0){
     '</div>').join('');
 }
 
-function doLaunch(){
-  if(chosen.length===0){alert('请先选择计划');return;}
-  location.href='17-投放结果.html';
+async function doLaunch(){
+  debug('=== 开始投放 ===');
+  
+  if(chosen.length===0){
+    alert('请先选择计划');
+    debug('错误：未选择计划');
+    return;
+  }
+  
+  if(selectedMaterials.length === 0){
+    alert('没有选中的素材');
+    debug('错误：没有选中的素材');
+    return;
+  }
+  
+  debug('广告主ID: '+aid);
+  debug('计划数: '+chosen.length);
+  debug('素材数: '+selectedMaterials.length);
+  
+  // 批量投放：每个素材投到每个计划
+  const results = [];
+  let completed = 0;
+  const total = selectedMaterials.length * chosen.length;
+  
+  debug('总任务数: '+total);
+  
+  // 显示进度
+  const btn = document.querySelector('.btn.primary');
+  btn.textContent = '正在投放... 0/' + total;
+  btn.disabled = true;
+  
+  for(const material of selectedMaterials){
+    for(const plan of chosen){
+      debug('--- 开始投放 ---');
+      debug('素材: '+material.name);
+      debug('素材路径: '+(material.path||'空'));
+      debug('计划: '+plan.plan_name);
+      debug('计划ID: '+plan.plan_id);
+      
+      const requestData = {
+        platform: 'douyin',
+        advertiser_id: aid,
+        local_file_path: material.path || material,
+        plan_id: plan.plan_id,
+        plan_name: plan.plan_name || '',
+        product_ids: plan.product_ids || [],
+        tags: [],
+        test_mode: false
+      };
+      
+      debug('请求参数: '+JSON.stringify(requestData));
+      
+      try{
+        debug('正在调用接口 /api/ad/launch ...');
+        
+        const response = await fetch('/api/ad/launch', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(requestData)
+        });
+        
+        debug('响应状态码: '+response.status);
+        
+        const result = await response.json();
+        debug('响应结果: '+JSON.stringify(result));
+        
+        results.push({
+          material: material.name || material,
+          plan: plan.plan_name || plan.plan_id,
+          success: result.success,
+          error: result.error_msg || ''
+        });
+        
+      }catch(err){
+        debug('❌ 接口调用失败: '+err.message);
+        results.push({
+          material: material.name || material,
+          plan: plan.plan_name || plan.plan_id,
+          success: false,
+          error: err.message
+        });
+      }
+      
+      completed++;
+      btn.textContent = '正在投放... ' + completed + '/' + total;
+      debug('完成进度: '+completed+'/'+total);
+    }
+  }
+  
+  debug('=== 全部完成 ===');
+  debug('成功: '+results.filter(r=>r.success).length);
+  debug('失败: '+results.filter(r=>!r.success).length);
+  
+  // 保存结果并跳转
+  sessionStorage.setItem('launchResult', JSON.stringify({
+    total: total,
+    success: results.filter(r=>r.success).length,
+    failed: results.filter(r=>!r.success).length,
+    details: results
+  }));
+  
+  setTimeout(()=>{
+    location.href='17-投放结果.html';
+  }, 1000);
 }
 </script>
 </body>

@@ -10,6 +10,8 @@ list_conversations 用 JOIN + 子查询一次拉齐 conversation 列表 + 统计
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message, page_context
+
 from wellflow.app.workflow_status import canonical_phase
 
 from typing import Any
@@ -49,6 +51,7 @@ def _storage_uri_url(storage_uri: str) -> str:
 
 
 @router.get("", response_model=StandardResponse[ConversationListResponse], summary="列出会话（分页，按 updated_at 倒序）")
+@page_context('对话')
 async def list_conversations(
     page: int = 1,
     page_size: int = 20,
@@ -194,6 +197,7 @@ async def list_conversations(
 
 
 @router.get("/{conversation_id}", response_model=StandardResponse[ConversationDetailResponse], summary="查询会话详情（消息 + 关联 task 列表）")
+@page_context('对话')
 async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_async_db)):
     # resolve：先按完整 PK 查，回退按 short_id
     c_result = await db.execute(
@@ -289,6 +293,7 @@ async def get_conversation(conversation_id: str, db: AsyncSession = Depends(get_
     response_model=StandardResponse[dict[str, Any]],
     summary="查询会话时间线（对话消息 + 每个 task 的工作流事件）",
 )
+@page_context('对话')
 async def get_timeline(conversation_id: str, db: AsyncSession = Depends(get_async_db)):
     """返回 conversation 内所有 task 的工作流事件 + 全部 chat_message，
     按 created_at 合并成一条时间线。
@@ -397,6 +402,7 @@ _ACTIVE_TASK_PHASES = frozenset({
     response_model=StandardResponse[dict],
     summary="删除会话（级联删 task + checkpoint + chat_message；仅未入库会话才删磁盘图片）",
 )
+@page_context('对话')
 async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(get_async_db)):
     """删除 conversation 及其全部关联数据。
 
@@ -461,19 +467,13 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
             if rt_state in ("running", "stale"):
                 _true_active.append((t.task_id, t.phase))
             else:
-                print(
-                    f"[delete_conversation] 🛡️ task={t.task_id} "
+                log_message(f"[delete_conversation] 🛡️ task={t.task_id} "
                     f"DB phase={t.phase} 但 checkpoint rt_state={rt_state!r}，"
-                    f"不计为活动 → 允许删除",
-                    flush=True,
-                )
+                    f"不计为活动 → 允许删除", page='对话', business='删除对话', status='记录')
         except Exception as _ckpt_err:
             # checkpoint 读不到 → 保守拦截（避免误删真在跑的任务）
-            print(
-                f"[delete_conversation] ⚠️ task={t.task_id} checkpoint 状态读不到，"
-                f"保守按 DB phase 拦截: {_ckpt_err}",
-                flush=True,
-            )
+            log_message(f"[delete_conversation] ⚠️ task={t.task_id} checkpoint 状态读不到，"
+                f"保守按 DB phase 拦截: {_ckpt_err}", page='对话', business='删除对话', status='警告')
             _true_active.append((t.task_id, t.phase))
 
     if _true_active:
@@ -502,22 +502,19 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
     )
     await db.commit()
 
-    print(
-        f"[delete_conversation] 🗑️ DB 已清 conversation={c.conversation_id} "
-        f"tasks={len(task_ids)} should_keep_images={should_keep_images}",
-        flush=True,
-    )
+    log_message(f"[delete_conversation] 🗑️ DB 已清 conversation={c.conversation_id} "
+        f"tasks={len(task_ids)} should_keep_images={should_keep_images}", page='对话', business='删除对话', status='记录')
 
     # ---- 6. 磁盘文件（DB commit 后再删，避免 rollback 后文件已没了）----
     if task_ids and not should_keep_images:
         from wellflow.app.utils.image_store import delete_task_files
         for tid in task_ids:
             await asyncio.to_thread(delete_task_files, tid)
-        print(f"[delete_conversation] 🗑️ 已删 {len(task_ids)} 个任务目录", flush=True)
+        log_message(f"[delete_conversation] 🗑️ 已删 {len(task_ids)} 个任务目录", page='对话', business='删除对话', status='记录')
 
     # ---- 7. LangGraph checkpoint ----
     if task_ids:
-        from wellflow.app.llm.model_pool import clear_task_models
+        from wellflow.app.newapi.pool import clear_task_models
         for tid in task_ids:
             clear_task_models(tid)
         from wellflow.app.runtime import get_checkpointer
@@ -527,9 +524,9 @@ async def delete_conversation(conversation_id: str, db: AsyncSession = Depends(g
                 try:
                     await cp.adelete_thread(tid)
                 except Exception as e:
-                    print(f"[delete_conversation] ⚠️ checkpoint 清理失败 task_id={tid}: {e}", flush=True)
+                    log_message(f"[delete_conversation] ⚠️ checkpoint 清理失败 task_id={tid}: {e}", page='对话', business='对话管理', status='警告')
             await asyncio.gather(*(_del_thread(tid) for tid in task_ids))
-            print(f"[delete_conversation] ✅ checkpoint 已清 {len(task_ids)} 个任务", flush=True)
+            log_message(f"[delete_conversation] ✅ checkpoint 已清 {len(task_ids)} 个任务", page='对话', business='删除对话', status='成功')
 
     return ok({
         "conversation_id": c.conversation_id,
@@ -544,6 +541,7 @@ class BindSkuRequest(BaseModel):
 
 
 @router.put("/{conversation_id}/sku", summary="为历史对话一次性绑定 SKU")
+@page_context('对话')
 async def bind_conversation_sku(conversation_id: str, body: BindSkuRequest, db: AsyncSession = Depends(get_async_db)):
     from wellflow.app.models.asset_models import ProductSku
     short_id = conversation_id.replace("-", "")[:12]

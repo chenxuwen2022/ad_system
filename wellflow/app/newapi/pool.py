@@ -10,16 +10,19 @@ preferred_model 偏好优先（优先使用某个模型，失败自动降级到�
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
+from wellflow.app.newapi.observability import event
+
 import asyncio
 import random
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any
 
 import httpx
 
-from wellflow.app.api.model_options import fetch_model_options
+from wellflow.app.newapi.catalog import fetch_model_options
 from wellflow.app.config import settings
 
 
@@ -50,12 +53,12 @@ class _ModelState:
         self._purge_old(now)
         if len(self.failure_timestamps) >= settings.model_pool_fail_threshold:
             self.cooldown_until = now + settings.model_pool_cooldown
-            print(f"[model-pool] 🔴 熔断 {self.model_key} — 冷却 {settings.model_pool_cooldown:.0f}s", flush=True)
+            log_message(f"[model-pool] 🔴 熔断 {self.model_key} — 冷却 {settings.model_pool_cooldown:.0f}s", page='系统', business='大模型选择', status='记录')
 
     def record_success(self) -> None:
         self.failure_timestamps.clear()
         if self.cooldown_until:
-            print(f"[model-pool] 🟢 恢复 {self.model_key}", flush=True)
+            log_message(f"[model-pool] 🟢 恢复 {self.model_key}", page='系统', business='大模型选择', status='记录')
         self.cooldown_until = 0.0
 
 
@@ -129,11 +132,8 @@ class ModelPool:
                 else:
                     new_states.append(_ModelState(model_key=key))
             self._states = new_states
-            print(
-                f"[model-pool] ✅ 已从 new-api 拉取 {len(self._states)} 个 {self._capability!r} 模型"
-                f" (task={self._task_id}, channel_id={self._channel_id}, preferred={self._preferred_model})",
-                flush=True,
-            )
+            log_message(f"[model-pool] ✅ 已从 new-api 拉取 {len(self._states)} 个 {self._capability!r} 模型"
+                f" (task={self._task_id}, channel_id={self._channel_id}, preferred={self._preferred_model})", page='系统', business='大模型选择', status='成功')
 
     async def prepare(self) -> None:
         """任务启动阶段预加载模型列表。"""
@@ -167,24 +167,9 @@ class ModelPool:
         🔴 历史 bug：这里之前硬编码成 "vlm"，导致 refine 节点（capability="text"）
         也拿到 role=vlm 的网关日志和超时策略，stream_chat 耗时多 3-5 倍。
         """
-        from wellflow.app.llm.factory import get_llm_client, _strip_provider
+        from wellflow.app.newapi.client_factory import get_llm_client
         role = "text" if self._capability == "text" else "vlm"
-        return get_llm_client(role, model_override=_strip_provider(state.model_key))
-
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
-
-    @contextmanager
-    def _with_retries_disabled(self) -> Iterator[None]:
-        """临时关闭 NewApiGateway 的内部重试，让模型池自己接管 failover。"""
-        from wellflow.app.llm.newapi_gateway import NewApiGateway
-        original = NewApiGateway.MAX_RETRIES
-        NewApiGateway.MAX_RETRIES = 0
-        try:
-            yield
-        finally:
-            NewApiGateway.MAX_RETRIES = original
+        return get_llm_client(role, model_override=state.model_key, max_retries=0)
 
     # ------------------------------------------------------------------
     # 非流式统一入口
@@ -227,17 +212,15 @@ class ModelPool:
             if state is None:
                 break
             client = self._build_client(state)
-            print(f"[model-pool] 📤 {method_name} → {state.model_key}", flush=True)
             try:
                 resp = await getattr(client, method_name)(**client_kwargs)
                 state.record_success()
-                print(f"[model-pool] ✅ {state.model_key}", flush=True)
                 return (resp, state.model_key)
             except Exception as exc:
                 last_exc = exc
                 state.record_failure()
                 label = "可恢复" if _is_retryable_error(exc) else "其他"
-                print(f"[model-pool] ❌ {state.model_key} [{label}]: {type(exc).__name__}", flush=True)
+                event("模型池尝试失败", business="大模型选择", model=state.model_key, attempt=offset + 1, error_type=type(exc).__name__, error=str(exc)[:200])
 
         if last_exc:
             raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
@@ -252,23 +235,21 @@ class ModelPool:
         response_format: dict[str, Any] | None = None,
         temperature: float = 0.3, reasoning_effort: str,
     ) -> tuple[Any, str]:
-        with self._with_retries_disabled():
-            return await self._call_internal(
-                "chat", system=system, user=user,
-                response_format=response_format, temperature=temperature,
-                reasoning_effort=reasoning_effort,
-            )
+        return await self._call_internal(
+            "chat", system=system, user=user,
+            response_format=response_format, temperature=temperature,
+            reasoning_effort=reasoning_effort,
+        )
 
     async def chat_with_images(
         self, *, system: str, user: str, image_uris: list[str],
         response_format: dict[str, Any] | None = None,
         reasoning_effort: str,
     ) -> tuple[Any, str]:
-        with self._with_retries_disabled():
-            return await self._call_internal(
-                "chat_with_images", system=system, user=user, image_uris=image_uris,
-                response_format=response_format, reasoning_effort=reasoning_effort,
-            )
+        return await self._call_internal(
+            "chat_with_images", system=system, user=user, image_uris=image_uris,
+            response_format=response_format, reasoning_effort=reasoning_effort,
+        )
 
     async def stream_chat_with_images(
         self, *, system: str, user: str, image_uris: list[str],
@@ -278,77 +259,64 @@ class ModelPool:
         """流式多模态。failover 仅限连接建立期，流开始后不再切换。"""
         await self._ensure_models()
 
-        with self._with_retries_disabled():
-            n = len(self._states)
-            if n == 0:
-                raise RuntimeError("模型池为空，无法调用 LLM")
+        n = len(self._states)
+        if n == 0:
+            raise RuntimeError("模型池为空，无法调用 LLM")
 
-            start = self._pick_start(n)
-            last_exc: Exception | None = None
-            for offset in range(n):
-                state = self._next_available((start + offset) % n)
-                if state is None:
-                    break
-                client = self._build_client(state)
-                print(f"[model-pool] 📤 stream → {state.model_key}", flush=True)
+        start = self._pick_start(n)
+        last_exc: Exception | None = None
+        for offset in range(n):
+            state = self._next_available((start + offset) % n)
+            if state is None:
+                break
+            client = self._build_client(state)
 
-                _stream_started = False
-                _first_content_logged = False
-                _got_content = False
-                _stream_start_ts: float | None = None
-                try:
-                    async for delta in client.stream_chat_with_images(
-                        system=system, user=user, image_uris=image_uris,
-                        reasoning_effort=reasoning_effort, extra_params=extra_params,
-                        response_format=response_format,
-                    ):
-                        if not _stream_started:
-                            _stream_started = True
-                            state.record_success()
-                            _stream_start_ts = time.time()
-                            print(
-                                f"[model-pool] ✅ {state.model_key} 流已建立 "
-                                f"@ {time.strftime('%H:%M:%S')}",
-                                flush=True,
-                            )
-                        has_text = isinstance(delta, dict) and delta.get("type") == "content" and delta.get("text")
-                        if (has_text or delta) and not _first_content_logged and _stream_start_ts is not None:
-                            _first_content_logged = True
+            _stream_started = False
+            _first_content_logged = False
+            _got_content = False
+            _stream_start_ts: float | None = None
+            try:
+                async for delta in client.stream_chat_with_images(
+                    system=system, user=user, image_uris=image_uris,
+                    reasoning_effort=reasoning_effort, extra_params=extra_params,
+                    response_format=response_format,
+                ):
+                    if not _stream_started:
+                        _stream_started = True
+                        state.record_success()
+                        _stream_start_ts = time.time()
+                    has_text = isinstance(delta, dict) and delta.get("type") == "content" and delta.get("text")
+                    if (has_text or delta) and not _first_content_logged and _stream_start_ts is not None:
+                        _first_content_logged = True
+                        _got_content = True
+                    if isinstance(delta, dict):
+                        if delta.get("type") == "content" and delta.get("text"):
                             _got_content = True
-                            print(
-                                f"[model-pool] ⚡ {state.model_key} 首 token 到达 "
-                                f"@ {time.strftime('%H:%M:%S')} "
-                                f"(流建立→首 token 耗时={time.time() - _stream_start_ts:.2f}s)",
-                                flush=True,
-                            )
-                        if isinstance(delta, dict):
-                            if delta.get("type") == "content" and delta.get("text"):
-                                _got_content = True
-                        elif delta:
-                            _got_content = True
-                        yield delta
-                    # 流正常结束
-                    if _stream_started:
-                        if _got_content:
-                            return
-                        print(f"[model-pool] ⚠️ {state.model_key} 流结束但 content 为空，试下一个", flush=True)
-                        state.record_failure()
-                        continue
-                    print(f"[model-pool] ⚠️ {state.model_key} 空流，试下一个", flush=True)
-                    continue
-                except Exception as exc:
-                    last_exc = exc
-                    if _stream_started:
-                        print(f"[model-pool] 💥 {state.model_key} 流中断（已 yield），不再 failover", flush=True)
-                        raise
+                    elif delta:
+                        _got_content = True
+                    yield delta
+                # 流正常结束
+                if _stream_started:
+                    if _got_content:
+                        return
+                    log_message(f"[model-pool] ⚠️ {state.model_key} 流结束但 content 为空，试下一个", page='系统', business='大模型选择', status='警告')
                     state.record_failure()
-                    label = "可恢复" if _is_retryable_error(exc) else "其他"
-                    print(f"[model-pool] ❌ {state.model_key} 连接期失败 [{label}]: {type(exc).__name__}", flush=True)
                     continue
+                log_message(f"[model-pool] ⚠️ {state.model_key} 空流，试下一个", page='系统', business='大模型选择', status='警告')
+                continue
+            except Exception as exc:
+                last_exc = exc
+                if _stream_started:
+                    event("流中断", business="大模型选择", model=state.model_key, failover=False)
+                    raise
+                state.record_failure()
+                label = "可恢复" if _is_retryable_error(exc) else "其他"
+                event("模型池尝试失败", business="大模型选择", model=state.model_key, attempt=offset + 1, error_type=type(exc).__name__, error=str(exc)[:200])
+                continue
 
-            if last_exc:
-                raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
-            raise RuntimeError("模型池全部不可用")
+        if last_exc:
+            raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
+        raise RuntimeError("模型池全部不可用")
 
     async def stream_chat(
         self, *, system: str, user: str,
@@ -357,29 +325,28 @@ class ModelPool:
     ):
         """纯文本流式调用，复用当前 task 已加载的模型列表。"""
         await self._ensure_models()
-        with self._with_retries_disabled():
-            n = len(self._states)
-            start = self._pick_start(n)
-            last_exc: Exception | None = None
-            for offset in range(n):
-                state = self._next_available((start + offset) % n)
-                if state is None:
-                    break
-                client = self._build_client(state)
-                try:
-                    async for delta in client.stream_chat(
-                        system=system, user=user, reasoning_effort=reasoning_effort,
-                        extra_params=extra_params, response_format=response_format,
-                    ):
-                        yield delta
-                    state.record_success()
-                    return
-                except Exception as exc:
-                    last_exc = exc
-                    state.record_failure()
-            if last_exc:
-                raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
-            raise RuntimeError("模型池全部不可用")
+        n = len(self._states)
+        start = self._pick_start(n)
+        last_exc: Exception | None = None
+        for offset in range(n):
+            state = self._next_available((start + offset) % n)
+            if state is None:
+                break
+            client = self._build_client(state)
+            try:
+                async for delta in client.stream_chat(
+                    system=system, user=user, reasoning_effort=reasoning_effort,
+                    extra_params=extra_params, response_format=response_format,
+                ):
+                    yield delta
+                state.record_success()
+                return
+            except Exception as exc:
+                last_exc = exc
+                state.record_failure()
+        if last_exc:
+            raise RuntimeError(f"模型池全部不可用: {last_exc}") from last_exc
+        raise RuntimeError("模型池全部不可用")
 
 
 # ---------------------------------------------------------------------------
@@ -417,11 +384,8 @@ def get_model_pool(
             task_id=task_id,
         )
         _pool_instances[key] = pool
-        print(
-            f"[model-pool] 🏗️ 新建 ModelPool: capability={capability}"
-            f" task={key} channel_id={channel_id} preferred={preferred_model}",
-            flush=True,
-        )
+        log_message(f"[model-pool] 🏗️ 新建 ModelPool: capability={capability}"
+            f" task={key} channel_id={channel_id} preferred={preferred_model}", page='系统', business='大模型选择', status='记录')
     return pool
 
 

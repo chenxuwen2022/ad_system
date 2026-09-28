@@ -11,6 +11,7 @@ from wellflow.app.models.task_models import TaskEvent
 def generation_id(state, work_items):
     data = {"revision": state.get("workflow_revision", 0), "items": work_items,
             "refs": (state.get("node3") or {}).get("reference_images"),
+            "image_model": (state.get("node3") or {}).get("image_model"),
             "products": (state.get("request") or {}).get("product_images")}
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:24]
 
@@ -23,6 +24,7 @@ def prepare_batch(task_id, node4, revision):
             return
         payload = {k: node4[k] for k in ("generation_id", "work_items")}
         payload["revision"] = revision
+        payload["image_model"] = node4.get("image_model")
         db.add(TaskEvent(task_id=task_id, event_type="generation_prepared", payload_json=payload))
         db.commit()
 

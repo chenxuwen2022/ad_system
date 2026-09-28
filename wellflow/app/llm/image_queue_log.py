@@ -1,7 +1,8 @@
 """Node4 日志计数；每个任务每轮生成是一条队列，worker 是消费者。"""
 from __future__ import annotations
 
-import os
+from wellflow.app.logging import log_message
+
 from uuid import uuid4
 
 
@@ -29,9 +30,8 @@ class ImageQueueLog:
                 f"存活worker={self.workers} 空闲worker={self.idle}")
 
     def log(self, event: str):
-        print(f"[node4队列] {self.prefix} {event} | {self.snapshot()}", flush=True)
-        queues = " ; ".join(q.snapshot() for q in _active_queues.values()) or "无"
-        print(f"[node4队列总览] pid={os.getpid()} 本进程运行队列数={len(_active_queues)} | {queues}", flush=True)
+        log_message(f"[node4队列] {self.prefix} {event} | {self.snapshot()}", page='对话', business='node4生图队列', status='记录')
+
 
     def claim(self, worker: str, shot: str):
         self.pending -= 1

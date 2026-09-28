@@ -13,10 +13,12 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 import json
 from typing import Any
 
-from wellflow.app.llm.model_pool import get_model_pool
+from wellflow.app.newapi.pool import get_model_pool
 from wellflow.app.prompt.registry import get_active_prompt
 
 
@@ -107,9 +109,8 @@ async def stream_plan_schemes(
         "仅输出系统要求的 JSON 方案数组。"
     )
 
-    print(f"[planning_scheme.stream] 调用: reasoning_effort={effort}, "
-          f"product_images={n_prod}",
-          flush=True)
+    log_message(f"[planning_scheme.stream] 调用: reasoning_effort={effort}, "
+          f"product_images={n_prod}", page='对话', business='node2商拍方案', status='记录')
 
     async for delta in pool.stream_chat_with_images(
         system=system_prompt,
@@ -167,9 +168,8 @@ async def plan_schemes(
         "仅输出系统要求的 JSON 方案数组。"
     )
 
-    print(f"[planning_scheme] 调用: reasoning_effort={effort}, "
-          f"product_images={n_prod}",
-          flush=True)
+    log_message(f"[planning_scheme] 调用: reasoning_effort={effort}, "
+          f"product_images={n_prod}", page='对话', business='node2商拍方案', status='记录')
 
     resp, _used_model = await pool.chat_with_images(
         system=system_prompt,
@@ -180,8 +180,8 @@ async def plan_schemes(
 
     raw = resp.content or ""
     thinking_text = getattr(resp, "thinking", None)
-    print(f"[planning_scheme] VLM 返回原始文本 len={len(raw)}, "
-          f"thinking={len(thinking_text) if thinking_text else 0}, 前100字={raw[:100]!r}", flush=True)
+    log_message(f"[planning_scheme] VLM 返回原始文本 len={len(raw)}, "
+          f"thinking={len(thinking_text) if thinking_text else 0}", page='对话', business='node2商拍方案', status='记录')
 
     schemes = split_scheme_reports(raw, expected_count=scheme_count)
 

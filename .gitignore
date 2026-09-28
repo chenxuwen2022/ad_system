@@ -45,6 +45,9 @@ wellflow/uploads/
 wellflow/tests/
 /tests/
 /tests/*
+!/tests/
+!/tests/test_prompt_indices.py
+!/tests/test_task_image_delivery.py
 
 # AI 场景处理产物
 static/scene_ai/
@@ -78,4 +81,7 @@ data/cache/
 **/data/cache/
 
 .git_broken_bak/
+
+# ===== 本地工具记忆文件 =====
+.workbuddy/
 task_state/

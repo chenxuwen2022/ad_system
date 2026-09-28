@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from wellflow.app.llm.model_pool import get_model_pool
+from wellflow.app.newapi.pool import get_model_pool
 from wellflow.app.prompt.registry import get_active_prompt
 
 

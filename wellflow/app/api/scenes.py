@@ -34,8 +34,8 @@ from wellflow.app.api.utils import ok, to_cn_iso
 from wellflow.app.config import settings
 from wellflow.app.database import get_db_async, session_scope, AsyncSessionLocal
 from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image, spawn_heartbeat
-from wellflow.app.llm.factory import get_llm_client
-from wellflow.app.llm.model_pool import get_model_pool
+from wellflow.app.newapi.client_factory import get_llm_client
+from wellflow.app.newapi.pool import get_model_pool
 from wellflow.app.repositories.scene_repo import SceneRepo
 from wellflow.app.schemas.scene_schemas import (
     SceneExtractRequest, SceneUpdateRequest,

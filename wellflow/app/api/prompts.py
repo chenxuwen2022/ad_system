@@ -1,5 +1,7 @@
 """Manage prompt revisions and atomic category releases."""
 
+from wellflow.app.logging import page_context
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -63,6 +65,7 @@ _CATALOG_ORDER = {key: i for i, (key, _, _) in enumerate(CATALOG)}
 
 
 @router.get("")
+@page_context('提示词管理')
 def list_prompts(db: Session = Depends(get_db)):
     result = []
     for category, label in CATEGORIES.items():
@@ -77,6 +80,7 @@ def list_prompts(db: Session = Depends(get_db)):
 
 
 @router.post("", status_code=201)
+@page_context('提示词管理')
 def create_prompt(body: PromptCreate, db: Session = Depends(get_db)):
     if body.category not in CATEGORIES:
         raise HTTPException(422, "分类不存在")
@@ -100,11 +104,13 @@ def create_prompt(body: PromptCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{key}")
+@page_context('提示词管理')
 def get_prompt(key: str, db: Session = Depends(get_db)):
     return _prompt_detail(db, _template(db, key))
 
 
 @router.put("/{key}")
+@page_context('提示词管理')
 def update_prompt(key: str, body: PromptUpdate, db: Session = Depends(get_db)):
     template = _template(db, key)
     if template.draft_revision_id != body.expected_revision_id:
@@ -123,6 +129,7 @@ def update_prompt(key: str, body: PromptUpdate, db: Session = Depends(get_db)):
 
 
 @router.delete("/{key}")
+@page_context('提示词管理')
 def delete_prompt(key: str, db: Session = Depends(get_db)):
     template = _template(db, key)
     return _delete_revision(db, template, template.draft_revision_id)
@@ -163,11 +170,13 @@ def _delete_revision(db: Session, template: PromptTemplate, revision_id: int):
 
 
 @router.delete("/{key}/revisions/{revision_id}")
+@page_context('提示词管理')
 def delete_revision(key: str, revision_id: int, db: Session = Depends(get_db)):
     return _delete_revision(db, _template(db, key), revision_id)
 
 
 @router.get("/{key}/revisions")
+@page_context('提示词管理')
 def revisions(key: str, db: Session = Depends(get_db)):
     _template(db, key)
     rows = db.scalars(select(PromptRevision).where(PromptRevision.template_key == key, PromptRevision.is_deleted.is_(False)).order_by(PromptRevision.number.desc())).all()
@@ -175,6 +184,7 @@ def revisions(key: str, db: Session = Depends(get_db)):
 
 
 @router.post("/{key}/revisions")
+@page_context('提示词管理')
 def save_revision(key: str, body: RevisionInput, db: Session = Depends(get_db)):
     template = _template(db, key)
     number = (db.scalar(select(func.max(PromptRevision.number)).where(PromptRevision.template_key == key)) or 0) + 1
@@ -187,6 +197,7 @@ def save_revision(key: str, body: RevisionInput, db: Session = Depends(get_db)):
 
 
 @router.post("/categories/{category}/release")
+@page_context('提示词管理')
 def publish(category: str, body: ReleaseInput, db: Session = Depends(get_db)):
     if category not in CATEGORIES:
         raise HTTPException(404, "分类不存在")
@@ -207,6 +218,7 @@ def publish(category: str, body: ReleaseInput, db: Session = Depends(get_db)):
 
 
 @router.get("/categories/{category}/releases")
+@page_context('提示词管理')
 def releases(category: str, db: Session = Depends(get_db)):
     if category not in CATEGORIES:
         raise HTTPException(404, "分类不存在")

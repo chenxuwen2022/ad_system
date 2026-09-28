@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from wellflow.app.newapi.observability import business_operation
+
 from wellflow.app.llm.base import ImageGenResult, InsufficientCreditsError
 from wellflow.app.llm.image_retry import generate_with_rate_limit_retry
 
 
+@business_operation("生图")
 async def generate_single_image(
     prompt: str,
     size: str,
@@ -16,19 +19,17 @@ async def generate_single_image(
     task_id: str | None = None,
 ) -> ImageGenResult:
     """使用指定模型生成一张图；失败直接交给调用方处理，不切换模型。"""
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
 
     model = model.strip()
     if not model:
         raise ValueError("缺少生图模型，请先选择生图模型")
     client = get_llm_client("image", model_override=model)
-    print(f"[{log_id}] 🎨 开始生图 model={model}", flush=True)
     result = await generate_with_rate_limit_retry(
         client, log_id=log_id, task_id=task_id,
         prompt=prompt, size=size, n=1, response_format="b64_json",
         extra_params={"image_refs": list(ref_data_uris or [])},
     )
-    print(f"[{log_id}] ✅ 生图成功 model={model}", flush=True)
     return result
 
 

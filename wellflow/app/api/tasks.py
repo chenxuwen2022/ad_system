@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message, page_context
+
 from wellflow.app.workflow_status import canonical_phase
 
 import asyncio
@@ -26,6 +28,7 @@ from langgraph.types import Command
 from sqlalchemy.orm import Session
 
 from wellflow.app.database import get_db, session_scope
+from wellflow.app.workflow_execution import launch_graph
 from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
 from wellflow.app.config import settings
 from wellflow.app.graph_persist import persist_phase, persist_interrupt, persist_error, persist_outputs
@@ -92,23 +95,13 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json_mod.dumps(data, ensure_ascii=False)}\n\n"
 
 
-# ---------------------------------------------------------------------------
-# 核心优化：异步启动 graph（fire-and-forget）
-# ---------------------------------------------------------------------------
-
-
-async def _start_graph(task_id: str, graph, config, initial_state=None, resume_values=None):
-    from wellflow.app.workflow_execution import launch_graph
-    return await launch_graph(task_id, graph, config, initial_state=initial_state,
-                              command=Command(resume=resume_values) if resume_values is not None else None)
-
-
 # ===========================================================================
 # create_task —— 现在返回 StreamingResponse（SSE），一个 HTTP 搞定
 # ===========================================================================
 
 
 @router.post("", summary="创建商拍任务（SSE 直推，零延迟）")
+@page_context('对话')
 async def create_task(
     request: Request,
     description: str = Form(default=""),
@@ -131,13 +124,13 @@ async def create_task(
     task_id = _short_uuid()
     # 为这次按钮直跑创建独立的 conversation —— 让它也有自己的侧边栏条目
     conversation_id = _short_uuid()
-    print(f"[create_task] 🚀 开始, task_id={task_id} conversation_id={conversation_id}", flush=True)
+    log_message(f"[create_task] 🚀 开始, task_id={task_id} conversation_id={conversation_id}", page='对话', business='创建商拍任务', status='记录')
 
     # --- Step 1: 读上传文件 → 落盘（同步 I/O，放 to_thread 里更快？不，FastAPI UploadFile.read 是 async 的） ---
     raw_files = [(f.filename or "image", await f.read(), f.content_type) for f in product_images]
     from wellflow.app.utils.image_store import save_upload
     product_image_paths = save_upload(task_id, raw_files, prefix="p")
-    print(f"[create_task] 📁 图片落盘完成 ({time.time() - t0:.2f}s), paths={len(product_image_paths)}", flush=True)
+    log_message(f"[create_task] 📁 图片落盘完成 ({time.time() - t0:.2f}s), paths={len(product_image_paths)}", page='对话', business='创建商拍任务', status='记录')
 
     image_names = [f.filename for f in product_images]
     # 生成简短 description 供前端历史列表展示
@@ -220,7 +213,7 @@ async def create_task(
             "conversation_id": conversation_id,
             "title": _computed_conv_title,
         })
-        print(f"[create_task] 📢 conversation_title={_computed_conv_title}", flush=True)
+        log_message(f"[create_task] 📢 conversation_title={_computed_conv_title}", page='对话', business='任务管理', status='记录')
 
         # 先推一个 phase=input（对齐旧版 SSE 契约）
         yield _sse("phase", {"phase": "input"})
@@ -229,7 +222,7 @@ async def create_task(
         last_event_ts = time.time()
         while True:
             if await request.is_disconnected():
-                print(f"[sse] task={task_id} 前端断开连接", flush=True)
+                log_message(f"[sse] task={task_id} 前端断开连接", page='对话', business='任务管理', status='记录')
                 break
 
             # 带超时的 get，用于 heartbeat
@@ -238,22 +231,22 @@ async def create_task(
                 last_event_ts = time.time()
                 event_type = event.get("type")
                 event_data = event.get("data", {})
-                print(f"[sse] task={task_id} ← queue got type={event_type}", flush=True)
+                log_message(f"[sse] task={task_id} ← queue got type={event_type}", page='对话', business='任务管理', status='记录')
 
                 # 处理各类事件
                 yield _handle_sse_event(event_type, event_data)
 
                 # 终态：done / error → 结束 SSE 流
                 if event_type == "done" or (event_type == "phase" and event_data.get("phase") == "failed"):
-                    print(f"[sse] task={task_id} 终态到达，关闭 SSE", flush=True)
+                    log_message(f"[sse] task={task_id} 终态到达，关闭 SSE", page='对话', business='任务管理', status='记录')
                     break
                 if event_type == "error":
-                    print(f"[sse] task={task_id} error，关闭 SSE", flush=True)
+                    log_message(f"[sse] task={task_id} error，关闭 SSE", page='对话', business='任务管理', status='记录')
                     break
                 # interrupt 表示 graph 停在 HITL 等待用户输入，这一轮 SSE 应该关闭
                 # 前端下一次 resume 会发新的 HTTP 请求开启新 SSE 流
                 if event_type == "interrupt":
-                    print(f"[sse] task={task_id} interrupt(node={event_data.get('node')})，关闭 SSE（等待用户确认）", flush=True)
+                    log_message(f"[sse] task={task_id} interrupt(node={event_data.get('node')})，关闭 SSE（等待用户确认）", page='对话', business='任务管理', status='记录')
                     break
 
             except asyncio.TimeoutError:
@@ -263,7 +256,7 @@ async def create_task(
                     yield ": heartbeat\n\n"
                     last_event_ts = time.time()
 
-    print(f"[create_task] ✅ 耗时 {time.time() - t0:.2f}s，返回 StreamingResponse", flush=True)
+    log_message(f"[create_task] ✅ 耗时 {time.time() - t0:.2f}s，返回 StreamingResponse", page='对话', business='创建商拍任务', status='成功')
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
@@ -308,48 +301,30 @@ async def _create_task_in_background(
         await asyncio.to_thread(_sync_write)
     except Exception as e:
         from wellflow.app.event_bus import publish as _eb
-        print(f"[create_task] ❌ DB 写入失败: {e}", flush=True)
+        log_message(f"[create_task] ❌ DB 写入失败: {e}", page='对话', business='任务管理', status='失败')
         _eb(task_id, "error", {"phase": "failed", "message": f"任务创建失败（DB）: {e}"})
         return  # 不启动 graph
 
     # DB 就绪，启动 graph
     try:
-        await _start_graph(task_id, graph, config, initial_state=initial_state)
+        await launch_graph(task_id, graph, config, initial_state=initial_state)
     except Exception as exc:
         from wellflow.app.event_bus import publish
         publish(task_id, "error", {"phase": "needs_retry", "message": str(exc)})
 
 
 def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
-    """把 event_bus 事件转成 SSE 字符串。"""
+    """保留阶段事件的精简格式，其余已知事件直接透传。"""
     if event_type == "phase":
         return _sse("phase", {"phase": event_data.get("phase")})
-    elif event_type == "interrupt":
-        return _sse("interrupt", event_data)
-    elif event_type == "thinking_chunk":
-        return _sse("thinking_chunk", event_data)
-    elif event_type == "report_chunk":
-        return _sse("report_chunk", event_data)
-    elif event_type == "report_chunk_done":
-        return _sse("report_chunk_done", event_data)
-    elif event_type == "node4_image_done":
-        return _sse("node4_image_done", event_data)
-    elif event_type == "node4_image_failed":
-        return _sse("node4_image_failed", event_data)
-    elif event_type == "scheme_chunk":
-        return _sse("scheme_chunk", event_data)
-    elif event_type == "scheme_chunk_done":
-        return _sse("scheme_chunk_done", event_data)
-    elif event_type == "prompt_chunk":
-        return _sse("prompt_chunk", event_data)
-    elif event_type == "prompt_chunk_done":
-        return _sse("prompt_chunk_done", event_data)
-    elif event_type == "done":
-        return _sse("done", event_data)
-    elif event_type == "error":
-        return _sse("error", event_data)
-    else:
-        return ""  # 未知事件类型，忽略
+    if event_type in {
+        'done', 'error', 'interrupt',
+        'node4_image_done', 'node4_image_failed', 'prompt_chunk',
+        'prompt_chunk_done', 'report_chunk', 'report_chunk_done',
+        'scheme_chunk', 'scheme_chunk_done', 'thinking_chunk',
+    }:
+        return _sse(event_type, event_data)
+    return ""
 
 
 # ===========================================================================
@@ -358,13 +333,13 @@ def _handle_sse_event(event_type: str, event_data: dict[str, Any]) -> str:
 
 
 @router.post("/{task_id}/resume", summary="从 HITL 点恢复任务（SSE 直推）")
+@page_context('对话')
 async def resume_task(
     task_id: str,
     request: Request,
     node: str = Form(...),
     confirmed_report: str = Form(default=""),
     ratio: str = Form(default="9:16"),
-    scheme_count: int = Form(default=1),
     # action: "confirm" | "refine" | "redo"(仅 C4 redo→node4 保留)
     action: str = Form(default="confirm"),
     image_model: str | None = Form(default=None),
@@ -455,11 +430,8 @@ async def resume_task(
         from wellflow.app.graph_context import validate_current_node_products
         ok, missing = validate_current_node_products(current_node, graph_state)
         if not ok:
-            print(
-                f"[resume] 🛡️ 硬性守卫拦截 current_node={current_node}，"
-                f"缺失产物: {missing} → 拒绝 resume，请 retry 当前 node",
-                flush=True,
-            )
+            log_message(f"[resume] 🛡️ 硬性守卫拦截 current_node={current_node}，"
+                f"缺失产物: {missing} → 拒绝 resume，请 retry 当前 node", page='对话', business='恢复商拍任务', status='记录')
             raise HTTPException(
                 409,
                 f"当前节点({current_node})产物缺失或损坏({missing})，"
@@ -479,9 +451,8 @@ async def resume_task(
             if files:
                 raw = [(f.filename or k, await f.read(), f.content_type) for f in files]
                 ref_paths[k] = _save(task_id, raw, prefix=k[0])
-        print(f"[resume] 📎 三类参考图落盘: "
-              f"mannequin={len(ref_paths['mannequin'])}, scene={len(ref_paths['scene'])}, outfit={len(ref_paths['outfit'])}",
-              flush=True)
+        log_message(f"[resume] 📎 三类参考图落盘: "
+              f"mannequin={len(ref_paths['mannequin'])}, scene={len(ref_paths['scene'])}, outfit={len(ref_paths['outfit'])}", page='对话', business='恢复商拍任务', status='记录')
 
     # ---- 优先用 resume_json（最灵活的通路） ----
     if resume_json:
@@ -509,7 +480,7 @@ async def resume_task(
 
         # ---- 通用 refine / redo 拦截：C1/C2/C3 不支持完全 redo ----
         if _is_redo and node in ("c1", "c2", "c3"):
-            print(f"[resume] ⚠️ node={node} 不支持完全重做（redo），自动降级为 refine", flush=True)
+            log_message(f"[resume] ⚠️ node={node} 不支持完全重做（redo），自动降级为 refine", page='对话', business='恢复商拍任务', status='警告')
             _is_redo = False
             _is_refine = True
 
@@ -521,8 +492,8 @@ async def resume_task(
             resume_values["refine_instruction"] = refine_instruction.strip()
             if refine_target:
                 resume_values["refine_target"] = refine_target
-            print(f"[resume] node={node} refine target={refine_target or 'default'} "
-                  f"instruction={refine_instruction.strip()}", flush=True)
+            log_message(f"[resume] node={node} refine target={refine_target or 'default'} "
+                  f"instruction={refine_instruction.strip()}", page='对话', business='恢复商拍任务', status='记录')
 
         # redo 通用注入（仅 C4 redo→node4 保留）
         if _is_redo:
@@ -533,7 +504,9 @@ async def resume_task(
                 raise HTTPException(400, f"C4 redo 仅支持 redo_target=node4，node2/node3 请使用 action=refine")
             resume_values["decision"] = "redo"
             resume_values["redo_target"] = target
-            print(f"[resume] C4 redo → {target}", flush=True)
+            if image_model is not None:
+                resume_values["image_model"] = image_model
+            log_message(f"[resume] C4 redo → {target}", page='对话', business='恢复商拍任务', status='记录')
 
         # ---- confirm 模式：按 node 分支处理正常流转 ----
         if not _is_refine and not _is_redo:
@@ -556,17 +529,17 @@ async def resume_task(
                     try:
                         indices = [int(x) for x in selected_scheme_indices.split(",") if x.strip()]
                         resume_values["selected_scheme_indices"] = indices
-                        print(f"[resume] C2 收到 selected_scheme_indices={indices}", flush=True)
+                        log_message(f"[resume] C2 收到 selected_scheme_indices={indices}", page='对话', business='恢复商拍任务', status='记录')
                     except ValueError:
-                        print(f"[resume] ⚠️ selected_scheme_indices 解析失败: {selected_scheme_indices}", flush=True)
+                        log_message(f"[resume] ⚠️ selected_scheme_indices 解析失败: {selected_scheme_indices}", page='对话', business='恢复商拍任务', status='警告')
                 _psc = (await request.form()).get("per_scheme_count")
                 if _psc:
                     try:
                         counts = [int(x) for x in _psc.split(",") if x.strip()]
                         resume_values["per_scheme_count"] = [max(1, c) for c in counts]
-                        print(f"[resume] C2 收到 per_scheme_count={counts}", flush=True)
+                        log_message(f"[resume] C2 收到 per_scheme_count={counts}", page='对话', business='恢复商拍任务', status='记录')
                     except ValueError:
-                        print(f"[resume] ⚠️ per_scheme_count 解析失败: {_psc}", flush=True)
+                        log_message(f"[resume] ⚠️ per_scheme_count 解析失败: {_psc}", page='对话', business='恢复商拍任务', status='警告')
                 # C2 三类参考图全注入
                 if any(ref_paths.values()):
                     resume_values["reference_images"] = {
@@ -613,7 +586,6 @@ async def resume_task(
                 or any(type(count) is not int or count < 1 for count in counts)):
             raise HTTPException(400, "请由前端提交所选方案的提示词数量 per_scheme_count。")
 
-    from wellflow.app.workflow_execution import launch_graph
     q = await launch_graph(task_id, _get_graph(), _langgraph_config(task_id),
                            command=Command(resume=resume_values))
 
@@ -624,7 +596,7 @@ async def resume_task(
         last_event_ts = time.time()
         while True:
             if await request.is_disconnected():
-                print(f"[sse-resume] task={task_id} 前端断开", flush=True)
+                log_message(f"[sse-resume] task={task_id} 前端断开", page='对话', business='任务管理', status='记录')
                 break
 
             try:
@@ -641,7 +613,7 @@ async def resume_task(
                     break
                 # interrupt 表示 graph 停在 HITL，这一轮 SSE 关闭
                 if event_type == "interrupt":
-                    print(f"[sse-resume] task={task_id} interrupt(node={event_data.get('node')})，关闭 SSE", flush=True)
+                    log_message(f"[sse-resume] task={task_id} interrupt(node={event_data.get('node')})，关闭 SSE", page='对话', business='任务管理', status='记录')
                     break
 
             except asyncio.TimeoutError:
@@ -700,6 +672,7 @@ async def _check_product_images_ready(task) -> tuple[bool, str | None]:
 
 
 @router.post("/{task_id}/restart", summary="重启执行中但已挂住的任务（SSE 直推）")
+@page_context('对话')
 async def restart_task(
     task_id: str,
     request: Request,
@@ -736,7 +709,6 @@ async def restart_task(
         return StreamingResponse(completed(), media_type="text/event-stream")
     if not snapshot.next:
         raise HTTPException(409, "没有可恢复的执行节点，请重新创建任务")
-    from wellflow.app.workflow_execution import launch_graph
     q = await launch_graph(task_id, _get_graph(), _langgraph_config(task_id))
 
     async def event_generator():
@@ -749,7 +721,7 @@ async def restart_task(
 
         while True:
             if await request.is_disconnected():
-                print(f"[sse-restart] task={task_id} 前端断开", flush=True)
+                log_message(f"[sse-restart] task={task_id} 前端断开", page='对话', business='任务管理', status='记录')
                 break
 
             try:
@@ -765,7 +737,7 @@ async def restart_task(
                     break
                 if event_type == "interrupt":
                     # graph 正常停下来等用户确认了，关闭 SSE
-                    print(f"[sse-restart] task={task_id} interrupt(node={event_data.get('node')})，关闭 SSE", flush=True)
+                    log_message(f"[sse-restart] task={task_id} interrupt(node={event_data.get('node')})，关闭 SSE", page='对话', business='任务管理', status='记录')
                     break
             except asyncio.TimeoutError:
                 yield _sse("ping", {"ts": int(time.time())})
@@ -778,6 +750,7 @@ async def restart_task(
 
 
 @router.get("", response_model=StandardResponse[TaskListResponse], summary="列出任务（分页）")
+@page_context('对话')
 def list_tasks(
     page: int = 1,
     page_size: int = 20,
@@ -826,11 +799,12 @@ async def _aget_graph_state(task_id: str) -> tuple[dict[str, Any] | None, Any]:
             return None, snapshot
         return snapshot.values, snapshot
     except Exception as exc:
-        print(f"[get_task] 从 checkpoint 读取 state 失败: {exc}", flush=True)
+        log_message(f"[get_task] 从 checkpoint 读取 state 失败: {exc}", page='对话', business='任务管理', status='记录')
         return None, None
 
 
 @router.get("/{task_id}", response_model=StandardResponse[TaskInfoResponse], summary="查询任务状态")
+@page_context('对话')
 async def get_task(task_id: str, db: Session = Depends(get_db)):
     """查询单任务状态（从 DB + LangGraph checkpoint）。保留给旧版客户端用。"""
     from wellflow.app.schemas.task_schemas import TaskInfoResponse
@@ -900,6 +874,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
     }
 
     from wellflow.app.services.sku_archive import with_image_keys
+    from wellflow.app.services.task_presentation import public_task_node
     if interrupt_json:
         interrupt_json = with_image_keys(interrupt_json)
     return ok(TaskInfoResponse(
@@ -913,10 +888,10 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
         interrupt=interrupt_json,
         cost=graph_state.get("cost", {}) if graph_state else {},
         progress=graph_state.get("progress", {}) if graph_state else {},
-        node1=node1,
-        node2=node2,
-        node3=node3,
-        node4=node4,
+        node1=public_task_node(node1),
+        node2=public_task_node(node2),
+        node3=public_task_node(node3),
+        node4=public_task_node(node4, generation=True),
         reference_images=reference_images,
         output_images=output_images,
         created_at=to_cn_iso(task.created_at),
@@ -930,6 +905,7 @@ async def get_task(task_id: str, db: Session = Depends(get_db)):
 
 
 @router.delete("/{task_id}", response_model=StandardResponse[dict], summary="删除任务及所有关联数据")
+@page_context('对话')
 async def delete_task(task_id: str):
     """删除指定任务的全部数据：DB 所有子表记录 + 主表 + uploads/{task_id}/ 磁盘文件 + LangGraph checkpoint。
 
@@ -967,18 +943,15 @@ async def delete_task(task_id: str):
                 # running/stale = 真在跑；done/paused/none = 没有在执行的 graph
                 _actually_running = rt_state in ("running", "stale")
             except Exception as _ckpt_err:
-                print(f"[delete_task] ⚠️ checkpoint 状态读不到，保守按 DB phase 拦截: {_ckpt_err}", flush=True)
+                log_message(f"[delete_task] ⚠️ checkpoint 状态读不到，保守按 DB phase 拦截: {_ckpt_err}", page='对话', business='删除商拍任务', status='警告')
 
             if _actually_running:
                 raise HTTPException(
                     409,
                     f"任务正在执行中（phase='{task.phase}'），请等待执行完成或人工确认后再删除",
                 )
-            print(
-                f"[delete_task] 🛡️ DB phase={task.phase} 但 checkpoint 已停（rt_state={rt_state!r}），"
-                f"允许删除",
-                flush=True,
-            )
+            log_message(f"[delete_task] 🛡️ DB phase={task.phase} 但 checkpoint 已停（rt_state={rt_state!r}），"
+                f"允许删除", page='对话', business='删除商拍任务', status='记录')
 
         # 2. 删 DB（所有子表 + 主表）
         repo.delete_task(task_id)
@@ -986,7 +959,7 @@ async def delete_task(task_id: str):
     # 3. 删磁盘文件（uploads/{task_id}/）
     from wellflow.app.utils.image_store import delete_task_files
     delete_task_files(task_id)
-    from wellflow.app.llm.model_pool import clear_task_models
+    from wellflow.app.newapi.pool import clear_task_models
     clear_task_models(task_id)
 
     # 4. 删 LangGraph checkpoint（thread_id = task_id）
@@ -994,9 +967,9 @@ async def delete_task(task_id: str):
     if cp is not None and hasattr(cp, "adelete_thread"):
         try:
             await cp.adelete_thread(task_id)
-            print(f"[delete_task] ✅ checkpoint 已清理 task_id={task_id}", flush=True)
+            log_message(f"[delete_task] ✅ checkpoint 已清理 task_id={task_id}", page='对话', business='删除商拍任务', status='成功')
         except Exception as e:
-            print(f"[delete_task] ⚠️ checkpoint 清理失败（不影响主流程）: {e}", flush=True)
+            log_message(f"[delete_task] ⚠️ checkpoint 清理失败（不影响主流程）: {e}", page='对话', business='删除商拍任务', status='警告')
 
-    print(f"[delete_task] 🗑️ 任务已彻底删除 task_id={task_id}", flush=True)
+    log_message(f"[delete_task] 🗑️ 任务已彻底删除 task_id={task_id}", page='对话', business='删除商拍任务', status='记录')
     return ok({"task_id": task_id, "deleted": True})

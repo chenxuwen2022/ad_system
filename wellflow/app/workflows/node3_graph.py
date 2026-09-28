@@ -8,6 +8,10 @@
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
+from wellflow.app.newapi.observability import business_operation
+
 import asyncio
 import json
 import time
@@ -33,6 +37,7 @@ def build_graph():
     return graph.compile()
 
 
+@business_operation("Node3/提示词生成")
 async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     """每套选中方案调用一次模型，批量生成该方案的全部中文提示词。
 
@@ -109,13 +114,13 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
         publish(task_id, "phase", {"phase": "node3_prompt_gen"})
 
     total_prompts = sum(per_scheme_count)
-    print(f"[node3] _gen_prompts 输入: 选中方案={selected_indices}, "
+    log_message(f"[node3] _gen_prompts 输入: 选中方案={selected_indices}, "
           f"per_scheme_count={per_scheme_count}, "
           f"共 {len(selected_schemes)} 套方案 → {total_prompts} 份 prompt, "
           f"product_images={len(product_images)}, "
           f"mannequin={len(mannequin_images)}(paths={len(mannequin_paths)}), "
           f"scene={len(scene_images)}(paths={len(scene_paths)}), "
-          f"outfit={len(outfit_images)}(paths={len(outfit_paths)})", flush=True)
+          f"outfit={len(outfit_images)}(paths={len(outfit_paths)})", page='对话', business='node3生图提示词', status='记录')
 
     # reasoning_effort 从 settings.node3_reasoning_effort 读取（默认 low，可配）
     from wellflow.app.config import settings as _settings
@@ -213,12 +218,12 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
 
         if think_parts:
             all_think_parts.append(f"【方案 #{scheme_index} {scheme_name}】\n{''.join(think_parts)}")
-        print(f"[node3] ✅ 方案 #{scheme_index}({scheme_name}) 一次调用生成 {n_variants} 份提示词 "
-              f"— 耗时={elapsed:.1f}s", flush=True)
+        log_message(f"[node3] ✅ 方案 #{scheme_index}({scheme_name}) 一次调用生成 {n_variants} 份提示词 "
+              f"— 耗时={elapsed:.1f}s", page='对话', business='node3生图提示词', status='成功')
 
     total_t = time.time() - t_total
-    print(f"[node3] _gen_prompts 完成: {len(all_prompts)} 个 prompt, "
-          f"总耗时={total_t:.1f}s", flush=True)
+    log_message(f"[node3] _gen_prompts 完成: {len(all_prompts)} 个 prompt, "
+          f"总耗时={total_t:.1f}s", page='对话', business='node3生图提示词', status='记录')
 
     if not all_prompts or any(not prompt.strip() for prompt in all_prompts):
         raise RuntimeError("提示词生成返回空内容，请重试当前节点")
@@ -233,5 +238,5 @@ async def _gen_prompts(state: dict[str, Any]) -> dict[str, Any]:
     }
 
     output = {"_redo_target": None, "_redo_instruction": None, "phase": "node3_prompt_gen", "node3": new_node3}
-    print(f"[node3] _gen_prompts 输出 node3 keys={list(new_node3.keys())}", flush=True)
+    log_message(f"[node3] _gen_prompts 输出 node3 keys={list(new_node3.keys())}", page='对话', business='node3生图提示词', status='记录')
     return output

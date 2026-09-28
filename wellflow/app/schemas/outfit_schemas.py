@@ -3,9 +3,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 
 # ============================================================================
@@ -110,6 +110,9 @@ class OutfitDetailResponse(BaseModel):
 # 交互端点:拆解 / 平铺 / 打标
 # ============================================================================
 
+ImageModel = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
 class OutfitExtractRequest(BaseModel):
     """AI 拆解请求:原图通过 storage_uri 引用(先走统一上传)。
 
@@ -118,6 +121,7 @@ class OutfitExtractRequest(BaseModel):
     """
 
     original_uri: str
+    image_model: ImageModel
     session_id: str | None = None
     mode: Literal["demo", "real"] | None = None
     outfit_id: int | None = None
@@ -132,6 +136,7 @@ class OutfitGenerateRequest(BaseModel):
     """
 
     mode: Literal["items", "auto"] = "items"
+    image_model: ImageModel | None = None
     original_uri: str                       # 原图 storage_uri(先走统一上传)
     items: list[OutfitItemIn] = Field(default_factory=list)   # mode=items 必传
     outfit_id: int | None = None            # 选件后生成:更新该行,不新建
@@ -139,6 +144,12 @@ class OutfitGenerateRequest(BaseModel):
     name: str | None = None                 # 可选;不传用临时名,完成后 VLM 建议名兜底
     scope: Literal["official", "mine"] = "mine"
     extra_context: str | None = None        # 打标补充意图(透传给 VLM)
+
+    @model_validator(mode="after")
+    def require_auto_image_model(self):
+        if self.mode == "auto" and not self.image_model:
+            raise ValueError("自动生成穿搭必须选择生图模型")
+        return self
 
 
 class OutfitFlatlayRequest(BaseModel):

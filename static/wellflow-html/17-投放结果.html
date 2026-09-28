@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -100,11 +100,11 @@ h3{font-size:16px;margin-bottom:12px}
   </div>
 
   <h3>素材明细</h3>
-  <div class="mat-card">
-    <img src="" id="matThumb" onerror="this.style.display='none'">
-    <div class="nm" id="matName">生成儿童服装人像照片 (1)</div>
-    <div class="st">上传成功</div>
-  </div>
+  <div class="materials-list" id="materialsList" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px"></div>
+
+
+
+
 
   <div class="result-row">
     <span>计划投放结果</span>
@@ -115,24 +115,82 @@ h3{font-size:16px;margin-bottom:12px}
     <div class="bd" id="resultBody"></div>
   </div>
 
-  <div class="foot-note">关闭窗口后任务仍会继续，可从"投放任务"重新查看。刷新或离开页面后，未完成任务需手动继续。</div>
-  <div class="btns">
-    <button class="btn" onclick="window.close()">完成并关闭</button>
-  </div>
-</div>
+
+
+
+
+
 
 <script>
 // 从 sessionStorage 读投放结果
-const chosen=JSON.parse(sessionStorage.getItem('launch_chosen')||'[]');
-document.getElementById('resultBody').innerHTML=chosen.map(c=>
-  '<div class="plan">'+
-    '<div class="nm">'+(c.plan_name||'')+'</div>'+
-    '<div class="pid">计划 ID: '+c.plan_id+'</div>'+
-    (c.product_ids&&c.product_ids[0]?'<div class="sku">SKU ID: '+c.product_ids[0]+'</div>':'')+
-  '</div>'+
-  '<span class="ok">已关联</span>'+
-  '<span class="ok">已启动投放</span>'
-).join('');
+// 读取选中的素材
+const selectedMaterials = JSON.parse(sessionStorage.getItem('selectedMaterials') || '[]');
+
+// 渲染素材缩略图列表
+const materialsListEl = document.getElementById('materialsList');
+if(selectedMaterials.length > 0){
+  materialsListEl.innerHTML = selectedMaterials.map(m => {
+    const isVideo = (m.type || '').includes('视频') || (m.path || '').match(/\.(mp4|mov|avi|mkv|webm)$/i);
+    const thumbUrl = m.thumb_url || '/api/uploaded_media/' + encodeURIComponent(m.name || '');
+    return '<div style="width:80px;height:100px;border-radius:8px;overflow:hidden;background:#000;border:1px solid #2E3A1E;position:relative">' +
+      (isVideo 
+        ? '<video src="'+thumbUrl+'" muted loop style="width:100%;height:100%;object-fit:cover"></video>'
+        : '<img src="'+thumbUrl+'" style="width:100%;height:100%;object-fit:cover">') +
+      '<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,.7);color:#fff;font-size:10px;padding:2px 4px;text-align:center">' + (isVideo ? '视频' : '图片') + '</div>' +
+    '</div>';
+  }).join('');
+}
+const result = JSON.parse(sessionStorage.getItem('launchResult') || '{}');
+const chosen = JSON.parse(sessionStorage.getItem('launch_chosen') || '[]');
+
+const body = document.getElementById('resultBody');
+
+if(result.total){
+  // 批量投放结果
+  let html = '<div style="margin-bottom:16px;padding:12px;background:rgba(204,255,0,0.1);border-radius:8px">';
+  html += '<div style="font-size:16px;font-weight:600;margin-bottom:8px">投放结果汇总</div>';
+  html += '<div style="display:flex;gap:24px;font-size:14px">';
+  html += '<span>总任务：<b>'+result.total+'</b></span>';
+  html += '<span style="color:#52C41A">成功：<b>'+result.success+'</b></span>';
+  html += '<span style="color:#EA6668">失败：<b>'+result.failed+'</b></span>';
+  html += '</div></div>';
+  
+  html += '<div style="font-size:14px;font-weight:600;margin:16px 0 8px">详细结果</div>';
+  html += result.details.map((r,i)=>
+    '<div style="display:flex;align-items:center;padding:12px;border:1px solid #333;border-radius:8px;margin-bottom:8px">'+
+      '<div style="flex:1">'+
+        '<div style="font-weight:500">'+r.material+'</div>'+
+        '<div style="color:#888;font-size:12px;margin-top:4px">投放计划：'+r.plan+'</div>'+
+        (r.error?'<div style="color:#EA6668;font-size:12px;margin-top:4px">错误：'+r.error+'</div>':'')+
+      '</div>'+
+      '<span class="'+(r.success?'ok':'err')+'">'+(r.success?'投放成功':'投放失败')+'</span>'+
+    '</div>'
+  ).join('');
+  
+  body.innerHTML = html;
+}else{
+  // 单次投放结果
+  body.innerHTML = chosen.map(c=>
+    '<div class="plan">'+
+      '<div class="nm">'+(c.plan_name||'')+'</div>'+
+      '<div class="pid">计划 ID: '+c.plan_id+'</div>'+
+      (c.product_ids&&c.product_ids[0]?'<div class="sku">SKU ID: '+c.product_ids[0]+'</div>':'')+
+    '</div>'+
+    '<span class="ok">已关联</span>'+
+    '<span class="ok">已启动投放</span>'
+  ).join('');
+}
+
+function closeAndGoBack(){
+  // 先尝试关闭窗口（如果是弹窗打开的）
+  window.close();
+  
+  // 如果没关掉，就跳回投放台页面
+  setTimeout(()=>{
+    location.href = '04-投放台.html';
+  }, 100);
+}
 </script>
+  </div>
 </body>
 </html>

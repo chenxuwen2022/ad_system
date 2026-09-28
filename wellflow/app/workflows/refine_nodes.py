@@ -18,6 +18,10 @@ LLM 做最小必要增量修改，直接产出更新后的完整产物。
 
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
+from wellflow.app.newapi.observability import business_operation, event
+
 import time
 import json
 from typing import Any
@@ -29,6 +33,7 @@ from wellflow.app.config import settings
 # Node1 refine：商品识别报告 增量修改（Markdown 文本）
 # ---------------------------------------------------------------------------
 
+@business_operation("Node1/报告微调")
 async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     """基于用户指令对 Node1 的商品识别报告做增量修改。
 
@@ -38,7 +43,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     🔴 锁定守卫：若 state.node1.report_locked=True，说明报告已被用户确认并锁定，
     当前任务内不得再修改 —— 直接拒绝，返回 phase=c1_confirm 且不改动 node1 任何字段。
     """
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
     from wellflow.app.workflows.report_progress import ReportProgressStream, split_report_progress
@@ -51,7 +56,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
 
     # —— 锁定守卫（第一行就查，避免已锁定后还白白调 LLM）——
     if bool((state.get("node1") or {}).get("report_locked")):
-        print("[refine_node1] 🛡️ node1 报告已锁定，拒绝 refine", flush=True)
+        log_message("[refine_node1] 🛡️ node1 报告已锁定，拒绝 refine", page='对话', business='node1产品报告微调', status='记录')
         if task_id:
             publish(task_id, "phase", {"phase": "c1_confirm"})
             publish(task_id, "message", {
@@ -67,11 +72,11 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
         }
 
     if not refine_instruction:
-        print("[refine_node1] ⚠️ 没有 refine_instruction，跳过编辑", flush=True)
+        log_message("[refine_node1] ⚠️ 没有 refine_instruction，跳过编辑", page='对话', business='node1产品报告微调', status='警告')
         return {"phase": "c1_confirm"}
 
     if not old_report:
-        print("[refine_node1] ⚠️ 旧报告为空，无法编辑", flush=True)
+        log_message("[refine_node1] ⚠️ 旧报告为空，无法编辑", page='对话', business='node1产品报告微调', status='警告')
         return {"phase": "c1_confirm"}
 
     if task_id:
@@ -101,7 +106,7 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
         f"请基于本轮指令（参考历史指令做去重/整合），输出更新后的完整报告。"
     )
 
-    print(f"[refine_node1] 📤 stream_chat → refine report (instruction_len={len(refine_instruction)})", flush=True)
+    log_message(f"[refine_node1] 📤 stream_chat → refine report (instruction_len={len(refine_instruction)})", page='对话', business='node1产品报告微调', status='开始')
     t0 = time.time()
 
     # --- 流式消费（reasoning_effort="close" → 不会有 thinking 通道） ---
@@ -154,9 +159,8 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
     new_sections = build_report_sections(new_report) if new_report else None
 
     total_ts = time.time() - t0
-    print(f"[refine_node1] ✅ 完成: stream_chat, "
-          f"旧报告={len(old_report)}字 → 新报告={len(new_report)}字, 耗时={total_ts:.1f}s", flush=True)
-    print(f"[refine_node1] 📝 新报告前300字: {new_report[:300]!r}", flush=True)
+    log_message(f"[refine_node1] ✅ 完成: stream_chat, "
+          f"旧报告={len(old_report)}字 → 新报告={len(new_report)}字, 耗时={total_ts:.1f}s", page='对话', business='node1产品报告微调', status='成功')
 
     # —— next_actions 同样不再独立 publish SSE message，改为存入 node1 state，
     #    由 parent_graph 在 C1 interrupt 时作为 hint 下发。
@@ -182,9 +186,10 @@ async def refine_node1_report(state: dict[str, Any]) -> dict[str, Any]:
 # Node2 refine：商拍策划报告正文修改
 # ---------------------------------------------------------------------------
 
+@business_operation("Node2/方案微调")
 async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
     """根据用户指令修改完整商拍报告正文。"""
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
     from wellflow.app.nodes.planning_scheme import split_scheme_reports, scheme_output_contract
@@ -281,13 +286,14 @@ async def refine_node2_schemes(state: dict[str, Any]) -> dict[str, Any]:
 # Node3 refine：提示词 增量修改（自然语言 prompt 列表）
 # ---------------------------------------------------------------------------
 
+@business_operation("Node3/提示词微调")
 async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     """基于用户指令对 Node3 的生图提示词做增量修改。
 
     输入：state.node3.generate_prompts（旧 prompt 列表） + state._refine_instruction
     输出：更新后的 node3.generate_prompts（新 prompt 列表）
     """
-    from wellflow.app.llm.factory import get_llm_client
+    from wellflow.app.newapi.client_factory import get_llm_client
     from wellflow.app.prompt.registry import get_active_prompt
     from wellflow.app.event_bus import publish
 
@@ -323,14 +329,14 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             _target_indices = None
     if _target_indices is not None:
-        print(f"[refine_node3] 🎯 目标 prompt 索引已锁定: {_target_indices}", flush=True)
+        log_message(f"[refine_node3] 🎯 目标 prompt 索引已锁定: {_target_indices}", page='对话', business='node3提示词微调', status='记录')
 
     if not refine_instruction:
-        print("[refine_node3] ⚠️ 没有 refine_instruction，跳过编辑", flush=True)
+        log_message("[refine_node3] ⚠️ 没有 refine_instruction，跳过编辑", page='对话', business='node3提示词微调', status='警告')
         return {"phase": "c3_confirm"}
 
     if not old_prompts:
-        print("[refine_node3] ⚠️ 旧 prompts 为空，无法编辑", flush=True)
+        log_message("[refine_node3] ⚠️ 旧 prompts 为空，无法编辑", page='对话', business='node3提示词微调', status='警告')
         return {"phase": "c3_confirm"}
 
     if task_id:
@@ -377,7 +383,7 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
         f"🔴 指令明确没提到的 prompt 必须原封不动复制返回，一字不改。"
     )
 
-    print(f"[refine_node3] 📤 stream_chat → refine prompts (instruction_len={len(refine_instruction)})", flush=True)
+    log_message(f"[refine_node3] 📤 stream_chat → refine prompts (instruction_len={len(refine_instruction)})", page='对话', business='node3提示词微调', status='开始')
     t0 = time.time()
 
     # --- 流式消费（reasoning_effort="close" → 不会有 thinking 通道） ---
@@ -433,29 +439,23 @@ async def refine_node3_prompts(state: dict[str, Any]) -> dict[str, Any]:
     _user_wants_change_quantity = any(kw in refine_instruction for kw in _DELETE_KWS + _ADD_KWS)
 
     if not _user_wants_change_quantity and len(new_prompts) != n_total:
-        print(
-            f"[refine_node3] 🛡️ 触发条数兜底：用户未提增删，"
-            f"LLM 返回 {len(new_prompts)} 条 ≠ 原 {n_total} 条 → 强制对齐",
-            flush=True,
-        )
+        log_message(f"[refine_node3] 🛡️ 触发条数兜底：用户未提增删，"
+            f"LLM 返回 {len(new_prompts)} 条 ≠ 原 {n_total} 条 → 强制对齐", page='对话', business='node3提示词微调', status='记录')
         # LLM 返回的前 M 条按顺序贴到旧列表前 M 个位置，剩余位置用旧内容原封不动回填
         _merged = list(old_prompts)   # 先复制旧列表作底稿
         for _i in range(min(len(new_prompts), n_total)):
             _merged[_i] = new_prompts[_i]
         new_prompts = _merged
-        print(f"[refine_node3]  ✅ 对齐完成 → 最终 {len(new_prompts)} 条", flush=True)
+        log_message(f"[refine_node3]  ✅ 对齐完成 → 最终 {len(new_prompts)} 条", page='对话', business='node3提示词微调', status='成功')
     elif _user_wants_change_quantity and len(new_prompts) != n_total:
-        print(
-            f"[refine_node3] ℹ️ 用户明确要求增删({len(new_prompts)}→{len(old_prompts)})，"
-            f"接受 LLM 返回条数变化",
-            flush=True,
-        )
+        log_message(f"[refine_node3] ℹ️ 用户明确要求增删({len(new_prompts)}→{len(old_prompts)})，"
+            f"接受 LLM 返回条数变化", page='对话', business='node3提示词微调', status='记录')
     elif abs(len(new_prompts) - n_total) > 3:
-        print(f"[refine_node3] ⚠️ 返回条数变化较大: {n_total} → {len(new_prompts)}", flush=True)
+        log_message(f"[refine_node3] ⚠️ 返回条数变化较大: {n_total} → {len(new_prompts)}", page='对话', business='node3提示词微调', status='警告')
 
     total_ts = time.time() - t0
-    print(f"[refine_node3] ✅ 完成: stream_chat, "
-          f"旧 prompts={len(old_prompts)} → 新 prompts={len(new_prompts)}, 耗时={total_ts:.1f}s", flush=True)
+    log_message(f"[refine_node3] ✅ 完成: stream_chat, "
+          f"旧 prompts={len(old_prompts)} → 新 prompts={len(new_prompts)}, 耗时={total_ts:.1f}s", page='对话', business='node3提示词微调', status='成功')
 
     # 更新 prompts_detail：保持 scheme_index/variant_index 等元信息，只替换 prompt 内容
     old_details: list[dict[str, Any]] = state.get("node3", {}).get("prompts_detail", []) or []

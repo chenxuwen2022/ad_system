@@ -6,10 +6,11 @@ A task event is the durable receipt when checkpoint completion needs a retry.
 """
 from __future__ import annotations
 
+from wellflow.app.logging import log_message
+
 import base64
 import hashlib
 import io
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,7 +23,6 @@ from wellflow.app.models.task_models import Task, TaskEvent, TaskImage
 from wellflow.app.repositories.conversation_repo import ConversationRepo
 from wellflow.app.schemas.asset_schemas import ArchiveGeneratedImages
 
-logger = logging.getLogger(__name__)
 
 
 def image_key(url: str) -> str:
@@ -265,6 +265,5 @@ async def archive_generated_images(sku_id: int, request: ArchiveGeneratedImages)
         except HTTPException:
             raise
         except Exception as exc:
-            logger.exception("SKU image archive failed: sku_id=%s task_id=%s conversation_id=%s",
-                             sku_id, request.task_id, request.conversation_id)
+            log_message(("SKU image archive failed: sku_id=%s task_id=%s conversation_id=%s" % (sku_id, request.task_id, request.conversation_id,)), page='sku商品库', business='商品图片归档', status='失败', exc_info=True)
             raise HTTPException(503, "图片入库处理暂未完成，请重试；已关联到该商品的图片会自动跳过") from exc
