@@ -76,26 +76,12 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
         if user is None or user.deleted_at is not None:
             raise HTTPException(401, "账号已删除，请联系管理员")
         return user
+    # 统一走 Authorization: Bearer <token> 头。
+    # 不再接受 ?token= 查询参数或 wellflow_media Cookie：
+    #   - 查询参数会被 Nginx / CDN / WAF 的各种规则吞掉、转义或落到日志；
+    #   - Cookie 有 SameSite/HttpOnly/Domain 坑，跨子域部署时容易丢失；
+    #   - 统一入口 = 线上行为可预期，与前端 apiFetch() 完全对齐。
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
-    # Images rendered by <img> / <video> / <audio> tags cannot attach an
-    # Authorization header. For these read-only media endpoints we fall back
-    # first to a ?token= query param (most reliable across proxy/domain setups)
-    # and second to the wellflow_media HttpOnly cookie set at login.
-    # NOTE: /uploads and /static are mounted as FastAPI StaticFiles outside
-    # the app-level dependencies=[] scope so they need no handling here.
-    if request.method in {"GET", "HEAD"} and not token:
-        media_path = request.url.path
-        media_endpoint = (
-            media_path.startswith("/api/uploaded_media/")
-            or media_path.startswith("/api/wellflow/image/thumbnail")
-            or media_path.startswith("/api/file_by_path")
-        )
-        if media_endpoint:
-            token = request.query_params.get("token", "")
-            scheme = "Bearer"
-            if not token:
-                token = request.cookies.get("wellflow_media", "")
-                scheme = "Bearer"
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(401, "请先登录", headers={"WWW-Authenticate": "Bearer"})
     payload = decode_token(token)
