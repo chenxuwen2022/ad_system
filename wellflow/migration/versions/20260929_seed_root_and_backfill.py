@@ -9,6 +9,7 @@ Purpose:
 
 Idempotent — safe to re-run on an already-seeded DB.
 """
+import json as _json
 import os
 from datetime import datetime, timezone
 
@@ -36,7 +37,9 @@ TABLES = (
 def upgrade():
     conn = op.get_bind()
 
-    email_suffixes_sql = f"ARRAY[{', '.join(repr(s) for s in COMPANY_EMAIL_SUFFIXES)}]::text[]"
+    # email_suffixes 列类型为 JSON（见 9a42c6e18f03），不能写 text[]，
+    # 用 json 字面量写入，兼容 json/jsonb。
+    email_suffixes_sql = f"'{_json.dumps(COMPANY_EMAIL_SUFFIXES, ensure_ascii=False)}'::json"
 
     # --- 1. 确保公司存在并允许平台超管 ---
     # 公司唯一性约束是带 WHERE deleted_at IS NULL 的 partial unique index，

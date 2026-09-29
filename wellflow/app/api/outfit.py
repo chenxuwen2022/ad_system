@@ -43,6 +43,7 @@ from wellflow.app.config import settings
 from wellflow.app.database import get_db, get_db_async, session_scope, AsyncSessionLocal
 from wellflow.app.newapi.client_factory import get_llm_client
 from wellflow.app.newapi.pool import get_model_pool
+from wellflow.app.prompt.registry import get_active_prompt
 from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image, spawn_heartbeat
 from wellflow.app.repositories.outfit_repo import OutfitRepo
 from wellflow.app.schemas.outfit_schemas import (
@@ -466,22 +467,14 @@ async def _call_vlm_recognize(raw: bytes):
     模型池偶发返回空清单(同一张图重试即有结果)——空结果自动重试一次再判失败。
     """
     b64 = base64.b64encode(raw).decode()
-    prompt = (
-        "这是一张人物全身穿搭照片。请识别照片中人物身上穿/戴的每一件单品"
-        "(上衣、裤装、鞋、包、腰带、眼镜等),输出 JSON:\n"
-        '{"items":[{"name":"单品名(简洁,如 军绿衬衫外套)",'
-        '"category":"品类(衬衫/T恤/裤子/鞋/包/配饰 等通用词)",'
-        '"color":"颜色(简洁,如 军绿/米白/黑)"}]}\n'
-        "要求:\n1. 按从上到下、从外到内排列\n"
-        "2. 不要包含人物本身特征(发型、肤色、身材)\n3. 只输出 JSON,不要任何解释"
-    )
+    system = get_active_prompt("outfit_recognize")
 
     content = ""
     for _attempt in range(2):
         pool = get_model_pool()
         resp, _used_model = await pool.chat_with_images(
-            system="你是专业的电商服饰单品识别专家。",
-            user=prompt,
+            system=system,
+            user="请识别这张穿搭照片中的所有单品。",
             image_uris=[f"data:image/png;base64,{b64}"],
             response_format={"type": "json_object"},
             reasoning_effort=settings.text_reasoning_effort,
@@ -511,8 +504,7 @@ async def _extract_item_image(raw: bytes, name: str, model: str):
     """使用用户选择的模型抠图；失败直接报告，不切换模型。"""
     prompt = (
         f"提取这张穿搭照片中的「{name}」,生成干净的专业白底商品图。"
-        "要求:只保留这一件单品,主体完整(被遮挡部分合理补全),"
-        "背景纯白,居中构图,无阴影、无文字"
+        + get_active_prompt("outfit_cutout")
     )
     client = get_llm_client("image", model_override=model)
     r = await client.generate_image(
@@ -792,14 +784,7 @@ async def _do_auto_tag(
     VLM 返回非 JSON 抛 json.JSONDecodeError,其余异常原样上抛(调用方包装)。
     """
     dims_json = json_mod.dumps(OUTFIT_DIMENSION_GROUPS, ensure_ascii=False, indent=2)
-    system = (
-        "你是一个电商穿搭属性标注专家。根据提供的穿搭图(平铺总图或原图),"
-        "从给定的维度枚举中选择最合适的值,以 JSON 格式返回。\n\n"
-        "规则:\n1. 每个维度可多选(多值数组),也可以单选。\n"
-        "2. 如果某维度无法从图中判断,返回空数组 []。\n"
-        "3. 只使用枚举中出现的值,不要自己创造新值。\n"
-        "4. 输出必须是一个合法的 JSON 对象,不要带 markdown 代码块标记或其他文字。"
-    )
+    system = get_active_prompt("outfit_auto_tag")
     user_text = (
         f"以下是维度枚举(JSON):\n{dims_json}\n\n"
         f"{'用户补充意图:' + extra_context if extra_context else ''}\n\n"

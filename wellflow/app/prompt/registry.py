@@ -9,6 +9,9 @@ CATEGORIES = {
     "commerce": "商拍提示词",
     "refine": "微调提示词",
     "intent": "意图识别提示词",
+    "mannequin": "模特库提示词",
+    "outfit": "穿搭库提示词",
+    "scene": "场景库提示词",
 }
 CATALOG = (
     ("product_report", "commerce", "生产品报告"),
@@ -18,6 +21,15 @@ CATALOG = (
     ("refine_plan", "refine", "商拍策划微调"),
     ("refine_image_prompt", "refine", "生图提示词微调"),
     ("intent_classifier", "intent", "意图识别"),
+    ("mannequin_optimize", "mannequin", "提示词优化"),
+    ("mannequin_auto_tag", "mannequin", "自动打标"),
+    ("mannequin_fine_tune", "mannequin", "生图微调-身份维持"),
+    ("outfit_recognize", "outfit", "单品识别"),
+    ("outfit_cutout", "outfit", "单品抠图"),
+    ("outfit_auto_tag", "outfit", "自动打标"),
+    ("scene_extract", "scene", "场景提取"),
+    ("scene_mosaic", "scene", "原图马赛克"),
+    ("scene_auto_tag", "scene", "自动打标"),
 )
 
 
