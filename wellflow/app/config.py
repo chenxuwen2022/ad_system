@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     image_gen_detail: str = "low"                  # high | low | auto —— input_image block 的 detail
     image_gpt_edit_endpoint: str = "edits"         # edits（/v1/images/edits multipart）| responses（/v1/responses + image_generation tool）
     image_edit_quality: str = "high"               # /v1/images/edits multipart 生图质量（gpt-image 系列）
+
+    # ====== 账号认证（未配置密钥时登录失败关闭，不使用默认签名密钥） ======
+    auth_jwt_secret: SecretStr = SecretStr("")
+    auth_initial_password: SecretStr = SecretStr("sy123456")
+    auth_token_hours: int = Field(default=8, ge=1, le=24)
+    auth_cookie_secure: bool = True
 
     # ====== 数据库 ======
     database_url: str = ""           # ← .env 提供

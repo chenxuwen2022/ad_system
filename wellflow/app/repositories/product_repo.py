@@ -320,15 +320,5 @@ class SkuRepo:
 # ============================================================================
 
 def _gen_no(prefix: str, db: Session, model_cls) -> str:
-    """自动生成唯一编号，如 BRAND-001 / SERIES-001 / SKU-000001。"""
-    from sqlalchemy import select
-    col = getattr(model_cls, f"{prefix.lower()}_no")
-    rows = db.execute(select(col)).scalars().all()
-    nums = []
-    for val in rows:
-        m = re.search(r"(\d+)$", val or "")
-        if m:
-            nums.append(int(m.group(1)))
-    n = (max(nums) + 1) if nums else 1
-    width = 6 if prefix == "SKU" else 3
-    return f"{prefix}-{n:0{width}d}"
+    from uuid import uuid4
+    return prefix + "-" + uuid4().hex[:16].upper()

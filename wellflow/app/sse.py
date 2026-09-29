@@ -25,7 +25,7 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 
 from wellflow.app.config import settings
@@ -40,6 +40,11 @@ router = APIRouter(tags=["SSE"])
 @router.get("/api/tasks/{task_id}/stream")
 async def stream_task(task_id: str, request: Request):
     """订阅任务进度事件。事件驱动为主，DB 轮询兜底。"""
+
+    from wellflow.app.database import SessionLocal
+    with SessionLocal() as db:
+        if TaskRepo(db).get(task_id) is None:
+            raise HTTPException(404, "任务不存在或无权访问")
 
     async def event_generator():
         from wellflow.app.event_bus import drain_and_subscribe

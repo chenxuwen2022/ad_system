@@ -1,3 +1,4 @@
+from wellflow.app.models.account_models import Company, User, OperationLog
 from wellflow.app.models.task_models import (
     Task,
     TaskEvent,
@@ -20,6 +21,7 @@ from wellflow.app.models.mannequin_models import (
 from wellflow.app.models.prompt_models import PromptTemplate, PromptRevision, PromptRelease, PromptReleaseItem
 
 __all__ = [
+    "Company", "User", "OperationLog",
     "Task",
     "TaskEvent",
     "TaskErrorLog",

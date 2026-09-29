@@ -25,7 +25,7 @@ if sys.platform == "win32":
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from ad.routes.upload_routes import router as upload_router
@@ -47,6 +47,8 @@ from wellflow.app.api.conversations import router as wf_conversations_router
 from wellflow.app.api.model_options import router as wf_model_options_router
 from wellflow.app.api.prompts import router as wf_prompts_router
 from wellflow.app.sse import router as wf_sse_router
+from wellflow.app.api.accounts import router as wf_accounts_router
+from wellflow.app.security import require_api_user
 from wellflow.app.config import settings as wf_settings
 from wellflow.app.runtime import (
     init_wellflow_runtime,
@@ -87,7 +89,7 @@ async def lifespan(app: FastAPI):
     await shutdown_wellflow_runtime()
 
 
-app = FastAPI(title="AI 电商运营中台（广告投放 + 电商商拍）", lifespan=lifespan)
+app = FastAPI(title="AI 电商运营中台（广告投放 + 电商商拍）", lifespan=lifespan, dependencies=[Depends(require_api_user)])
 
 # CORS（商拍子系统前端跨域调用需要；对广告系统同源调用无影响）
 app.add_middleware(
@@ -116,6 +118,7 @@ async def spa_fallback(full_path: str):
     return FileResponse("static/wellflow-saas-frontend/index.html")
 
 # ── 子系统一：广告投放（原 ad_system 全部路由，路径不变）──
+app.include_router(wf_accounts_router, prefix="/api")
 app.include_router(upload_router)
 app.include_router(ad_router)
 app.include_router(shops_router, prefix="/api/shops")  # 店铺广告主账户 CRUD

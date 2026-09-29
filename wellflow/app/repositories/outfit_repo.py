@@ -282,23 +282,10 @@ class OutfitRepo:
 # ============================================================================
 
 def _gen_outfit_no(db: Session) -> str:
-    """生成下一个穿搭编号 WF-O001(仿 _gen_mannequin_no)。"""
-    rows = db.execute(select(Outfit.outfit_no)).scalars().all()
-    nums = []
-    for val in rows:
-        m = re.search(r"(\d+)$", val or "")
-        if m:
-            nums.append(int(m.group(1)))
-    n = (max(nums) + 1) if nums else 1
-    return f"WF-O{n:03d}"
+    from uuid import uuid4
+    return "WF-O" + uuid4().hex[:16].upper()
+
 
 async def _agen_outfit_no(db: AsyncSession) -> str:
-    """异步版编号生成(仿 _gen_outfit_no)。"""
-    rows = (await db.execute(select(Outfit.outfit_no))).scalars().all()
-    nums = []
-    for val in rows:
-        m = re.search(r"(\d+)$", val or "")
-        if m:
-            nums.append(int(m.group(1)))
-    n = (max(nums) + 1) if nums else 1
-    return f"WF-O{n:03d}"
+    from uuid import uuid4
+    return "WF-O" + uuid4().hex[:16].upper()

@@ -10,6 +10,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from wellflow.app.database import Base
+from sqlalchemy import BigInteger as OwnershipBigInteger
 
 
 # ============================================================================
@@ -20,6 +21,9 @@ class ProductBrand(Base):
     """商品品牌（SKU 创建时 find-or-create，不暴露独立 POST 接口）。"""
 
     __tablename__ = "product_brand"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     brand_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
@@ -45,6 +49,9 @@ class ProductSeries(Base):
     """商品系列（挂在品牌下，SKU 创建时 find-or-create）。"""
 
     __tablename__ = "product_series"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     brand_id: Mapped[int] = mapped_column(
@@ -72,6 +79,9 @@ class ProductSku(Base):
     """SKU 主表（唯一创建入口）。"""
 
     __tablename__ = "product_sku"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     sku_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)

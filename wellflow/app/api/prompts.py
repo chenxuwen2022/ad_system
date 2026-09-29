@@ -7,11 +7,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from wellflow.app.security import require_admin
 from wellflow.app.database import get_db
 from wellflow.app.models.prompt_models import PromptRelease, PromptReleaseItem, PromptRevision, PromptTemplate
 from wellflow.app.prompt.registry import CATALOG, CATEGORIES
 
-router = APIRouter(prefix="/prompts", tags=["提示词管理"])
+router = APIRouter(prefix="/prompts", tags=["提示词管理"], dependencies=[Depends(require_admin)])
 
 
 class RevisionInput(BaseModel):

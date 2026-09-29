@@ -266,13 +266,5 @@ class MannequinRepo:
 # ============================================================================
 
 def _gen_mannequin_no(db: Session) -> str:
-    """生成下一个模特编号 WF-M001。"""
-    from sqlalchemy import select, func
-    rows = db.execute(select(Mannequin.mannequin_no)).scalars().all()
-    nums = []
-    for val in rows:
-        m = re.search(r"(\d+)$", val or "")
-        if m:
-            nums.append(int(m.group(1)))
-    n = (max(nums) + 1) if nums else 1
-    return f"WF-M{n:03d}"
+    from uuid import uuid4
+    return "WF-M" + uuid4().hex[:16].upper()

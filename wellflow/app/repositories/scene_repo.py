@@ -141,12 +141,5 @@ class SceneRepo:
 
 
 async def _agen_scene_no(db: AsyncSession) -> str:
-    """生成下一个场景编号 WF-S001(仿 _agen_outfit_no)。"""
-    rows = (await db.execute(select(Scene.scene_no))).scalars().all()
-    nums = []
-    for val in rows:
-        m = re.search(r"(\d+)$", val or "")
-        if m:
-            nums.append(int(m.group(1)))
-    n = (max(nums) + 1) if nums else 1
-    return f"WF-S{n:03d}"
+    from uuid import uuid4
+    return "WF-S" + uuid4().hex[:16].upper()
