@@ -53,7 +53,7 @@ def login(body: LoginInput, request: Request, response: Response, db: Session = 
     token = issue_token(user)
     response.headers["Cache-Control"] = "no-store"
     response.set_cookie("wellflow_media", token, httponly=True, secure=settings.auth_cookie_secure,
-                        samesite="strict", path="/api/uploaded_media", max_age=settings.auth_token_hours * 3600)
+                        samesite="strict", path="/", max_age=settings.auth_token_hours * 3600)
     return ok({"access_token": token, "token_type": "bearer", "expires_in": settings.auth_token_hours * 3600,
                "user": user_data(db, user)})
 
@@ -61,7 +61,7 @@ def login(body: LoginInput, request: Request, response: Response, db: Session = 
 @router.post("/auth/logout")
 def logout(response: Response, user: User = Depends(get_current_user)):
     # This clears only the media cookie; there is deliberately no session table.
-    response.delete_cookie("wellflow_media", path="/api/uploaded_media", secure=settings.auth_cookie_secure,
+    response.delete_cookie("wellflow_media", path="/", secure=settings.auth_cookie_secure,
                            httponly=True, samesite="strict")
     return ok()
 

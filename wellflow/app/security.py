@@ -77,11 +77,26 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
             raise HTTPException(401, "账号已删除，请联系管理员")
         return user
     scheme, _, token = request.headers.get("authorization", "").partition(" ")
-    # Images rendered by <img> cannot attach an Authorization header. This
-    # narrowly-scoped cookie is accepted only for read-only media requests.
-    if request.method in {"GET", "HEAD"} and request.url.path.startswith("/api/uploaded_media/") and not token:
-        token = request.cookies.get("wellflow_media", "")
-        scheme = "Bearer"
+    # Images rendered by <img> / <video> / <audio> tags cannot attach an
+    # Authorization header. For these read-only media endpoints we fall back
+    # to the wellflow_media HttpOnly cookie set at login.
+    # NOTE: /uploads and /static are already mounted as FastAPI StaticFiles
+    # outside the app-level dependencies=[] scope, so they are NOT affected
+    # by this guard and do not need listing here. Only paths under /api/*
+    # that stream bytes need the cookie fallback.
+    if request.method in {"GET", "HEAD"} and not token:
+        media_path = request.url.path
+        # Keep this list in sync with bytes-streaming endpoints that may be
+        # rendered directly in <img>/<video> tags across both WellFlow and ad
+        # subsystems.
+        needs_cookie = (
+            media_path.startswith("/api/uploaded_media/")
+            or media_path.startswith("/api/wellflow/image/thumbnail")
+            or media_path.startswith("/api/file_by_path")
+        )
+        if needs_cookie:
+            token = request.cookies.get("wellflow_media", "")
+            scheme = "Bearer"
     if scheme.lower() != "bearer" or not token:
         raise HTTPException(401, "请先登录", headers={"WWW-Authenticate": "Bearer"})
     payload = decode_token(token)
