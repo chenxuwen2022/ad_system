@@ -124,9 +124,23 @@ def get_auth_session_factory():
     return SessionLocal
 
 
+# 投放台（wellflow-launch-frontend）接口免认证前缀：内部系统前端不携带 token，与旧版行为一致；
+# wellflow 商拍子系统其余 /api/ 接口（/api/auth、/api/wellflow 等）仍走认证。
+PUBLIC_API_PREFIXES = (
+    "/api/ad", "/api/advertiser_accounts", "/api/categories", "/api/db_materials",
+    "/api/launch_records", "/api/material_biz_statuses", "/api/material_detail_by_id",
+    "/api/material_detail_by_name", "/api/material_stats", "/api/plan_products",
+    "/api/plans", "/api/shops", "/api/sync_material_status", "/api/tags",
+    "/api/thumb", "/api/upload_material", "/api/uploaded_media",
+)
+
+
 async def require_api_user(request: Request, session_factory=Depends(get_auth_session_factory)):
     """Release auth connection before streaming, retain immutable request scope."""
     from wellflow.app.ownership import Principal, principal
+    if request.url.path.startswith(PUBLIC_API_PREFIXES):
+        yield None
+        return
     user = None
     scope_token = None
     if request.url.path.startswith("/api/") and request.url.path.rstrip("/") != "/api/auth/login":
