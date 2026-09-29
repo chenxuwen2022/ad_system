@@ -323,7 +323,10 @@ async def chat(
     bound_conv = binding_repo.resolve(conversation_id) if conversation_id else None
     if task_id and bound_task is None:
         raise HTTPException(404, "任务不存在或无权访问")
-    if conversation_id and bound_conv is None:
+    # conversation_id 由前端 createId() 预生成，首次 start_task 时 DB 里还没有，
+    # 真正落库在 L617-644 的 intent=="start_task" 分支里。
+    # 只有当同时带了 task_id（必须复用一个既有 task）时，才强制要求 conversation 已存在。
+    if conversation_id and task_id and bound_conv is None:
         raise HTTPException(404, "对话不存在或无权访问")
     if bound_task and bound_task.conversation_id:
         task_conv = binding_repo.get(bound_task.conversation_id)
@@ -360,11 +363,8 @@ async def chat(
     resolved_conv_id: str | None = conversation_id
 
     if has_task:
-        repo = TaskRepo(db)
         t_id = str(task_id)
-        task = repo.get(t_id)
-        if not task:
-            raise HTTPException(404, f"task {t_id} 不存在")
+        task = bound_task  # L324 已保证非 None，复用避免二次 repo.get
         # 反查 conversation_id（前端没传但 task 已有）
         if not resolved_conv_id and task.conversation_id:
             resolved_conv_id = task.conversation_id
