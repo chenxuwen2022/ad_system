@@ -10,6 +10,7 @@ Purpose:
 Idempotent — safe to re-run on an already-seeded DB.
 """
 import os
+from datetime import datetime, timezone
 
 import bcrypt
 from alembic import op
@@ -21,8 +22,9 @@ branch_labels = None
 depends_on = None
 
 COMPANY_NAME = '数语深流'
+COMPANY_EMAIL_SUFFIXES = ['@wellflowtech.cn']
 ROOT_USERNAME = 'root'
-ROOT_EMAIL = 'root@wellflow.local'
+ROOT_EMAIL = 'root@wellflowtech.cn'
 ROOT_ROLE = 'platform_admin'
 
 TABLES = (
@@ -33,6 +35,8 @@ TABLES = (
 
 def upgrade():
     conn = op.get_bind()
+
+    email_suffixes_sql = f"ARRAY[{', '.join(repr(s) for s in COMPANY_EMAIL_SUFFIXES)}]::text[]"
 
     # --- 1. 确保公司存在并允许平台超管 ---
     # 公司唯一性约束是带 WHERE deleted_at IS NULL 的 partial unique index，
@@ -45,8 +49,8 @@ def upgrade():
     if existing is None:
         conn.execute(
             sa.text(
-                """INSERT INTO companies (name, email_suffixes, allow_platform_admin)
-                   VALUES (:name, '[]', TRUE)"""
+                f"""INSERT INTO companies (name, email_suffixes, allow_platform_admin)
+                    VALUES (:name, {email_suffixes_sql}, TRUE)"""
             ),
             {'name': COMPANY_NAME},
         )
@@ -57,9 +61,11 @@ def upgrade():
     else:
         conn.execute(
             sa.text(
-                """UPDATE companies
-                   SET allow_platform_admin = TRUE, deleted_at = NULL
-                   WHERE id = :id"""
+                f"""UPDATE companies
+                    SET allow_platform_admin = TRUE,
+                        deleted_at = NULL,
+                        email_suffixes = {email_suffixes_sql}
+                    WHERE id = :id"""
             ),
             {'id': existing['id']},
         )
@@ -73,18 +79,20 @@ def upgrade():
     if len(password) > 72:
         raise ValueError('AUTH_INITIAL_PASSWORD 超过 bcrypt 72 字节上限')
     hashed = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt(rounds=12)).decode('ascii')
+    now = datetime.now(timezone.utc).isoformat()
 
     conn.execute(
         sa.text(
             """
-            INSERT INTO users (company_id, email, username, password_hash, role)
-            VALUES (:company_id, :email, :username, :password_hash, :role)
+            INSERT INTO users (company_id, email, username, password_hash, role, created_at, updated_at)
+            VALUES (:company_id, :email, :username, :password_hash, :role, :now, :now)
             ON CONFLICT (email) DO UPDATE
               SET company_id    = EXCLUDED.company_id,
                   username      = EXCLUDED.username,
                   role          = EXCLUDED.role,
                   password_hash = EXCLUDED.password_hash,
-                  deleted_at    = NULL
+                  deleted_at    = NULL,
+                  updated_at    = :now
             """
         ),
         {
@@ -93,6 +101,7 @@ def upgrade():
             'username': ROOT_USERNAME,
             'password_hash': hashed,
             'role': ROOT_ROLE,
+            'now': now,
         },
     )
     user = conn.execute(
