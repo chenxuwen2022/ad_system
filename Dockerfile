@@ -4,14 +4,20 @@ WORKDIR /app
 
 # psycopg2-binary 自带 libpq，Pillow 等均有预编译 wheel，slim 镜像足够
 #
-# 国内服务器访问 PyPI 官方源不稳定，改用清华镜像源（可按需换成阿里云/中科大）
+# 国内服务器改用阿里云PyPI镜像，提升下载稳定性，减少断连重试
 COPY requirements.txt .
 COPY wellflow/requirements.txt wellflow/requirements.txt
 
 # 新增：升级 pip setuptools wheel，解决旧pip无法找到新版psycopg2-binary的问题
-RUN python -m pip install --upgrade pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple
+RUN python -m pip install --upgrade pip setuptools wheel \
+    -i https://mirrors.aliyun.com/pypi/simple \
+    --root-user-action=ignore
 
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
+RUN pip install --no-cache-dir \
+    --timeout 120 \
+    --retries 2 \
+    -i https://mirrors.aliyun.com/pypi/simple \
+    --root-user-action=ignore \
     -r requirements.txt -r wellflow/requirements.txt
 
 # 源码：ad/ 广告投放子系统 + wellflow/ 商拍子系统 + 根目录 .env（config.py 从 /app/.env 读取）
