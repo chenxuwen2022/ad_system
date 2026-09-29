@@ -2586,6 +2586,56 @@ class DouYinAdService:
         return str(video_id)
 
     # ---------------------------------------------------------------
+    # 图片追加（单张）：千川自选图片每创意1张，用 uni_promotion/ad/material/add 的 image_material。
+    # 单张图片不能用 carousel（carousel/create 要求 images >= 2）
+    # ---------------------------------------------------------------
+    def add_image_material_to_plan(self, ad_id: str, image_path: str, product_ids=None) -> str:
+        """把单张图片以 image_material 追加到已有全域计划（每个商品创意单独调用 material/add），
+        返回 image_id。"""
+        import time as _t
+        # 1. 上传图片（商品卡方图）
+        tmp = self._to_square_image(image_path)
+        try:
+            image_id = self.upload_local_media_get_material_id(tmp, "image")
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+        # 2. 读计划现有商品创意，确定要追加的商品（未指定则全部）
+        detail = self.get_overall_plan_detail(ad_id)
+        creatives = detail.get("multi_product_creative_list") or []
+        if product_ids:
+            pids = [str(p) for p in product_ids if str(p)]
+        else:
+            pids = [str(c["product_id"]) for c in creatives if c.get("product_id")]
+        if not pids:
+            raise Exception("计划详情里没有商品创意，无法追加图片素材")
+        # 3. 等图片异步入库，再逐个商品创意追加图片素材（追加语义，不触碰计划里已有素材）
+        _t.sleep(5)
+        last_err = None
+        for pid in pids:
+            payload = {
+                "advertiser_id": int(self.advertiser_id),
+                "ad_id": int(ad_id),
+                "multi_product_creative_list": [{
+                    "product_id": int(pid),
+                    "image_material": [{"image_mode": "SQUARE", "image_ids": [image_id]}],
+                }],
+            }
+            r = requests.post(f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/ad/material/add/",
+                              headers=self.headers, json=payload, timeout=60)
+            j = r.json()
+            if j.get("code") != 0:
+                last_err = Exception(self._friendly_error("追加图片素材到计划失败", j))
+            else:
+                last_err = None
+        if last_err:
+            raise last_err
+        return str(image_id)
+
+    # ---------------------------------------------------------------
     # 直播数据（千川侧已授权权限：全域投放数据 22100600 + 今日直播数据 22100400）
     # ---------------------------------------------------------------
     _LIVE_ANCHORS = [

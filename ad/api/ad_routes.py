@@ -300,18 +300,25 @@ async def ad_launch_batch(req: BatchLaunchRequest):
         if images:
             if not product_id:
                 return {"success": False, "error_msg": "图片投放需要指定商品 product_id（商品卡方图必选）"}
-            carousel_ret = ad_service.add_carousel_to_plan(req.plan_id, images, product_id)
-            carousel_id = carousel_ret["carousel_id"] if isinstance(carousel_ret, dict) else carousel_ret
-            carousel_img_ids = carousel_ret.get("image_ids", []) if isinstance(carousel_ret, dict) else []
-            results.append({"type": "image", "count": len(images), "carousel_id": carousel_id})
+            # 每张图片独立投放（千川自选图片素材 image_material），不走图文轮播：
+            # 巨量后台支持一个计划下挂多张独立图片素材，每张可单独编辑/删除/排除
             for p in images:
-                _save_launch_record(p, "success", "real",
-                                    plan_id=req.plan_id, plan_name=req.plan_name or req.plan_id or "",
-                                    product_id=str(product_id),
-                                    detail=f"已追加到投放计划（图文轮播 carousel_id={carousel_id}）",
-                                    advertiser_id=advertiser_id or "", budget=req.budget or 0,
-                                    biz_status="待审核",
-                                    material_id=f"carousel:{carousel_id}:{','.join(carousel_img_ids)}")
+                try:
+                    new_image_id = ad_service.add_image_material_to_plan(req.plan_id, p, req.product_ids or None)
+                    results.append({"type": "image", "file": os.path.basename(p), "image_id": new_image_id})
+                    _save_launch_record(p, "success", "real",
+                                        plan_id=req.plan_id, plan_name=req.plan_name or req.plan_id or "",
+                                        product_id=str(product_id),
+                                        detail=f"已追加到投放计划 image_id={new_image_id}",
+                                        advertiser_id=advertiser_id or "", budget=req.budget or 0,
+                                        biz_status="待审核",
+                                        material_id=new_image_id)
+                except Exception as e:
+                    results.append({"type": "image", "file": os.path.basename(p), "success": False, "error_msg": str(e)})
+                    _save_launch_record(p, "fail", "real",
+                                        plan_id=req.plan_id or "", plan_name=req.plan_name or req.plan_id or "",
+                                        product_id=str(product_id),
+                                        detail=str(e), advertiser_id=advertiser_id or "", budget=req.budget or 0)
         if videos:
             for v in videos:
                 try:
@@ -1700,6 +1707,41 @@ def material_stats():
         return {"error": str(e)}
     finally:
         db.close()
+
+@router.get("/api/thumb/{fname}")
+def get_thumb(fname: str):
+    """素材缩略图/视频封面：图片压缩到宽300，视频抽首帧生成封面。首次生成后缓存，加速列表加载。"""
+    from fastapi.responses import FileResponse
+    media_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "media_storage")
+    fname = os.path.basename(fname)
+    src = os.path.join(media_dir, fname)
+    if not os.path.exists(src):
+        return {"success": False, "error": "素材不存在"}
+    thumb_dir = os.path.join(media_dir, "thumb")
+    os.makedirs(thumb_dir, exist_ok=True)
+    thumb = os.path.join(thumb_dir, os.path.splitext(fname)[0] + ".jpg")
+    if (not os.path.exists(thumb)) or os.path.getmtime(thumb) < os.path.getmtime(src):
+        try:
+            ext = os.path.splitext(fname)[1].lower()
+            tmp = thumb + ".tmp.jpg"
+            if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"]:
+                import imageio_ffmpeg, subprocess
+                ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+                subprocess.run([ffmpeg, "-y", "-ss", "0.5", "-i", src, "-frames:v", "1",
+                                "-vf", "scale=300:-2", "-q:v", "4", tmp],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True, timeout=60)
+            else:
+                from PIL import Image
+                with Image.open(src) as im:
+                    im = im.convert("RGB")
+                    im.thumbnail((300, 300))
+                    im.save(tmp, "JPEG", quality=72)
+            os.replace(tmp, thumb)
+        except Exception:
+            if not os.path.exists(thumb):
+                return FileResponse(src)
+    return FileResponse(thumb, media_type="image/jpeg")
+
 @router.get("/api/db_materials")
 def db_materials(shop: str = ""):
     db = SessionLocal()
@@ -1767,6 +1809,7 @@ def db_materials(shop: str = ""):
                 "id": r.id,
                 "name": fname,
                 "path": real_path,
+                "thumb_url": "/api/thumb/" + fname,
                 "type": ftype,
                 "size": os.path.getsize(real_path),
                 "mtime": os.path.getmtime(real_path),
@@ -1792,6 +1835,7 @@ def db_materials(shop: str = ""):
                 "id": hash(fpath) % 1000000,
                 "name": fname,
                 "path": fpath,
+                "thumb_url": "/api/thumb/" + fname,
                 "type": ftype,
                 "size": st.st_size,
                 "mtime": st.st_mtime,
