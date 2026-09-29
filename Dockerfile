@@ -10,13 +10,13 @@ COPY wellflow/requirements.txt wellflow/requirements.txt
 
 # 新增：升级 pip setuptools wheel，解决旧pip无法找到新版psycopg2-binary的问题
 RUN python -m pip install --upgrade pip setuptools wheel \
-    -i https://mirrors.aliyun.com/pypi/simple \
+    -i https://pypi.mirrors.ustc.edu.cn/simple \
     --root-user-action=ignore
 
 RUN pip install --no-cache-dir \
     --timeout 120 \
     --retries 2 \
-    -i https://mirrors.aliyun.com/pypi/simple \
+    -i https://pypi.mirrors.ustc.edu.cn/simple \
     --root-user-action=ignore \
     -r requirements.txt -r wellflow/requirements.txt
 
