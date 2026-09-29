@@ -60,15 +60,18 @@ class Settings(BaseSettings):
         "4:3": "1536x1024",
         "16:9": "1536x1024",
     }
-    # 火山方舟 Seedream / 通义 qwen-image / 腾讯 mai-image 等非 GPT 生图模型：
-    # 这些渠道对总像素有硬下限（如 Seedream 5.0 lite / 4.5 要求 ≥ 2560×1440 = 3,686,400），
-    # 统一升级到 >= 2K 档位，同时保持长宽比精确。
+    # 非 GPT 生图模型尺寸映射（2026-09-29 像素范围修正）：
+    #  - Seedream / mai-image 等有硬下限 ≥ 2560×1440 = 3,686,400；
+    #  - qwen-image-3.0 有硬上限 ≤ 2048×2048 = 4,194,304；
+    # 两者交集 = [3,686,400, 4,194,304]。1920×2560(4,915,200)、2560×1920 曾超出 qwen 上限，
+    # 导致上游 alibaba@1.4.0 插件 convertImage 报错 "size is outside the model's pixel and
+    # aspect-ratio limits"，现已收敛到两模型都合法的 3.69M–4.19M 区间。
     image_ratio_to_pixel_size_non_gpt: dict[str, str] = {
-        "9:16": "1440x2560",
-        "3:4": "1920x2560",
-        "1:1": "2048x2048",
-        "4:3": "2560x1920",
-        "16:9": "2560x1440",
+        "9:16": "1440x2560",   # 3,686,400
+        "3:4":  "1728x2304",   # 3,981,312
+        "1:1":  "1920x1920",   # 3,686,400  (远离 qwen 上限留安全余量)
+        "4:3":  "2304x1728",   # 3,981,312
+        "16:9": "2560x1440",   # 3,686,400
     }
     image_gen_quality: str = "medium"              # high | medium | low —— 生图质量/速度杠杆
     image_gen_input_fidelity: str = "low"          # high | low —— edit 模式下对参考图的保真强度

@@ -18,16 +18,89 @@ def gateway_request_context(response: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 尺寸适配：GPT Image 官方用 1024 档位小尺寸（1~1.5M 像素）合法；
-# 但 Ark Seedream / qwen-image / mai-image 等渠道硬下限 2560x1440 = 3,686,400 像素。
-# 所有非 GPT Image 模型在 client 层统一升级到 >= 2K 档位，避免上游 400。
+# 尺寸适配（2026-09-29 双约束收敛）：
+#   - Seedream / mai-image 等渠道硬下限 ≥ 2560×1440 = 3,686,400 像素；
+#   - qwen-image-3.0 硬上限 ≤ 2048×2048 = 4,194,304 像素（超时报
+#     "size is outside the model's pixel and aspect-ratio limits"）；
+# 非 GPT Image 模型统一收敛到两模型共同合法区间 [3,686,400, 4,194,304]。
 # ---------------------------------------------------------------------------
 _SEEDREAM_MIN_PIXELS = 2560 * 1440
+_QWEN_MAX_PIXELS = 2048 * 2048
+
+
+def _is_qwen_image(model_name: str) -> bool:
+    return "qwen-image" in (model_name or "").lower()
+
+
+def _clamp_pixels(w: int, h: int, model_name: str) -> tuple[int, int]:
+    """按模型约束对尺寸做比例保持的像素级收敛，并对齐到 8 的倍数（模型通用约束）。"""
+    import math
+    from wellflow.app.config import settings
+
+    def _align8(v: int) -> int:
+        return max(8, (v // 8) * 8)
+
+    def _ratio_of(key: str) -> float:
+        a, b = key.split(":")
+        return float(a) / float(b)
+
+    def _fallback_by_ratio(w0: int, h0: int, *, lo: int, hi: int) -> tuple[int, int]:
+        """极端输入下的保底：按原始比例找 config 里最接近的合法档位。"""
+        ratio = w0 / h0 if h0 else 1.0
+        non_gpt_map = settings.image_ratio_to_pixel_size_non_gpt
+        import re as _re
+        for key in sorted(non_gpt_map.keys(), key=lambda k: abs(_ratio_of(k) - ratio)):
+            mm = _re.match(r"(\d+)x(\d+)", non_gpt_map[key])
+            if mm:
+                fw, fh = int(mm.group(1)), int(mm.group(2))
+                if lo <= fw * fh <= hi:
+                    return fw, fh
+        # 最后兜底：Seedream 下限档位
+        return 2560, 1440
+
+    def _rebalance(nw: int, nh: int, *, lo: int, hi: int) -> tuple[int, int]:
+        """在保持 8 对齐前提下，把 (nw, nh) 推回 [lo, hi] 像素区间。"""
+        nw, nh = _align8(nw), _align8(nh)
+        for _ in range(20):
+            px = nw * nh
+            if lo <= px <= hi:
+                return nw, nh
+            if px > hi:
+                if nw >= nh and nw > 8:
+                    nw -= 8
+                elif nh > 8:
+                    nh -= 8
+                else:
+                    break
+            else:  # px < lo
+                if nw >= nh:
+                    nw += 8
+                else:
+                    nh += 8
+                nw, nh = _align8(nw), _align8(nh)
+        # 迭代耗尽 → 按比例回退到 config 档位
+        return _fallback_by_ratio(w, h, lo=lo, hi=hi)
+
+    pixels = w * h
+    if _is_qwen_image(model_name) and pixels > _QWEN_MAX_PIXELS:
+        scale = math.sqrt(_QWEN_MAX_PIXELS / pixels)
+        nw = max(8, int(w * scale))
+        nh = max(8, int(h * scale))
+        return _rebalance(nw, nh, lo=_SEEDREAM_MIN_PIXELS, hi=_QWEN_MAX_PIXELS)
+    if pixels < _SEEDREAM_MIN_PIXELS:
+        scale = math.sqrt(_SEEDREAM_MIN_PIXELS / pixels)
+        nw = max(8, int(w * scale))
+        nh = max(8, int(h * scale))
+        return _rebalance(nw, nh, lo=_SEEDREAM_MIN_PIXELS, hi=_QWEN_MAX_PIXELS)
+    return _align8(w), _align8(h)
 
 
 def _remap_size_for_non_gpt(model_name: str, size: str) -> str:
-    """非 GPT Image 模型的 size 自动升级（client 层单点兜底）。"""
-    if "gpt-image" in model_name.lower():
+    """非 GPT Image 模型的 size 自动适配（client 层单点兜底）：
+    - 小于 Seedream 下限 → 按比例放大到最近合法档位；
+    - 大于 qwen-image 上限 → 按比例缩小到 ≤ 2048×2048。
+    """
+    if "gpt-image" in (model_name or "").lower():
         return size  # GPT Image 保持原样
 
     import logging
@@ -38,10 +111,21 @@ def _remap_size_for_non_gpt(model_name: str, size: str) -> str:
         return size  # "2K" 这类枚举值原样透传
 
     w, h = int(m.group(1)), int(m.group(2))
-    if w * h >= _SEEDREAM_MIN_PIXELS:
-        return size  # 已经够大，直接用
+    pixels = w * h
 
-    # 反推比例 → 找 ratio key 最接近的大尺寸
+    # qwen-image 上限优先（超限必须收敛，否则直接被上游拒）
+    if _is_qwen_image(model_name) and pixels > _QWEN_MAX_PIXELS:
+        nw, nh = _clamp_pixels(w, h, model_name)
+        logging.getLogger(__name__).warning(
+            "[image_client] size clamped for qwen-image: %sx%s → %sx%s (pixels %d→%d)",
+            w, h, nw, nh, pixels, nw * nh,
+        )
+        return f"{nw}x{nh}"
+
+    if pixels >= _SEEDREAM_MIN_PIXELS:
+        return size  # 两模型区间内，直接用
+
+    # 小于 Seedream 下限 → 按比例匹配 settings.image_ratio_to_pixel_size_non_gpt
     from wellflow.app.config import settings
     ratio = w / h if h else 1.0
     non_gpt_map = settings.image_ratio_to_pixel_size_non_gpt

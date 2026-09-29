@@ -1108,6 +1108,12 @@ async def generate_split_image(body: GenImageBody):
     last_err = "unknown"
     for model in ["gpt-image-2", "mai-image-2.5", "qwen-image-3.0"]:
         try:
+            # 非 GPT 模型走 image_client._remap_size_for_non_gpt 收敛尺寸
+            try:
+                from wellflow.app.newapi.image_client import _remap_size_for_non_gpt
+                remapped_size = _remap_size_for_non_gpt(model, "1024x1536")
+            except Exception:
+                remapped_size = "1024x1536"
             resp = httpx.post(
                 f"{base}/images/generations",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
@@ -1115,7 +1121,7 @@ async def generate_split_image(body: GenImageBody):
                     "model": model,
                     "prompt": prompt,
                     "n": 1,
-                    "size": "1024x1536",
+                    "size": remapped_size,
                     "image": data_url,
                 },
                 timeout=120,
