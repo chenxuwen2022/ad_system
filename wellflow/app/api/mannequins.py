@@ -844,18 +844,8 @@ _MQ_SEMAPHORE = asyncio.Semaphore(3)
 
 
 async def _mq_gen_no(db) -> str:
-    """异步版编号生成(独立实现,不碰 MannequinRepo)。"""
-    import re as _re
-    from sqlalchemy import select as _select
-    from wellflow.app.models.mannequin_models import Mannequin as _M
-    rows = (await db.execute(_select(_M.mannequin_no))).scalars().all()
-    nums = []
-    for val in rows:
-        m = _re.search(r"(\d+)$", val or "")
-        if m:
-            nums.append(int(m.group(1)))
-    n = (max(nums) + 1) if nums else 1
-    return f"WF-M{n:03d}"
+    from uuid import uuid4
+    return "WF-M" + uuid4().hex[:16].upper()
 
 
 async def _mq_auto_tag(data_uris: list[str], extra_context: str | None = None):

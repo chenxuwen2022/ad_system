@@ -9,6 +9,7 @@ from sqlalchemy import BIGINT, DateTime, ForeignKey, String, Text, JSON, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from wellflow.app.database import Base
+from sqlalchemy import BigInteger as OwnershipBigInteger
 
 
 class TaskPhase(str, Enum):
@@ -32,6 +33,9 @@ class Task(Base):
     """任务主表（一次 LangGraph workflow 执行 = 一条 Task）。"""
 
     __tablename__ = "task"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     # 关联的 conversation（可选：旧 task 没有，conversation-centric 后必填）
@@ -113,6 +117,9 @@ class Conversation(Base):
     """
 
     __tablename__ = "conversation"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     conversation_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     sku_id: Mapped[int | None] = mapped_column(

@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from wellflow.app.database import Base
+from sqlalchemy import BigInteger as OwnershipBigInteger
 
 
 # ============================================================================
@@ -21,6 +22,8 @@ class Mannequin(Base):
     """模特资产。"""
 
     __tablename__ = "mannequin"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     mannequin_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)  # WF-M001
@@ -33,7 +36,7 @@ class Mannequin(Base):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)           # AI 合成素材描述
     generate_model: Mapped[str | None] = mapped_column(String(64), nullable=True)  # AI 图像生成模型名
     generate_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    owner_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    owner_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
@@ -74,6 +77,9 @@ class MannequinGenerateLog(Base):
     """模特 AI 生成历史（可多条，支持首轮 + 微调多轮追加）。"""
 
     __tablename__ = "mannequin_generate_log"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+    owner_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     mannequin_id: Mapped[int | None] = mapped_column(

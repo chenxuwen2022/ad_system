@@ -15,12 +15,15 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from wellflow.app.database import Base
+from sqlalchemy import BigInteger as OwnershipBigInteger
 
 
 class Outfit(Base):
     """穿搭资产。"""
 
     __tablename__ = "outfit"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     outfit_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)  # WF-O001
@@ -34,7 +37,7 @@ class Outfit(Base):
     original_storage_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)  # 原图
     items: Mapped[list | None] = mapped_column(JSONB, nullable=True)  # [{id,name,category,color,storage_uri}]
     dims: Mapped[dict | None] = mapped_column(JSONB, nullable=True)   # {outfitStyle:[..],category:[..],color:[..],material:[..],fit:[..],func:[..]}
-    owner_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    owner_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

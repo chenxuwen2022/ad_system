@@ -321,6 +321,10 @@ async def chat(
     binding_repo = ConversationRepo(db)
     bound_task = db.get(Task, task_id) if task_id else None
     bound_conv = binding_repo.resolve(conversation_id) if conversation_id else None
+    if task_id and bound_task is None:
+        raise HTTPException(404, "任务不存在或无权访问")
+    if conversation_id and bound_conv is None:
+        raise HTTPException(404, "对话不存在或无权访问")
     if bound_task and bound_task.conversation_id:
         task_conv = binding_repo.get(bound_task.conversation_id)
         if conversation_id and (not bound_conv or bound_conv.conversation_id != bound_task.conversation_id):

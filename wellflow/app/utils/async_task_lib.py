@@ -27,6 +27,8 @@ _ASYNC_TASK = Table(
     "async_task",
     MetaData(),
     Column("id", BIGINT, primary_key=True),
+    Column("company_id", BIGINT, nullable=False),
+    Column("owner_id", BIGINT, nullable=False),
     Column("task_id", String(64), unique=True, nullable=False),
     Column("task_type", String(32), nullable=False),
     Column("status", String(16), nullable=False),
@@ -39,6 +41,20 @@ _ASYNC_TASK = Table(
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
+
+
+from wellflow.app.ownership import principal, criterion
+
+
+def _scope():
+    from sqlalchemy import true
+    actor = principal.get()
+    if actor is None or actor.role == "platform_admin":
+        return true()
+    rule = _ASYNC_TASK.c.company_id == actor.company_id
+    if actor.role == "company_user":
+        rule = rule & (_ASYNC_TASK.c.owner_id == actor.user_id)
+    return rule
 
 
 class TaskStore:
@@ -77,7 +93,7 @@ class TaskStore:
         row_id = task.get(self.row_id_field)
         with session_scope() as db:
             existing = db.execute(
-                select(_ASYNC_TASK.c.id).where(_ASYNC_TASK.c.task_id == task["task_id"])
+                select(_ASYNC_TASK.c.id).where(_ASYNC_TASK.c.task_id == task["task_id"], _scope())
             ).scalar()
             values = {
                 "task_type": task.get("task_type", ""),
@@ -91,11 +107,15 @@ class TaskStore:
                 "updated_at": now,
             }
             if existing is None:
+                actor = principal.get()
+                if actor is None:
+                    raise RuntimeError("New asset tasks require an authenticated owner")
+                values.update(company_id=actor.company_id, owner_id=actor.user_id)
                 db.execute(_ASYNC_TASK.insert().values(
                     task_id=task["task_id"], created_at=now, **values))
             else:
                 db.execute(update(_ASYNC_TASK)
-                           .where(_ASYNC_TASK.c.task_id == task["task_id"])
+                           .where(_ASYNC_TASK.c.task_id == task["task_id"], _scope())
                            .values(**values))
             db.commit()
 
@@ -104,7 +124,7 @@ class TaskStore:
         from wellflow.app.database import session_scope
         with session_scope() as db:
             db.execute(update(_ASYNC_TASK)
-                       .where(_ASYNC_TASK.c.task_id == task_id)
+                       .where(_ASYNC_TASK.c.task_id == task_id, _scope())
                        .values(heartbeat_at=self._now(), updated_at=self._now()))
             db.commit()
 
@@ -113,7 +133,7 @@ class TaskStore:
         from wellflow.app.database import session_scope
         with session_scope() as db:
             row = db.execute(
-                select(_ASYNC_TASK).where(_ASYNC_TASK.c.task_id == task_id)
+                select(_ASYNC_TASK).where(_ASYNC_TASK.c.task_id == task_id, _scope())
             ).first()
             if row is None:
                 return None
@@ -145,6 +165,8 @@ class TaskStore:
             stale_rows = db.execute(
                 select(_ASYNC_TASK)
                 .where(
+                    _scope(),
+                    _ASYNC_TASK.c.row_kind == self.row_id_field,
                     _ASYNC_TASK.c.status == "processing",
                     or_(
                         _ASYNC_TASK.c.heartbeat_at.is_(None),
@@ -162,6 +184,7 @@ class TaskStore:
                                    updated_at=now))
             # 过期清理
             db.execute(delete(_ASYNC_TASK).where(
+                _scope(), _ASYNC_TASK.c.row_kind == self.row_id_field,
                 _ASYNC_TASK.c.updated_at
                 < datetime.fromtimestamp(now.timestamp() - self.ttl_seconds, tz=timezone.utc)))
             db.commit()

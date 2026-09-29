@@ -10,12 +10,15 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from wellflow.app.database import Base
+from sqlalchemy import BigInteger as OwnershipBigInteger
 
 
 class Scene(Base):
     """场景资产(商拍「环境参考」素材)。"""
 
     __tablename__ = "scene"
+    company_id: Mapped[int] = mapped_column(OwnershipBigInteger, nullable=False, index=True)
+
 
     id: Mapped[int] = mapped_column(BIGINT, primary_key=True, autoincrement=True)
     scene_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)  # WF-S001
@@ -29,7 +32,7 @@ class Scene(Base):
     original_storage_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)  # 上传原图
     mosaic_storage_uri: Mapped[str | None] = mapped_column(String(512), nullable=True)    # 原图马赛克版(人+违规物打码)
     dims: Mapped[dict | None] = mapped_column(JSONB, nullable=True)  # {space:[..],region:[..],season:[..],weather:[..],sceneStyle:[..]}
-    owner_id: Mapped[int | None] = mapped_column(BIGINT, nullable=True)
+    owner_id: Mapped[int] = mapped_column(BIGINT, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

@@ -17,3 +17,7 @@ langgraph>=0.2
 langgraph-checkpoint-postgres>=0.2
 Pillow>=10.0
 rapidfuzz>=3.0
+
+bcrypt>=4.2,<6
+PyJWT>=2.10,<3
+email-validator>=2.2,<3
