@@ -82,7 +82,3 @@ data/cache/
 # ===== 本地工具记忆文件 =====
 .workbuddy/
 task_state/
-
-# 账号管理回归测试
-!/tests/test_accounts.py
-!/tests/test_account_concurrency.py
