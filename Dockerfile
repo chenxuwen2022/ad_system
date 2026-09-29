@@ -7,6 +7,10 @@ WORKDIR /app
 # 国内服务器访问 PyPI 官方源不稳定，改用清华镜像源（可按需换成阿里云/中科大）
 COPY requirements.txt .
 COPY wellflow/requirements.txt wellflow/requirements.txt
+
+# 新增：升级 pip setuptools wheel，解决旧pip无法找到新版psycopg2-binary的问题
+RUN python -m pip install --upgrade pip setuptools wheel -i https://pypi.tuna.tsinghua.edu.cn/simple
+
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
     -r requirements.txt -r wellflow/requirements.txt
 

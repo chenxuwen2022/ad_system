@@ -36,6 +36,7 @@ from wellflow.app.database import get_db_async, session_scope, AsyncSessionLocal
 from wellflow.app.utils.async_task_lib import BackgroundTasks, TaskStore, download_image, spawn_heartbeat
 from wellflow.app.newapi.client_factory import get_llm_client
 from wellflow.app.newapi.pool import get_model_pool
+from wellflow.app.prompt.registry import get_active_prompt
 from wellflow.app.repositories.scene_repo import SceneRepo
 from wellflow.app.schemas.scene_schemas import (
     SceneExtractRequest, SceneUpdateRequest,
@@ -208,37 +209,7 @@ def _pick_image_size(raw: bytes) -> str:
 
 async def _mosaic_original(raw: bytes) -> str:
     """② 原图马赛克(图像模型降级链):人物/隐私/违规内容打码,其余原样,返回 b64。"""
-    prompt = (
-        "请对输入图执行「叠加马赛克」操作。注意：这不是生成任务。\n"
-        "把输入图当成一张底图，你只被允许在上面贴马赛克方块，"
-        "底图本身一个像素都不许动。\n"
-        "\n"
-        "把输入图和输出图并排放在一起看，除了马赛克方块，"
-        "两张图必须一模一样，看不出任何差别。任何背景变化、"
-        "色调变化、清晰度变化、构图变化，都算任务失败。\n"
-        "\n"
-        "严厉禁止：\n"
-        "· 禁止重新绘制背景、禁止重新生成画面、禁止换一张图；\n"
-        "· 禁止改变天空、山脉、树木、建筑、道路、水面、地面的任何形状与位置；\n"
-        "· 禁止调整亮度、对比度、饱和度、白平衡、色温；\n"
-        "· 禁止锐化、磨皮、美颜、提画质、加滤镜、加景深虚化；\n"
-        "· 禁止清除画面里的电线杆、路牌、垃圾桶、车辆、落叶等任何现有物体；\n"
-        "· 禁止裁剪、补边、改变分辨率与画面比例；\n"
-        "· 禁止添加文字、水印、logo、边框。\n"
-        "\n"
-        "唯一改动：在下列区域原地叠加标准马赛克，"
-        "把区域切成规则方格、每格填平均色，格子要大到无法辨认原内容。\n"
-        "① 整个人物的头部（含面部与头发）；\n"
-        "② 裸露或可见的皮肤、身体、四肢、手部；\n"
-        "③ 人脸倒影、镜中或屏幕中的人脸；\n"
-        "④ 证件、车牌、手机号、地址、二维码、快递单、账号信息；\n"
-        "⑤ 裸露与性暗示区域、赌博界面、涉毒物品、血腥伤口、武器、政治敏感标识。\n"
-        "马赛克必须完整覆盖并略微外扩，不留边、不漏角；"
-        "不得用模糊、涂抹、纯色块、贴纸代替马赛克。\n"
-        "\n"
-        "如果图里没有上述目标，就原样输出输入图，什么都不做。\n"
-        "输出尺寸必须与输入图完全相同。"
-    )
+    prompt = get_active_prompt("scene_mosaic")
     size = await asyncio.to_thread(_pick_image_size, raw)
     sizes = [size] if size == "1024x1024" else [size, "1024x1024"]  # 兜底:模型不支持该尺寸时退回方形
     errors = []
@@ -274,17 +245,7 @@ def _violation_type(raw_text: str) -> str:
 
 async def _extract_scene_image(raw: bytes) -> str:
     """① 场景提取(生图降级链):去人物/杂物只留背景,返回 b64。"""
-    prompt = (
-        "移除这张照片中的全部人物，包括人影、人物倒影和随身物品，"
-        "用周围的环境内容自然填充被移除区域：延续原有的地形、植被、天空、水面、"
-        "建筑与纹理走向，保持光影方向、色调、饱和度、对比度和景深一致。\n"
-        "硬性约束：画面中不得残留任何人体部位（头、脸、手、手臂、腿、脚、头发）、"
-        "衣物或人物轮廓边缘；不得出现模糊涂抹痕迹、模糊色块、克隆重复纹理、"
-        "明显的修补边界或畸变。\n"
-        "除人物外，其余内容必须与原图完全一致：不改动构图、不改变视角与焦距、"
-        "不调整色调风格、不新增或删除任何景物、不添加文字水印。\n"
-        "如果原图本身不含任何人物，则直接原样输出该图，不做任何修改。"
-    )
+    prompt = get_active_prompt("scene_extract")
     size = await asyncio.to_thread(_pick_image_size, raw)
     sizes = [size] if size == "1024x1024" else [size, "1024x1024"]  # 兜底:模型不支持该尺寸时退回方形
     errors = []
@@ -320,13 +281,7 @@ async def _extract_scene_image(raw: bytes) -> str:
 async def _do_scene_auto_tag(data_uris: list[str]) -> tuple[dict[str, list[str]], str]:
     """③ 场景打标(五维枚举白名单防幻觉)+ 一句话描述。"""
     dims_json = json_mod.dumps(SCENE_DIMENSION_GROUPS, ensure_ascii=False, indent=2)
-    system = (
-        "你是电商场景标注专家。根据提供的场景图,从给定维度枚举中选择最合适的值,"
-        "以 JSON 返回。规则:\n1. 每维可多选,也可以单选。\n"
-        "2. 无法判断的维度返回空数组 []。\n"
-        "3. 只使用枚举中出现的值,不要自己创造新值。\n"
-        "4. 只输出 JSON,不带 markdown 或其他文字。"
-    )
+    system = get_active_prompt("scene_auto_tag")
     user = (
         f"以下是维度枚举(JSON):\n{dims_json}\n\n"
         "请为这张场景图打标,严格按以下 JSON 格式返回:\n"

@@ -17,6 +17,7 @@ from wellflow.app.llm.base import InsufficientCreditsError
 from wellflow.app.config import settings
 from wellflow.app.database import get_db
 from wellflow.app.api.utils import ok, StandardResponse, to_cn_iso
+from wellflow.app.prompt.registry import get_active_prompt
 from wellflow.app.repositories.mannequin_repo import MannequinRepo, MANNEQUIN_DIMENSION_GROUPS
 from wellflow.app.schemas.asset_schemas import (
     MannequinUpdateRequest,
@@ -423,17 +424,7 @@ async def optimize_prompt(
             tag_lines.append(f"  - {gk} > {dk}: {vals}")
     tags_text = "\n".join(tag_lines) if tag_lines else "（未选择任何维度标签）"
 
-    system = (
-        "你是一名专业的电商模特图提示词优化专家，负责把用户的原始描述和维度标签整合成一条"
-        "结构化、细节丰富的中文提示词，用于 GPT Image 等 AI 图像生成模型。\n\n"
-        "规则：\n"
-        "1. 保留用户核心意图，不要凭空创造属性。\n"
-        "2. 把维度标签自然融入描述。\n"
-        "3. 只输出最终的中文提示词本身，不要解释、不要前后缀、不要引号。\n"
-        "4. 如果用户提到了具体服装，要自然描述服装的穿着与展示效果。\n"
-        "5. 优先使用中文表达；如果某些风格、材质或摄影术语用英文更自然（如 soft lighting、"
-        "cinematic、Denim 等），可以保留，但整体提示词应以中文为主。"
-    )
+    system = get_active_prompt("mannequin_optimize")
 
     user_text = (
         f"用户原始描述：{raw_prompt}\n\n"
@@ -648,8 +639,8 @@ async def fine_tune_mannequin(
         raise HTTPException(400, "target_image 读取失败")
 
     # 微调 prompt = 身份维持 + 修改内容
-    identity = original_prompt or "Maintain the model's facial features, hairstyle, overall temperament and identity."
-    tune_prompt_final = f"{identity}, modifications: {tune_prompt}"
+    identity = original_prompt or get_active_prompt("mannequin_fine_tune")
+    tune_prompt_final = f"{identity}，修改内容：{tune_prompt}"
 
     all_data_uris = target_data_uris + ref_data_uris
 
@@ -716,15 +707,7 @@ async def auto_tag_mannequin(
     # 把维度枚举序列化成 JSON
     dims_json = json_mod.dumps(MANNEQUIN_DIMENSION_GROUPS, ensure_ascii=False, indent=2)
 
-    system = (
-        "你是一个电商模特属性标注专家。根据提供的模特图片，"
-        "从给定的维度枚举中选择最合适的值，以 JSON 格式返回。\n\n"
-        "规则：\n"
-        "1. 每个维度可多选（多值数组），也可以单选。\n"
-        "2. 如果某维度无法从图中判断，返回空数组 []。\n"
-        "3. 只使用枚举中出现的值，不要自己创造新值。\n"
-        "4. 输出必须是一个合法的 JSON 对象，不要带 markdown 代码块标记或其他文字。"
-    )
+    system = get_active_prompt("mannequin_auto_tag")
 
     user_text = (
         f"以下是维度枚举（JSON）：\n{dims_json}\n\n"
@@ -856,14 +839,7 @@ async def _mq_auto_tag(data_uris: list[str], extra_context: str | None = None):
     from wellflow.app.newapi.pool import get_model_pool
 
     dims_json = json_mod.dumps(MANNEQUIN_DIMENSION_GROUPS, ensure_ascii=False, indent=2)
-    system = (
-        "你是一个电商模特属性标注专家。根据提供的模特图片,"
-        "从给定的维度枚举中选择最合适的值,以 JSON 格式返回。\n\n"
-        "规则:\n1. 每个维度可多选(多值数组),也可以单选。\n"
-        "2. 如果某维度无法从图中判断,返回空数组 []。\n"
-        "3. 只使用枚举中出现的值,不要自己创造新值。\n"
-        "4. 输出必须是一个合法的 JSON 对象,不要带 markdown 代码块标记或其他文字。"
-    )
+    system = get_active_prompt("mannequin_auto_tag")
     user_text = (
         f"以下是维度枚举(JSON):\n{dims_json}\n\n"
         f"{'用户补充意图:' + extra_context if extra_context else ''}\n\n"
@@ -1093,17 +1069,7 @@ async def _mq_async_optimize(raw_prompt: str, tags: str | None, ref_uris: list[s
 
     ref_data_uris = paths_to_data_uris(ref_uris) if ref_uris else []
 
-    system = (
-        "你是一名专业的电商模特图提示词优化专家，负责把用户的原始描述和维度标签整合成一条"
-        "结构化、细节丰富的中文提示词，用于 GPT Image 等 AI 图像生成模型。\n\n"
-        "规则：\n"
-        "1. 保留用户核心意图，不要凭空创造属性。\n"
-        "2. 把维度标签自然融入描述。\n"
-        "3. 只输出最终的中文提示词本身，不要解释、不要前后缀、不要引号。\n"
-        "4. 如果用户提到了具体服装，要自然描述服装的穿着与展示效果。\n"
-        "5. 优先使用中文表达；如果某些风格、材质或摄影术语用英文更自然（如 soft lighting、"
-        "cinematic、Denim 等），可以保留，但整体提示词应以中文为主。"
-    )
+    system = get_active_prompt("mannequin_optimize")
     user_text = (
         f"用户原始描述：{raw_prompt}\n\n"
         f"维度标签：\n{tags_text}\n\n"
