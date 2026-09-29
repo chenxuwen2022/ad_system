@@ -318,6 +318,16 @@ class DouYinAdService:
             raise Exception(f"不支持的素材类型 {file_type}")
 
         resp_json = resp.json()
+        if resp_json.get("code") == 40100:
+            # 限流退避重试（最多 4 次，间隔递增）
+            import time as _t
+            for _i in range(4):
+                _t.sleep(6 + _i * 5)
+                resp = requests.post(url, headers=self.headers,
+                                     data=data, files=files, timeout=300 if file_type == "video" else 120)
+                resp_json = resp.json()
+                if resp_json.get("code") != 40100:
+                    break
         if resp_json.get("code") != 0:
             raise Exception(f"素材上传失败 code:{resp_json.get('code')}, msg:{resp_json.get('message')}")
         data = resp_json["data"]
@@ -776,6 +786,30 @@ class DouYinAdService:
                     return ad_id, status, []
         return ad_id, status, []
 
+    def get_plan_products(self, plan_id: str) -> list:
+        """按计划ID返回该计划关联的商品详情列表。
+        1) 调巨量全域计划详情接口（uni_promotion/ad/detail）取 multi_product_creative_list 中的 product_id；
+        2) 从可投商品列表（缓存）中匹配并返回完整商品信息。
+        拉取失败或无限流时返回空列表。"""
+        try:
+            pids = []
+            d = requests.get(
+                f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/ad/detail/",
+                headers=self.headers,
+                params={"advertiser_id": int(self.advertiser_id), "ad_id": int(plan_id)},
+                timeout=10,
+            ).json()
+            if d.get("code") == 0:
+                for c in (d.get("data", {}) or {}).get("multi_product_creative_list", []) or []:
+                    if c.get("product_id"):
+                        pids.append(str(c.get("product_id")))
+            if not pids:
+                return []
+            all_p = self.get_available_products(force=False)
+            return [p for p in all_p if str(p.get("id")) in pids]
+        except Exception:
+            return []
+
     def get_product_material_stats(self, force: bool = False) -> dict:
         """遍历在投全域计划，统计每个 product_id 已挂多少个视频素材。
         返回 {product_id: {"material_count": n, "plan_id": "..", "status": ".."}}。
@@ -1169,7 +1203,9 @@ class DouYinAdService:
             "total_cost": total_cost,
             "remain_budget": round(total_budget - total_cost, 2),
         }
-        _cache_set(cache_key, out, 300)
+        # 仅当拉取到计划时才写缓存；限流/失败返回空时不缓存，避免空结果污染300秒缓存
+        if plan_items:
+            _cache_set(cache_key, out, 300)
         return out
 
     def _fetch_report_page(self, params) -> Optional[dict]:
@@ -2408,6 +2444,146 @@ class DouYinAdService:
             if "不在素材库" not in msg:
                 break
         raise last_err
+
+    # ---------------------------------------------------------------
+    # 多图投放：千川同一计划下自选图片只能传一张（40000 硬限制），
+    # 多张图片用"图文素材（carousel，多图自动轮播）"追加到同一计划实现。
+    # ---------------------------------------------------------------
+    def get_carousel_image_ids(self, carousel_id: str) -> list:
+        """图文轮播 carousel_id → 图片素材数字ID 列表（报表图片素材按此ID统计，用于按素材ID查询收益）。"""
+        try:
+            r = requests.get(f"{self.base_url}/open_api/v1.0/qianchuan/carousel/get/",
+                             headers=self.headers,
+                             params={"advertiser_id": int(self.advertiser_id),
+                                     "carousel_ids": json.dumps([str(carousel_id)])},
+                             timeout=20).json()
+            if r.get("code") != 0:
+                return []
+            for c in (r.get("data") or {}).get("carousels") or []:
+                if str(c.get("material_id") or "") == str(carousel_id):
+                    return [str(im.get("image_material_id")) for im in (c.get("images") or [])
+                            if im.get("image_material_id")]
+            return []
+        except Exception:
+            return []
+
+    def add_carousel_to_plan(self, ad_id: str, image_paths: List[str], product_id: str) -> dict:
+        """把多张图片以图文（多图轮播）方式追加到已有计划，返回 carousel_id。
+
+        步骤：每张图中心裁成商品卡方图并上传素材库 → carousel/create 塑造图文
+        → uni_promotion/ad/material/add 追加 carousel_material 到同一计划。
+        """
+        import time as _t
+        if not image_paths:
+            raise Exception("未提供需要投放的图片")
+        # 1. 上传每张图片（商品卡方图）
+        image_ids = []
+        for p in image_paths:
+            if not os.path.exists(p):
+                raise Exception(f"图片文件不存在: {p}")
+            tmp = self._to_square_image(p)
+            try:
+                image_ids.append(self.upload_local_media_get_material_id(tmp, "image"))
+            except Exception as e:
+                raise Exception(f"图片上传失败 {os.path.basename(p)}: {e}")
+            finally:
+                if tmp and os.path.exists(tmp):
+                    try:
+                        os.remove(tmp)
+                    except OSError:
+                        pass
+        # 2. 等素材异步入库
+        _t.sleep(5)
+        # 3. 创建图文（多图轮播）
+        file_name = os.path.splitext(os.path.basename(image_paths[0]))[0]
+        r = requests.post(f"{self.base_url}/open_api/2/carousel/create/",
+                          headers=self.headers,
+                          json={
+                              "advertiser_id": int(self.advertiser_id),
+                              "images": [{"image_id": x} for x in image_ids],
+                              "file_name": f"{file_name}-{len(image_ids)}图轮播"[:200],
+                              "description": "多图轮播投放",
+                          }, timeout=30)
+        j = r.json()
+        if j.get("code") != 0:
+            raise Exception(self._friendly_error("创建图文失败", j))
+        carousel_id = (j.get("data") or {}).get("carousel", {}).get("carousel_id")
+        if not carousel_id:
+            raise Exception("创建图文失败：接口未返回 carousel_id")
+        # 4. 追加图文到同一计划
+        _t.sleep(3)
+        r2 = requests.post(f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/ad/material/add/",
+                           headers=self.headers,
+                           json={
+                               "advertiser_id": int(self.advertiser_id),
+                               "ad_id": int(ad_id),
+                               "multi_product_creative_list": [{
+                                   "product_id": int(product_id),
+                                   "carousel_material": [{"carousel_id": carousel_id}],
+                               }],
+                           }, timeout=60)
+        j2 = r2.json()
+        if j2.get("code") != 0:
+            raise Exception(self._friendly_error("追加图文到计划失败", j2))
+        # 返回 carousel_id 与图片素材ID（图片报表按图片素材ID组平，用于后续按素材ID查询收益）
+        return {"carousel_id": str(carousel_id), "image_ids": [str(x) for x in image_ids]}
+
+    # ---------------------------------------------------------------
+    # 视频追加：用 uni_promotion/ad/material/add（追加语义）而不是创意全量更新，
+    # 避免程序化创意计划报 40000「重复使用的创意素材」（2026-09-28 实测 8 个视频全部因此失败）
+    # ---------------------------------------------------------------
+    def add_video_material_to_plan(self, ad_id: str, local_file_path: str, product_ids=None) -> str:
+        """把视频以 video_material 追加到已有全域计划（每个商品创意单独调用 material/add），
+        返回 video_id。"""
+        import time as _t
+        image_mode = DOUYIN_CONFIG.get("QIANCHUAN_IMAGE_MODE", "VIDEO_VERTICAL")
+        # 1. 上传视频 + 封面
+        video_id = self.upload_local_media_get_material_id(local_file_path, "video")
+        cover_id = ""
+        cover_tmp = None
+        try:
+            cover_tmp = self._extract_cover_frame(local_file_path)
+            if cover_tmp:
+                cover_id = self.upload_local_media_get_material_id(cover_tmp, "image")
+        finally:
+            if cover_tmp and os.path.exists(cover_tmp):
+                try:
+                    os.remove(cover_tmp)
+                except OSError:
+                    pass
+        # 2. 读计划现有商品创意，确定要追加的商品（未指定则全部）
+        detail = self.get_overall_plan_detail(ad_id)
+        creatives = detail.get("multi_product_creative_list") or []
+        if product_ids:
+            pids = [str(p) for p in product_ids if str(p)]
+        else:
+            pids = [str(c["product_id"]) for c in creatives if c.get("product_id")]
+        if not pids:
+            raise Exception("计划详情里没有商品创意，无法追加视频素材")
+        # 3. 逐个商品创意追加视频素材（追加语义，不触碰计划里已有素材）
+        _t.sleep(5)  # 等视频异步入库
+        last_err = None
+        for pid in pids:
+            payload = {
+                "advertiser_id": int(self.advertiser_id),
+                "ad_id": int(ad_id),
+                "multi_product_creative_list": [{
+                    "product_id": int(pid),
+                    "video_material": [
+                        {"image_mode": image_mode, "video_id": video_id, "video_cover_id": cover_id}
+                    ],
+                }],
+            }
+            r = requests.post(f"{self.base_url}/open_api/v1.0/qianchuan/uni_promotion/ad/material/add/",
+                              headers=self.headers, json=payload, timeout=60)
+            j = r.json()
+            if j.get("code") != 0:
+                last_err = Exception(self._friendly_error("追加视频素材到计划失败", j))
+            else:
+                last_err = None
+        if last_err:
+            raise last_err
+        return str(video_id)
 
     # ---------------------------------------------------------------
     # 直播数据（千川侧已授权权限：全域投放数据 22100600 + 今日直播数据 22100400）

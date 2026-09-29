@@ -9,6 +9,7 @@ from ad.file_service import delete_media_file
 from ad.token_manager import get_token_mgr
 from ad.config import DOUYIN_CONFIG
 from ad.db import SessionLocal, AdvertiserDB, MaterialTagDB, MaterialMarkDB, MaterialLaunchDB, MaterialCategoryDB, MaterialBizStatusDB, SkuDB, MATERIAL_BIZ_STATUSES
+from sqlalchemy import text
 
 router = APIRouter()
 
@@ -258,6 +259,91 @@ async def ad_launch(req: AdLaunchRequest):
         return {"success": False, "msg": "京东淘宝待实现，骨架已预留"}
 
 
+class BatchLaunchRequest(BaseModel):
+    plan_id: str = ""
+    plan_name: str = ""
+    file_paths: list = []          # 批量投放的素材本地路径
+    product_ids: list = []         # 投放商品（取第一个作为商品卡商品）
+    advertiser_id: str = ""
+    tags: list = []
+    budget: float = 0
+
+
+@router.post("/api/ad/launch_batch")
+async def ad_launch_batch(req: BatchLaunchRequest):
+    """批量投放素材到同一计划。
+
+    - 图片：多张图片以"图文（多图轮播）"方式追加到同一计划（千川自选图片每创意只能1张，
+      多图必须用 carousel 图文轮播），一次调用全部图片进同一个图文。
+    - 视频：逐个追加（视频不受单素材限制）。
+    """
+    from ad.services.douyin_api import DouYinAdService as _DS
+    advertiser_id = req.advertiser_id or str(DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID") or "")
+    if not advertiser_id:
+        return {"success": False, "error_msg": "未指定广告主 advertiser_id"}
+    if not req.plan_id:
+        return {"success": False, "error_msg": "未选择投放计划"}
+    if not req.file_paths:
+        return {"success": False, "error_msg": "未选择任何素材"}
+    paths = [p for p in req.file_paths if os.path.exists(p)]
+    missing = [p for p in req.file_paths if not os.path.exists(p)]
+    if not paths:
+        return {"success": False, "error_msg": "素材文件均已不存在，请重新上传后再投放"}
+
+    ad_service = _DS(advertiser_id=advertiser_id)
+    product_id = (req.product_ids or [""])[0]
+    results = []
+    images = [p for p in paths if p.rsplit(".", 1)[-1].lower() in ["jpg", "jpeg", "png", "bmp", "webp"]]
+    videos = [p for p in paths if p.rsplit(".", 1)[-1].lower() in ["mp4", "mpeg", "3gp", "avi", "mov"]]
+
+    try:
+        if images:
+            if not product_id:
+                return {"success": False, "error_msg": "图片投放需要指定商品 product_id（商品卡方图必选）"}
+            carousel_ret = ad_service.add_carousel_to_plan(req.plan_id, images, product_id)
+            carousel_id = carousel_ret["carousel_id"] if isinstance(carousel_ret, dict) else carousel_ret
+            carousel_img_ids = carousel_ret.get("image_ids", []) if isinstance(carousel_ret, dict) else []
+            results.append({"type": "image", "count": len(images), "carousel_id": carousel_id})
+            for p in images:
+                _save_launch_record(p, "success", "real",
+                                    plan_id=req.plan_id, plan_name=req.plan_name or req.plan_id or "",
+                                    product_id=str(product_id),
+                                    detail=f"已追加到投放计划（图文轮播 carousel_id={carousel_id}）",
+                                    advertiser_id=advertiser_id or "", budget=req.budget or 0,
+                                    biz_status="待审核",
+                                    material_id=f"carousel:{carousel_id}:{','.join(carousel_img_ids)}")
+        if videos:
+            for v in videos:
+                try:
+                    new_material_id = ad_service.add_video_material_to_plan(req.plan_id, v, req.product_ids or None)
+                    results.append({"type": "video", "file": os.path.basename(v), "material_id": new_material_id})
+                    _save_launch_record(v, "success", "real",
+                                        plan_id=req.plan_id, plan_name=req.plan_name or req.plan_id or "",
+                                        product_id=",".join(req.product_ids or []),
+                                        detail="已追加到投放计划",
+                                        advertiser_id=advertiser_id or "", budget=req.budget or 0,
+                                        biz_status="待审核",
+                                        material_id=new_material_id)
+                except Exception as e:
+                    results.append({"type": "video", "file": os.path.basename(v), "success": False, "error_msg": str(e)})
+                    _save_launch_record(v, "fail", "real",
+                                        plan_id=req.plan_id or "", plan_name=req.plan_name or req.plan_id or "",
+                                        product_id=",".join(req.product_ids or []),
+                                        detail=str(e), advertiser_id=advertiser_id or "", budget=req.budget or 0)
+        if req.tags:
+            for p in paths:
+                _save_material_marks(p, req.tags)
+        return {
+            "success": True,
+            "results": results,
+            "total": len(paths),
+            "missing": missing,
+            "error_msg": f"共投放 {len(paths)} 个素材" + (f"；{len(missing)} 个文件已不存在" if missing else ""),
+        }
+    except Exception as e:
+        return {"success": False, "error_msg": f"批量投放失败：{e}"}
+
+
 @router.post("/api/ai_analysis")
 async def ai_analysis():
     """汇总本账户所有图片/视频素材的投放数据，并用 DeepSeek 分析问题与改进建议。"""
@@ -326,6 +412,109 @@ async def material_detail(material_id: str, advertiser_id: str = ""):
         svc = DouYinAdService(advertiser_id=aid)
         data = svc.get_material_detail(material_id)
         return {"success": True, **data}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/material_detail_by_name")
+async def material_detail_by_name(name: str = "", advertiser_id: str = ""):
+    """按素材文件名匹配千川报表，返回投放汇总 + 逐日曲线 + AI 点评（素材详情页使用）。
+    报表素材行按名称维度（roi2_material_video_name / roi2_material_image_name）匹配，
+    支持 文件名带扩展名 / 不带扩展名 两种写法。"""
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        mats = svc.get_all_materials_report()[0]["materials"]
+        key = (name or "").strip()
+        if not key:
+            return {"success": False, "error": "缺少素材名称"}
+        base = key.rsplit(".", 1)[0].strip() if "." in key else key
+        # 仅精确匹配（文件名去扩展名 == 报表名称去扩展名），避免子串模糊匹配误配到其他素材
+        row = None
+        for m in mats:
+            nm = str(m.get("name") or "").strip()
+            nb = nm.rsplit(".", 1)[0].strip() if "." in nm else nm
+            if nb == base:
+                row = m
+                break
+        if not row:
+            return {"success": False, "error": "素材「%s」近3个月无投放数据" % key}
+        data = svc.get_material_detail(str(row["id"]))
+        # 平铺 summary 到顶层，前端直接读 消耗/成交金额/点击率/转化率/支付ROI
+        return {"success": True, **data.get("summary", {}),
+                "daily": data.get("daily", []), "ai": data.get("ai", ""),
+                "preview": data.get("preview", {})}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/material_detail_by_id")
+async def material_detail_by_id(material_id: str = "", advertiser_id: str = "", name: str = ""):
+    """按千川素材ID查询报表汇总（精确匹配，数据与巨量后台一致）。
+    兼容三种 ID 写法：
+    - 纯数字 material_id（报表/素材库用）：直接匹配报表行
+    - v 开头 video_id（投放计划详情用）：经 video_id → material_id 映射转换后匹配
+    - carousel:<cid>:<imgid1,imgid2...>（图文轮播）：按图片素材ID 逐行匹配并汇总指标
+    查不到时可用 name 参数按文件名回退匹配。
+    """
+    try:
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        mats = svc.get_all_materials_report()[0]["materials"]
+        mid = (material_id or "").strip()
+        if not mid:
+            return {"success": False, "error": "缺少素材ID"}
+        img_ids = []
+        # 图文轮播格式 carousel:<cid>:<imgid1,imgid2...>；老数据无图片ID 时通过 carousel/get 取图片素材ID
+        if mid.startswith("carousel:"):
+            parts = mid.split(":")
+            if len(parts) >= 3:
+                img_ids = [x for x in parts[2].split(",") if x]
+            else:
+                img_ids = svc.get_carousel_image_ids(parts[1])
+        # v 开头 video_id → 数字 material_id
+        elif mid.startswith("v"):
+            vmap = svc._build_video_id_map()
+            mid = vmap.get(mid) or mid
+        # 多图汇总：逐行匹配报表，指标加总重算率值
+        if img_ids:
+            rows = [m for m in mats if str(m["id"]) in img_ids]
+            if not rows:
+                # 图片ID未命中报表，回退按文件名匹配
+                if name:
+                    base = (name or "").strip().rsplit(".", 1)[0]
+                    rows = [m for m in mats if str(m.get("name") or "").strip().rsplit(".", 1)[0] == base]
+                if not rows:
+                    return {"success": False, "error": "素材 %s 近3个月无投放数据" % material_id}
+            agg = {
+                "type": "图片", "id": material_id, "name": rows[0]["name"],
+                "消耗": round(sum(r["消耗"] for r in rows), 2),
+                "展示": sum(r["展示"] for r in rows),
+                "点击": sum(r["点击"] for r in rows),
+                "成单数": sum(r["成单数"] for r in rows),
+                "成交金额": round(sum(r["成交金额"] for r in rows), 2),
+                "退款率(%)": 0.0, "metrics_all": [],
+            }
+            _show = agg["展示"]; _click = agg["点击"]; _cost = agg["消耗"]; _gmv = agg["成交金额"]
+            agg["点击率"] = round(_click / _show * 100, 2) if _show else 0.0
+            agg["转化率"] = round(agg["成单数"] / _click * 100, 2) if _click else 0.0
+            agg["支付ROI"] = round(_gmv / _cost, 2) if _cost else 0.0
+            agg["净成交ROI"] = agg["支付ROI"]
+            return {"success": True, **agg, "daily": [], "ai": "", "preview": {}}
+        # 单素材：精确匹配报表行
+        if not mid:
+            return {"success": False, "error": "素材ID为空"}
+        row = next((m for m in mats if str(m["id"]) == str(mid)), None)
+        if not row and name:
+            base = (name or "").strip().rsplit(".", 1)[0]
+            row = next((m for m in mats if str(m.get("name") or "").strip().rsplit(".", 1)[0] == base), None)
+        if not row:
+            return {"success": False, "error": "素材 %s 近3个月无投放数据" % material_id}
+        data = svc.get_material_detail(str(row["id"]))
+        # 平铺 summary 到顶层，前端直接读 消耗/成交金额/点击率/转化率/支付ROI
+        return {"success": True, **data.get("summary", {}),
+                "daily": data.get("daily", []), "ai": data.get("ai", ""),
+                "preview": data.get("preview", {})}
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -554,6 +743,20 @@ async def list_products(advertiser_id: str = "", refresh: bool = False):
             mids = pmap.get(str(p["id"]), [])
             p["material_count"] = len(mids)
             p["has_materials"] = len(mids) > 0
+        return {"success": True, "data": products}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@router.get("/api/plan_products")
+async def plan_products(advertiser_id: str = "", plan_id: str = ""):
+    """按计划ID返回该计划关联的商品列表（从计划详情取 product_id 后匹配可投商品）。"""
+    try:
+        if not plan_id:
+            return {"success": False, "error": "缺少 plan_id 参数"}
+        aid = advertiser_id or DOUYIN_CONFIG.get("DEFAULT_ADVERTISER_ID")
+        svc = DouYinAdService(advertiser_id=aid)
+        products = svc.get_plan_products(plan_id)
         return {"success": True, "data": products}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1018,28 +1221,36 @@ async def sync_material_status():
                     detail = ad_service.get_overall_plan_detail(row.plan_id)
                     creatives = detail.get("multi_product_creative_list", []) or []
                     
-                    # 找到对应的素材
+                    # 收集计划详情里的所有图片ID和视频ID，精确匹配本地 material_id
                     found = False
+                    new_material_id = material_id
+                    all_img_ids = []
+                    all_vid_ids = []
                     for c in creatives:
                         imgs = c.get("image_material", []) or []
                         vids = c.get("video_material", []) or []
-                        
                         for im in imgs:
-                            ids = im.get("image_ids", []) or []
-                            if material_id in [str(i) for i in ids]:
-                                found = True
-                                break
+                            for iid in (im.get("image_ids", []) or []):
+                                all_img_ids.append(str(iid))
+                                if str(iid) == material_id:
+                                    found = True
                         for v in vids:
-                            if str(v.get("video_id", "")) == material_id:
+                            vid = str(v.get("video_id", "") or "")
+                            all_vid_ids.append(vid)
+                            if vid == material_id:
                                 found = True
-                                break
-                        
-                        if found:
-                            break
+                    
+                    # 图片素材：追加时图片会先裁剪成商品卡方图再上传，
+                    # 计划详情里的 image_ids 是裁剪后新图的 tos 路径，与本地 material_id 不一致。
+                    # 只要该计划详情存在图片素材，即视为该图片已投放，并回写计划里的实际 image_ids。
+                    if not found and mtype == "图片" and all_img_ids:
+                        found = True
+                        new_material_id = all_img_ids[0]
                     
                     # 如果在计划里找到了素材，说明已经投放成功，审核通过
                     if found:
-                        rj = {"code": 0, "data": {"list": [{"audit_status": "AUDIT_STATUS_APPROVED"}]}}
+                        rj = {"code": 0, "data": {"list": [{"audit_status": "AUDIT_STATUS_APPROVED"}]},
+                              "_new_material_id": new_material_id}
                     else:
                         rj = {"code": -1, "message": "在计划里找不到这个素材"}
                 except Exception as e:
@@ -1063,13 +1274,17 @@ async def sync_material_status():
                         else:
                             new_biz_status = row.biz_status  # 保持原状态
                         
-                        # 更新数据库（状态或驳回原因变化了就更新）
+                        # 更新数据库（状态、驳回原因或素材ID变化了就更新）
                         changed = False
                         if new_biz_status and new_biz_status != row.biz_status:
                             row.biz_status = new_biz_status
                             changed = True
                         if reject_reason and reject_reason != row.reject_reason:
                             row.reject_reason = reject_reason
+                            changed = True
+                        new_mid = rj.get("_new_material_id", "")
+                        if new_mid and new_mid != row.material_id:
+                            row.material_id = new_mid
                             changed = True
                         if changed:
                             row.detail = f"同步更新：{audit_status}" + (f"，原因：{reject_reason}" if reject_reason else "")
@@ -1415,15 +1630,28 @@ def material_stats():
         rows = db.query(MaterialLaunchDB).all()
         stats = {"全部素材": 0, "审核中": 0, "待投放": 0, "已投放": 0, "已暂停": 0, "已结束": 0, "未提交": 0}
         
-        # 按文件名去重数据库记录，取最新的
+        # 按文件名去重：投放成功记录优先（失败重试不覆盖成功记录），同状态取最新
         db_by_name = {}
         for r in rows:
-            fname = os.path.basename(r.file_path)
-            if fname in db_by_name:
-                old = db_by_name[fname]
-                if r.create_time > old.create_time:
-                    db_by_name[fname] = r
-            else:
+            fname = os.path.basename((r.file_path or "").replace("\\", "/"))
+            if fname not in db_by_name:
+                db_by_name[fname] = r
+                continue
+            cur = db_by_name[fname]
+            # 投放成功记录优先（失败重试不覆盖）
+            if r.status == "success" and cur.status != "success":
+                db_by_name[fname] = r
+                continue
+            if cur.status == "success" and r.status != "success":
+                continue
+            # 同状态：已回填素材ID（material_id）的记录优先
+            if r.material_id and not cur.material_id:
+                db_by_name[fname] = r
+                continue
+            if cur.material_id and not r.material_id:
+                continue
+            # 其余取最新
+            if r.create_time > cur.create_time:
                 db_by_name[fname] = r
         
         # 统计上传目录中的所有素材文件（和 db_materials 一致）
@@ -1446,8 +1674,8 @@ def material_stats():
             biz = ""
             if r:
                 biz = r.biz_status or ""
-                if r.material_id and not biz:
-                    biz = "已投放"
+                if r.material_id:
+                    biz = "已投放"  # 素材已挂到计划即视为已投放
                 elif r.plan_id and not biz:
                     biz = "待投放"
             
@@ -1472,10 +1700,21 @@ def material_stats():
     finally:
         db.close()
 @router.get("/api/db_materials")
-def db_materials():
+def db_materials(shop: str = ""):
     db = SessionLocal()
     try:
+        # 店铺过滤：店铺名 → 广告主ID（ads_shops），再结合投放记录表 material_launch 过滤
+        shop_ad_ids = set()
+        if shop:
+            rows = db.execute(text("SELECT advertiser_id FROM ads_shops WHERE shop_name = :s"), {"s": shop}).fetchall()
+            shop_ad_ids = {str(r[0]) for r in rows}
+            if not shop_ad_ids:
+                return {"success": True, "data": [], "count": 0}
+        
         rows = db.query(MaterialLaunchDB).order_by(MaterialLaunchDB.create_time.desc()).all()
+        if shop_ad_ids:
+            # 只保留该店铺投放记录关联的素材；选店铺时只显示有投放动作（plan_id 有）的素材
+            rows = [r for r in rows if str(r.advertiser_id or "") in shop_ad_ids and r.plan_id]
         data = []
         # 同时从上传目录找真实文件
         upload_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "media_storage")
@@ -1484,9 +1723,32 @@ def db_materials():
             for f in os.listdir(upload_dir):
                 local_files[f] = os.path.join(upload_dir, f)
         
-        # 从数据库记录生成素材列表
+        # 按文件名去重，取最新记录（与 material_stats 统计口径一致）
+        by_name = {}
         for r in rows:
-            fname = os.path.basename(r.file_path)
+            fname = os.path.basename((r.file_path or "").replace("\\", "/"))
+            if fname not in by_name:
+                by_name[fname] = r
+                continue
+            cur = by_name[fname]
+            # 投放成功记录优先（失败重试不覆盖）
+            if r.status == "success" and cur.status != "success":
+                by_name[fname] = r
+                continue
+            if cur.status == "success" and r.status != "success":
+                continue
+            # 同状态：已回填素材ID（material_id）的记录优先
+            if r.material_id and not cur.material_id:
+                by_name[fname] = r
+                continue
+            if cur.material_id and not r.material_id:
+                continue
+            # 其余取最新
+            if r.create_time > cur.create_time:
+                by_name[fname] = r
+        
+        # 从数据库记录生成素材列表
+        for fname, r in by_name.items():
             real_path = r.file_path
             if not os.path.exists(real_path) and fname in local_files:
                 real_path = local_files[fname]
@@ -1494,6 +1756,12 @@ def db_materials():
                 continue
             ext = os.path.splitext(fname)[1].lower()
             ftype = "video" if ext in [".mp4", ".mov", ".avi", ".mkv", ".webm"] else "image"
+            # 与 material_stats 相同的状态推算：空状态 + material_id → 已投放；空状态 + plan_id → 待投放
+            biz = r.biz_status or ""
+            if r.material_id:
+                biz = "已投放"  # 素材已挂到计划即视为已投放
+            elif r.plan_id and not biz:
+                biz = "待投放"
             data.append({
                 "id": r.id,
                 "name": fname,
@@ -1501,15 +1769,19 @@ def db_materials():
                 "type": ftype,
                 "size": os.path.getsize(real_path),
                 "mtime": os.path.getmtime(real_path),
-                "biz_status": r.biz_status,
-                "plan_name": r.plan_name,
-                "detail": r.detail,
+                "biz_status": biz or "未提交",
+                "plan_id": r.plan_id or "",
+                "plan_name": r.plan_name or "",
+                "detail": r.detail or "",
                 "reject_reason": getattr(r, 'reject_reason', '') or '',
+                "material_id": r.material_id or "",
+                "advertiser_id": r.advertiser_id or "",
             })
         
-        # 补充上传目录中未在数据库中的素材
+        # 补充上传目录中未在数据库中的素材（仅未选店铺时补充，选店铺时只显示该店铺投放过的素材）
         existing_paths = {d["path"] for d in data}
-        for fname, fpath in local_files.items():
+        if not shop_ad_ids:
+          for fname, fpath in local_files.items():
             if fpath in existing_paths:
                 continue
             ext = os.path.splitext(fname)[1].lower()
