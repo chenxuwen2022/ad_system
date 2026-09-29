@@ -16,6 +16,49 @@ def gateway_request_context(response: Any) -> str:
     request_id = response.headers.get("x-oneapi-request-id")
     return f" [request_id={request_id}]" if request_id else ""
 
+
+# ---------------------------------------------------------------------------
+# 尺寸适配：GPT Image 官方用 1024 档位小尺寸（1~1.5M 像素）合法；
+# 但 Ark Seedream / qwen-image / mai-image 等渠道硬下限 2560x1440 = 3,686,400 像素。
+# 所有非 GPT Image 模型在 client 层统一升级到 >= 2K 档位，避免上游 400。
+# ---------------------------------------------------------------------------
+_SEEDREAM_MIN_PIXELS = 2560 * 1440
+
+
+def _remap_size_for_non_gpt(model_name: str, size: str) -> str:
+    """非 GPT Image 模型的 size 自动升级（client 层单点兜底）。"""
+    if "gpt-image" in model_name.lower():
+        return size  # GPT Image 保持原样
+
+    import logging
+    import re as _re
+
+    m = _re.match(r"^(\d+)x(\d+)$", (size or "").strip())
+    if not m:
+        return size  # "2K" 这类枚举值原样透传
+
+    w, h = int(m.group(1)), int(m.group(2))
+    if w * h >= _SEEDREAM_MIN_PIXELS:
+        return size  # 已经够大，直接用
+
+    # 反推比例 → 找 ratio key 最接近的大尺寸
+    from wellflow.app.config import settings
+    ratio = w / h if h else 1.0
+    non_gpt_map = settings.image_ratio_to_pixel_size_non_gpt
+
+    def _ratio_of(key: str) -> float:
+        a, b = key.split(":")
+        return float(a) / float(b)
+
+    best_key = min(non_gpt_map.keys(), key=lambda k: abs(_ratio_of(k) - ratio))
+    upgraded = non_gpt_map[best_key]
+    logging.getLogger(__name__).info(
+        "[image_client] size remap: %s → %s (model=%s, reason=Ark/non-GPT below min pixels)",
+        size, upgraded, model_name,
+    )
+    return upgraded
+
+
 class NewApiImageMixin:
     # ------------------------------------------------------------------
     # 图像生成 —— 按模型和参考图选择端点
@@ -83,10 +126,12 @@ class NewApiImageMixin:
             for uri in refs:
                 content.append({"type": "input_image", "image_url": uri, "detail": detail})
 
-        # 构建 image_generation tool
+        # 构建 image_generation tool — 防御性 remap（responses 路径通常是 GPT Image 文生图，
+        # 但如果将来渠道换为非 GPT，remap 会自动生效）
+        image_tool_size = _remap_size_for_non_gpt(top_model, size)
         image_tool: dict[str, Any] = {
             "type": "image_generation",
-            "size": size,
+            "size": image_tool_size,
             "quality": quality,
             "output_format": "png",
         }
@@ -176,6 +221,9 @@ class NewApiImageMixin:
         model_name = getattr(self, "model", "")
         base_url = getattr(self, "base_url", "")
         api_key = getattr(self, "api_key", None)
+
+        # 非 GPT 模型自动升级尺寸到 >= 2K 档位（避免 Ark Seedream 报像素不足）
+        size = _remap_size_for_non_gpt(model_name, size)
 
         # 构建 payload
         payload: dict[str, Any] = {
@@ -270,6 +318,9 @@ class NewApiImageMixin:
         base_url = getattr(self, "base_url", "")
         api_key = getattr(self, "api_key", None)
         model_name = getattr(self, "model", "")
+
+        # 防御性 remap（edits 理论上只走 GPT Image，此处 pass-through 无副作用）
+        size = _remap_size_for_non_gpt(model_name, size)
 
         # 组装 multipart 文本字段（GPT Image 无 reference_images 字段）
         data: dict[str, Any] = {

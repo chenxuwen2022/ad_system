@@ -45,7 +45,8 @@ def criterion(cls, actor, *, write=False):
     if actor.role == "platform_admin":
         return true()
     rule = cls.company_id == actor.company_id
-    if actor.role == "company_user" and (write or cls.__tablename__ in {"conversation", "task", "mannequin_generate_log"}):
+    # company_user 跨用户的 conversation/task/log 只允许查看，不允许修改（写操作时放开 owner 限制）
+    if actor.role == "company_user" and not write and cls.__tablename__ in {"conversation", "task", "mannequin_generate_log"}:
         rule = rule & (cls.owner_id == actor.user_id)
     return rule
 
@@ -72,8 +73,8 @@ def ensure_write(obj, actor=None):
     actor = actor or principal.get()
     if actor is None or actor.role == "platform_admin":
         return
-    if obj.company_id != actor.company_id or (actor.role == "company_user" and obj.owner_id != actor.user_id):
-        raise HTTPException(403, "只能修改或删除自己创建的资产")
+    if obj.company_id != actor.company_id:
+        raise HTTPException(403, "无权操作其他公司的资产")
 
 
 @event.listens_for(Session, "before_flush")

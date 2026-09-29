@@ -295,6 +295,14 @@ def explicit_regeneration_target(message: str) -> str | None:
     return "node3" if "提示词" in match[1] else "node2"
 
 
+_CONFIRM_IMAGE_START = re.compile(
+    r"^(?:好的|可以|ok|OK|就这样|继续|确认|可以了|好了)?[\s，,、！!]*"
+    r"(?:开始|直接)?[\s，,、！!]*"
+    r"(?:生图|生成(?:图片|图像|图)|出图|跑图|开跑)"
+    r"(?:吧|呀|一下|就行|了)?[\s。.]*$"
+)
+
+
 async def classify(
     message: str,
     *,
@@ -306,6 +314,12 @@ async def classify(
     graph_state_brief: str | None = None,
     task_id: str | None = None,
 ) -> dict[str, Any]:
+    # c3 阶段"开始生图/直接出图/跑起来"等 = 确认当前提示词、进入下一节点；
+    # 不是 skip_forward。放 LLM 之前拦截，彻底消除误判。
+    if has_task and current_node == "c3" and _CONFIRM_IMAGE_START.match(message.strip()):
+        return {"intent": "confirm_current", "refine_target": None, "edit_mode": "refine",
+                "refine_instruction": message.strip(), "selected_indices": None,
+                "blocked_step": None, "reasoning": "c3 阶段用户确认提示词并触发生图"}
     prompt_selection = explicit_image_prompt_selection(message)
     if (has_task and current_node == "c4"
             and selected_finetuning_target in (None, "node4") and prompt_selection is not None):

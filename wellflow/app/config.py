@@ -52,12 +52,23 @@ class Settings(BaseSettings):
     image_rate_limit_retries: int = Field(default=1, ge=0, le=10)
     image_retry_deadline: float = Field(default=600.0, gt=0)  # 单个模型累计排队/限流等待上限，不含实际生成
     llm_model_responses: str = "gpt-5.4-mini"  # responses 端点顶层 LLM（理解 prompt + 调用 image_generation tool）
+    # GPT Image (gpt-image-1/2/2.5 系列) 合法尺寸 — 遵循 OpenAI 官方枚举。
     image_ratio_to_pixel_size_gpt: dict[str, str] = {
-        "9:16": "1024x1536",   # 降级：用 3:4 近似 9:16
+        "9:16": "1024x1536",
         "3:4": "1024x1536",
         "1:1": "1024x1024",
         "4:3": "1536x1024",
-        "16:9": "1536x1024",   # 降级：用 4:3 近似 16:9
+        "16:9": "1536x1024",
+    }
+    # 火山方舟 Seedream / 通义 qwen-image / 腾讯 mai-image 等非 GPT 生图模型：
+    # 这些渠道对总像素有硬下限（如 Seedream 5.0 lite / 4.5 要求 ≥ 2560×1440 = 3,686,400），
+    # 统一升级到 >= 2K 档位，同时保持长宽比精确。
+    image_ratio_to_pixel_size_non_gpt: dict[str, str] = {
+        "9:16": "1440x2560",
+        "3:4": "1920x2560",
+        "1:1": "2048x2048",
+        "4:3": "2560x1920",
+        "16:9": "2560x1440",
     }
     image_gen_quality: str = "medium"              # high | medium | low —— 生图质量/速度杠杆
     image_gen_input_fidelity: str = "low"          # high | low —— edit 模式下对参考图的保真强度
