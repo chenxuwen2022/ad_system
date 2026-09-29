@@ -441,7 +441,7 @@ async def material_detail_by_name(name: str = "", advertiser_id: str = ""):
             return {"success": False, "error": "素材「%s」近3个月无投放数据" % key}
         data = svc.get_material_detail(str(row["id"]))
         # 平铺 summary 到顶层，前端直接读 消耗/成交金额/点击率/转化率/支付ROI
-        return {"success": True, **data.get("summary", {}),
+        return {"success": True, "material_id": str(row["id"]), **data.get("summary", {}),
                 "daily": data.get("daily", []), "ai": data.get("ai", ""),
                 "preview": data.get("preview", {})}
     except Exception as e:
@@ -487,7 +487,8 @@ async def material_detail_by_id(material_id: str = "", advertiser_id: str = "", 
                 if not rows:
                     return {"success": False, "error": "素材 %s 近3个月无投放数据" % material_id}
             agg = {
-                "type": "图片", "id": material_id, "name": rows[0]["name"],
+                "type": "图片", "id": material_id,
+                "material_id": ",".join(str(m["id"]) for m in rows), "name": rows[0]["name"],
                 "消耗": round(sum(r["消耗"] for r in rows), 2),
                 "展示": sum(r["展示"] for r in rows),
                 "点击": sum(r["点击"] for r in rows),
@@ -512,7 +513,7 @@ async def material_detail_by_id(material_id: str = "", advertiser_id: str = "", 
             return {"success": False, "error": "素材 %s 近3个月无投放数据" % material_id}
         data = svc.get_material_detail(str(row["id"]))
         # 平铺 summary 到顶层，前端直接读 消耗/成交金额/点击率/转化率/支付ROI
-        return {"success": True, **data.get("summary", {}),
+        return {"success": True, "material_id": str(row["id"]), **data.get("summary", {}),
                 "daily": data.get("daily", []), "ai": data.get("ai", ""),
                 "preview": data.get("preview", {})}
     except Exception as e:
