@@ -1715,7 +1715,7 @@ def get_thumb(fname: str):
     media_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "media_storage")
     fname = os.path.basename(fname)
     src = os.path.join(media_dir, fname)
-    if not os.path.exists(src):
+    if not os.path.isfile(src):
         return {"success": False, "error": "素材不存在"}
     thumb_dir = os.path.join(media_dir, "thumb")
     os.makedirs(thumb_dir, exist_ok=True)
@@ -1759,12 +1759,15 @@ def db_materials(shop: str = ""):
             # 只保留该店铺投放记录关联的素材；选店铺时只显示有投放动作（plan_id 有）的素材
             rows = [r for r in rows if str(r.advertiser_id or "") in shop_ad_ids and r.plan_id]
         data = []
-        # 同时从上传目录找真实文件
+        # 同时从上传目录找真实文件（排除 thumb 缓存子目录等非素材项，与 material_stats 口径一致）
         upload_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "media_storage")
+        _valid_ext = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".mp4", ".mov", ".avi", ".mkv", ".webm"}
         local_files = {}
         if os.path.exists(upload_dir):
             for f in os.listdir(upload_dir):
-                local_files[f] = os.path.join(upload_dir, f)
+                fpath = os.path.join(upload_dir, f)
+                if os.path.isfile(fpath) and os.path.splitext(f)[1].lower() in _valid_ext:
+                    local_files[f] = fpath
         
         # 按文件名去重，取最新记录（与 material_stats 统计口径一致）
         by_name = {}
