@@ -115,7 +115,7 @@ def get_auth_session_factory():
 PUBLIC_API_PREFIXES = (
     "/api/ad", "/api/advertiser_accounts", "/api/categories", "/api/db_materials",
     "/api/launch_records", "/api/material_biz_statuses", "/api/material_detail_by_id",
-    "/api/material_detail_by_name", "/api/material_export", "/api/material_stats",
+    "/api/material_detail_by_name", "/api/material_export", "/api/material_marks", "/api/material_stats",
     "/api/plan_products",
     "/api/plans", "/api/shops", "/api/sync_material_status", "/api/tags",
     "/api/thumb", "/api/upload_material", "/api/uploaded_media",
