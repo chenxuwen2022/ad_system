@@ -1714,6 +1714,18 @@ def material_stats():
     finally:
         db.close()
 
+def _oss_thumb_or_local(fname: str) -> str:
+    """OSS 有缩略图则返回 OSS 签名 URL，否则回退本地 /api/thumb/。"""
+    try:
+        from ad.services import oss_client
+        u = oss_client.get_thumb_url(fname)
+        if u:
+            return u
+    except Exception:
+        pass
+    return "/api/thumb/" + fname
+
+
 @router.get("/api/thumb/{fname}")
 def get_thumb(fname: str):
     """素材缩略图/视频封面：图片压缩到宽300，视频抽首帧生成封面。首次生成后缓存，加速列表加载。"""
@@ -1746,6 +1758,13 @@ def get_thumb(fname: str):
         except Exception:
             if not os.path.exists(thumb):
                 return FileResponse(src)
+    # 回传 OSS（展示加速），并使索引失效
+    try:
+        from ad.services import oss_client
+        oss_client.upload_file(thumb, oss_client.thumb_key(fname))
+        oss_client.invalidate_thumb_cache()
+    except Exception:
+        pass
     return FileResponse(thumb, media_type="image/jpeg")
 
 @router.get("/api/db_materials")
@@ -1818,7 +1837,7 @@ def db_materials(shop: str = ""):
                 "id": r.id,
                 "name": fname,
                 "path": real_path,
-                "thumb_url": "/api/thumb/" + fname,
+                "thumb_url": _oss_thumb_or_local(fname),
                 "type": ftype,
                 "size": os.path.getsize(real_path),
                 "mtime": os.path.getmtime(real_path),
@@ -1844,7 +1863,7 @@ def db_materials(shop: str = ""):
                 "id": hash(fpath) % 1000000,
                 "name": fname,
                 "path": fpath,
-                "thumb_url": "/api/thumb/" + fname,
+                "thumb_url": _oss_thumb_or_local(fname),
                 "type": ftype,
                 "size": st.st_size,
                 "mtime": st.st_mtime,

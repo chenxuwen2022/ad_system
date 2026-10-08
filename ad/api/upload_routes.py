@@ -2557,7 +2557,14 @@ async def upload_material(file: UploadFile = File(...), request: Request = None)
             db.close()
     except Exception as e:
         print(f"⚠️ 保存上传记录失败: {e}")
-    
+
+    # ===== 双写：本地保留（投放用）+ 同步传 OSS（展示用），失败不阻塞上传 =====
+    try:
+        from ad.services import oss_client
+        oss_client.upload_file(target, oss_client.media_key(os.path.basename(target)))
+    except Exception as _e:
+        print(f"[OSS] 双写失败（不影响本地素材）: {_e}")
+
     return {"success": True, "data": {
         "name": os.path.basename(target), "path": target,
         "type": "image" if ext in _IMAGE_EXT else "video",
